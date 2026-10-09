@@ -9,7 +9,7 @@ Status: source/code-grounded first pass. This census separates semantic identity
 | LitOps | `Stimurid/whitecrow:litops/` | `main@9bd58f2` | REUSE + WRAP + EXTRACT + COMPLETE |
 | Tinkuy Fabric | `Stimurid/zarathustra-:CALIFORNIAN_ID/src/californian_id/fabric/` | Socrates branch `7d94e62` | REUSE + WRAP + EXTRACT + COMPLETE |
 | Socrates | `Stimurid/zarathustra-:CALIFORNIAN_ID/src/socrates_runtime/` + current contracts | `socrates/gcur32-claude-overnight-20260930@7d94e62` | REUSE + WRAP + EXTRACT + COMPLETE |
-| Quinta / AgentRun | `Stimurid/quinta` | `main@3963df4` | REUSE primitives + COMPLETE generic AgentRun |
+| Quinta / AgentRun | `Stimurid/quinta` | `main@3963df4` | REUSE / WRAP / EXTRACT / COMPLETE (generation-scoped) |
 | D20 Field Core | `Stimurid/whitecrow:fieldcore/` | `main@9bd58f2` | REUSE + WRAP; EXTRACT only after ownership split |
 | Indago | live OpenClaw body + Drive ledgers; no canonical Git repo evidenced in accessible Stimurid repo set | current Drive/OpenClaw witnesses | WRAP first; EXTRACT protocol; code import UNKNOWN_HOLD |
 | PRAGMA | `Stimurid/moderbober` | `main@6d59256` | REUSE + WRAP + EXTRACT selectively |
@@ -165,46 +165,44 @@ Do not import:
 
 ---
 
-## 4. Quinta / AgentRun
+## 4. Quinta / AgentRun — HISTORICAL CORRECTION
 
-### Implementation witness
-Repository: `Stimurid/quinta`, `main@3963df4b8fb693be5cf46cc75aee0dd1372deade`.
+**This section supersedes the initial latest-HEAD-only assessment.** Detailed source-/commit-pinned audit: [QUINTA_MULTI_GENERATION_DONOR_ARCHAEOLOGY_v0.1.md](QUINTA_MULTI_GENERATION_DONOR_ARCHAEOLOGY_v0.1.md).
 
-Confirmed code:
-- `src/types/runControl.ts` — `RunControlConfig`, depth, budgetClass, constraintPolicy, evidencePolicy.
-- `src/types/autoToN.ts` — `RunResourceLedger`, feedback impact.
-- `src/logic/autoToN.ts` — execution consumes run control config.
-- `src/logic/runAutoToNSwarm.ts`
-- `src/components/RunLauncher.tsx`
-- `src/tests/runTraceStudioSmoke.test.ts`
-- W8/W9 runtime smoke suites.
+### Implementation witness — current *and historical*
 
-The repository's own `src/RUN_PROFILE_AUDIT.md` explicitly says several generic run surfaces are missing/partial.
+Repository: `Stimurid/quinta`, `main@3963df4b8fb693be5cf46cc75aee0dd1372deade`. Initial Quinta commit `b19465288` already implemented a specific `AgentRun` envelope and KOSMOS / single-method factories. Historical source dossier `knowledge/LEGACY_RECOVERY_FULL_DOSSIER.md` also identifies **pre-Quinta** `C:\projects\Claude\TRIZ\inventive-memory-bench-mvp` and related architecture/corpus assets; that local code has **not** been inspected here.
 
-### Key correction
-A fully generic cross-project `AgentRun` is **not proven as a finished module** on current main. The architecture/specification is ahead of implementation.
+Code-path witnesses at current main:
+- `src/types/core.ts` — `AgentRun`, `RunProfile`, `RunPolicy`, `RunBudget`, `AgentRunStep`, `HypothesisTrack`, `RunTraceGraph`, factories.
+- `src/logic/agentRuns.ts` — actual KOSMOS and single-method run objects, steps, artifacts, hypothesis tracks, reports, archive.
+- `src/components/PipelineBuilder.tsx`, `RunLauncher.tsx`, `RunsPanel.tsx`, `RunInspector.tsx`, `RunTraceStudio.tsx`.
+- `src/App.tsx:handleRunPipeline` (~1809–1969) — **actual** multi-cycle deterministic pipeline execution, max-step/branch guards and run-history mutation. Other App handlers create KOSMOS and single-method AgentRuns.
+- `src/logic/executionRunner.ts`, `runTraceAdapters.ts`, `agentBudget.ts`, `lifecycleGuard.ts` — bounded execution and trace/report components.
+- `src/logic/trizCorpus.ts`, `agentSwarm.ts`, `fitnessEvaluator.ts`, `runAutoToNSwarm.ts` — W9 operator selection, bounded parallel mutation, fitness and diversity selection.
+- `src/tests/runTraceStudioSmoke.test.ts` + W8/W9 smoke family; existence of test files does not prove live production behavior.
 
-### Disposition
-REUSE:
-- run-control types.
-- resource ledger.
-- select/preview/apply/result interaction.
-- current AutoToN/KOSMOS run machinery where generic.
+Important limitation: `knowledge/03_AGENT_RUN_MODEL.md` distinguishes actual enforced guards from TYPE_ONLY budget/policy fields. Pipeline runs can be Quinta-centric and may contain empty artifact/hypothesis collections despite nonempty steps. Cross-project, provider-neutral runtime and full durability remain unproven. `src/RUN_PROFILE_AUDIT.md` refers to a distinct Spindle control-surface audit, **not** to the absence of every AgentRun implementation.
 
-WRAP:
-- Quinta-specific actions as SESHAT profiles/providers.
+### Historical loss is not just file deletion
 
-COMPLETE:
-- generic AgentRun envelope.
-- RunProfile / RunPolicy / RunBudget / RunStep / RunArtifact / HypothesisTrack as actual shared runtime contracts.
-- target-object abstraction beyond Quinta technical-system models.
-- durable trace/tool routing.
+Inspection of 10 recursive Git snapshots across initial Quinta, recovery, Spindle, W4/W5, W7d, W8/W9, and main found only one relevant earlier code path missing at HEAD (`src/logic/intakeReconstruction.ts`); however `knowledge/SPINDLE_REGRESSION_ROOT_CAUSE.md` documents replaced/empty UI shells and still-existing functionality marooned behind Legacy UI. Therefore path presence, route reachability, actual runtime, and acceptance are separate evidence levels.
 
-DEPRECATE:
-- KOSMOS as a top-level special runtime. Retain as a profile.
+Consciously demoted architectures, reasons and acceptable secondary modes are preserved in `knowledge/07_ARCHIVE_DEMOTED_IDEAS.md`; do **not** infer from `SUPERSEDED` that the code has no donor value, nor from historical donor value that its obsolete semantics may become canonical.
 
-EXTRACT status:
-- HOLD until the generic contract has executable identity rather than only architecture.
+### Corrected disposition — per capability
+
+**REUSE:** actual Quinta-specific run envelope/factories, pipeline construction and execution primitives, run controls and history, W7 bounded execution, W9 population/fitness methods, trace/reporter and existing tests.
+
+**WRAP:** domain-specific TypeScript actions and run implementations behind SESHAT operation/provider interfaces; preserve source kind, policy enforcement level, evidence rights and authority.
+
+**EXTRACT:** generic `RunEnvelope / RunProfile / RunPolicy / RunBudget / RunStep / RunArtifact / HypothesisTrack / TraceGraph / PopulationRound` contracts after historical behavior/test verification. This is **not** HOLD merely because source code lacks an already-shared package boundary.
+
+**COMPLETE:** provider-neutral target and execution abstraction, durable external trace, real token/tool budget enforcement, policy rights, event-driven invalidation, evidence access and acceptance semantics.
+
+**DEPRECATE as governing ontology:** KOSMOS-as-god-object, cards-as-primary-objects, drag-as-mutation, hidden direct LLM mutations, irreversible pipeline. Keep the historical versions as negative donors and partial operation sources.
+
+**UNKNOWN_HOLD:** physically unexamined pre-Quinta local MVP, original architecture and TRIZ/MTM corpus. The legacy dossier is evidence of their described existence, not a current executable witness.
 
 ---
 
@@ -421,7 +419,7 @@ Use adapters/providers:
 - D20 adapter for entity state.
 - PRAGMA/Paideia adapter for governed acceptance/projection.
 - Indago adapter for external research.
-- Quinta primitives only for run policy/budget/trace until generic AgentRun is actually completed.
+- Quinta provides real AgentRun/pipeline/runtime, W7 execution, W9 swarm/fitness and trace donors; wrap/extract selectively with generation-pinned tests and authority safeguards.
 
 ## Language/runtime decision
 The donor set is predominantly Python for LitOps, Tinkuy/Socrates runtime, D20, PRAGMA backend, Paideia and Indago's interface boundary, while Quinta is TypeScript.
