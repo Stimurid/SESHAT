@@ -10,7 +10,13 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from seshat.contracts import Observation, ResearchObject, SourceAddress, SourceCarrier
+from seshat.contracts import (
+    Observation,
+    ResearchObject,
+    SourceAddress,
+    SourceCarrier,
+    SourceContent,
+)
 
 
 class RecordSourceProvider:
@@ -21,10 +27,12 @@ class RecordSourceProvider:
         research_objects: Mapping[str, Mapping[str, Any]],
         carriers: Mapping[str, Mapping[str, Any]],
         observations: Mapping[str, Iterable[Mapping[str, Any]]],
+        contents: Mapping[str, Mapping[str, Any] | SourceContent] | None = None,
     ) -> None:
         self._research_objects = research_objects
         self._carriers = carriers
         self._observations = observations
+        self._contents = contents or {}
 
     def get_research_object(self, object_id: str) -> ResearchObject:
         return ResearchObject.model_validate(self._research_objects[object_id])
@@ -39,6 +47,12 @@ class RecordSourceProvider:
     def get_observations(self, object_id: str) -> Iterable[Observation]:
         for record in self._observations.get(object_id, ()):
             yield Observation.model_validate(record)
+
+    def open_content(self, carrier_id: str) -> SourceContent:
+        record = self._contents[carrier_id]
+        if isinstance(record, SourceContent):
+            return record
+        return SourceContent.model_validate(record)
 
 
 def litops_segment_observation(

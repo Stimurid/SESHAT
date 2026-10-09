@@ -11,7 +11,6 @@ from seshat.contracts import (
     RawAccessPolicy,
 )
 
-
 OBJECT_OPERATION = OperationSpec(
     operation_id="sechenovka.authorabstract.object",
     name="Research object reconstruction",
@@ -28,7 +27,13 @@ OBJECT_OPERATION = OperationSpec(
     evidence_access_profile=EvidenceAccessProfile.FULL_WITH_STATE,
     raw_access_policy=RawAccessPolicy.FULL_REQUIRED,
     dependency_ids=["sechenovka.authorabstract.method"],
-    input_types=["ResearchObject", "SourceCarrier", "Observation", "DerivedObject"],
+    input_types=[
+        "ResearchObject",
+        "SourceCarrier",
+        "SourceAccess",
+        "Observation",
+        "DerivedObject",
+    ],
     output_type="sechenovka.object_reconstruction",
     applicability_conditions=[
         "full source carrier is addressable",
@@ -57,7 +62,13 @@ METHOD_OPERATION = OperationSpec(
     evidence_access_profile=EvidenceAccessProfile.FULL_WITH_STATE,
     raw_access_policy=RawAccessPolicy.FULL_REQUIRED,
     dependency_ids=["sechenovka.authorabstract.object"],
-    input_types=["ResearchObject", "SourceCarrier", "Observation", "DerivedObject"],
+    input_types=[
+        "ResearchObject",
+        "SourceCarrier",
+        "SourceAccess",
+        "Observation",
+        "DerivedObject",
+    ],
     output_type="sechenovka.method_reconstruction",
     applicability_conditions=[
         "full source carrier is addressable",

@@ -1,3 +1,5 @@
+import hashlib
+
 import pytest
 
 from seshat.adapters.records import RecordSourceProvider
@@ -11,7 +13,6 @@ from seshat.contracts import (
     RawAccessPolicy,
 )
 from seshat.runtime import EvidenceAccessError, Runtime
-
 
 SPEC = OperationSpec(
     operation_id="profile.object",
@@ -32,7 +33,7 @@ SPEC = OperationSpec(
 def provider_for(derived_id: str):
     return DeterministicOperationProvider(
         {SPEC.operation_id},
-        lambda spec, ro, obs, prior: DerivedObject(
+        lambda spec, ro, obs, prior, source_access: DerivedObject(
             derived_id=derived_id,
             object_type=spec.output_type,
             version=derived_id,
@@ -58,11 +59,12 @@ def test_full_required_fails_when_carrier_record_is_missing() -> None:
     )
     runtime = Runtime(sources)
 
-    with pytest.raises(EvidenceAccessError, match="missing carriers"):
+    with pytest.raises(EvidenceAccessError, match="missing carriers") as caught:
         runtime.run(SPEC, provider_for("d1"), research_object_id="r1")
+    assert caught.value.code.value == "MISSING_CARRIER"
 
 
-def test_full_required_runs_with_carrier_and_keeps_working_status() -> None:
+def test_full_required_rejects_metadata_only_carrier() -> None:
     sources = RecordSourceProvider(
         research_objects={
             "r1": {
@@ -83,13 +85,14 @@ def test_full_required_runs_with_carrier_and_keeps_working_status() -> None:
         observations={"r1": []},
     )
     runtime = Runtime(sources)
-    result = runtime.run(SPEC, provider_for("d1"), research_object_id="r1")
-
-    assert result.acceptance_state is AcceptanceState.WORKING
-    assert result.payload["observation_count"] == 0
+    with pytest.raises(EvidenceAccessError, match="content") as caught:
+        runtime.run(SPEC, provider_for("d1"), research_object_id="r1")
+    assert caught.value.code.value == "CONTENT_UNAVAILABLE"
 
 
 def test_revised_upstream_invalidates_linked_downstream() -> None:
+    content = b"complete synthetic source"
+    digest = hashlib.sha256(content).hexdigest()
     sources = RecordSourceProvider(
         research_objects={
             "r1": {
@@ -104,9 +107,22 @@ def test_revised_upstream_invalidates_linked_downstream() -> None:
                 "carrier_id": "c1",
                 "source_identity": "source:1",
                 "version": "1",
+                "media_type": "text/plain",
+                "content_sha256": digest,
+                "byte_length": len(content),
             }
         },
         observations={"r1": []},
+        contents={
+            "c1": {
+                "carrier_id": "c1",
+                "source_version": "1",
+                "media_type": "text/plain",
+                "content": content,
+                "content_sha256": digest,
+                "byte_length": len(content),
+            }
+        },
     )
     runtime = Runtime(sources)
 
