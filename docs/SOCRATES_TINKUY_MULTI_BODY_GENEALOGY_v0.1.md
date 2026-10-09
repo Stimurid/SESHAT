@@ -57,3 +57,7 @@ Later `CALIFORNIAN_ID/src/socrates_runtime/` has concrete modules `epistemic_mod
 **Next checks:** repo ancestry and version history, the bottomup/space/arena packets, Fabric pass coverage in earlier generations, exact tests/receipts. No donor code was modified.
 
 Source proofs: physical local roots noted above, ADR 0006, inspected source files and deterministic test modules.
+
+## 2026-10-10 status correction — original bottom-up is NO LONGER UNKNOWN_HOLD
+
+The previous `UNKNOWN_HOLD` for `TyumenAILab/socrates:bottomup` has been partially retired by a direct code and test audit, see [SOC RATES Bottom-Up Original Donor Recovery](SOCRATES_BOTTOMUP_ORIGINAL_DONOR_RECOVERY_v0.1.md). At clean `TyumenAILab/socrates@41fcf2b`, `bottomup/waku/bottomup` contains tested EventBus, SpaceWatcher, LoopWriter, Arbiter, Proposals, bitemporal LoopMemory and Consolidator. The auditor reran **46 deterministic tests PASS**, no repository changes. Their semantics remain original-host scoped. Historical integration gaps in `bottomup/ОБЪЕДИНЕНИЕ.md` remain separate, and current production portability is not established. The `space` and `arena` packets are still separate future audit targets.
