@@ -30,7 +30,7 @@ SPEC = OperationSpec(
 )
 
 
-def provider_for(derived_id: str):
+def provider_for(derived_id: str, *, parents: tuple[str, ...] = ()):
     return DeterministicOperationProvider(
         {SPEC.operation_id},
         lambda spec, ro, obs, prior, source_access: DerivedObject(
@@ -40,6 +40,7 @@ def provider_for(derived_id: str):
             operation_id=spec.operation_id,
             research_object_id=ro.object_id,
             payload={"observation_count": len(obs), "prior_count": len(prior)},
+            parent_derived_ids=list(parents),
         ),
     )
 
@@ -138,6 +139,11 @@ def test_revised_upstream_invalidates_linked_downstream() -> None:
     runtime.blackboard.put(downstream)
     runtime.link(first, downstream, dependency_type="mutual_constraint")
 
-    runtime.run(SPEC, provider_for("object-v2"), research_object_id="r1")
+    replacement = runtime.run(
+        SPEC,
+        provider_for("object-v2", parents=(first.derived_id,)),
+        research_object_id="r1",
+    )
+    runtime.blackboard.supersede(first.derived_id, replacement.derived_id)
 
     assert runtime.blackboard.get("method-v1").acceptance_state is AcceptanceState.STALE
