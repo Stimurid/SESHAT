@@ -84,3 +84,18 @@ The original `architecture/05_AGENT_FOUNDRY.md` proposes shrinking full prompts 
 4. Apply same all-generation standard to Tinkuy, Socrates and other SESHAT donors before transfer.
 
 **Builder:** consume through [issue #6](https://github.com/Stimurid/SESHAT/issues/6). This document does not authorize concurrent writes to SESHAT `src/` or `tests/`.
+
+## Original-source integrity validation — 2026-10-10
+
+A **read-only automated file check** enumerated all converted Markdown bodies with `source_path` and `source_sha256` in YAML frontmatter under `_READY_FOR_CLAUDE/`, resolved each original inside the local scaffold, and computed the actual SHA-256 of that physical original.
+
+Result: **18 MATCH / 0 MISMATCH / 0 MISSING**.
+
+Verified source categories included TXT, PDF and one Google-Docs-exported DOCX, including the human-review candidates. Example three exact digests confirmed:
+- `triz_meta_apex_core_txt.md` → `90_raw_exports/txt_originals/triz_meta_apex_core_txt.txt` = `ec8b106ec4fef25b38be3099e3ed0b0abac5e598cfc64c0ca07b4932108a9555`.
+- `mtm_orkestrator_telo_2_pdf.md` → `90_raw_exports/pdf_originals/mtm_orkestrator_telo_2_pdf.pdf` = `227a8427cdf423dd279ac857e0ab22de5b134cf9c93354c1a0d1d9afdbb70f40`.
+- `triz_new_hcore_pdf.md` → `90_raw_exports/pdf_originals/triz_new_hcore_pdf.pdf` = `be711c45d834195d337699ac1b5c18aec66b81fa873e8b46e5b5948827350310`; this remains in the human-review cluster despite file identity passing.
+
+**Do not overinterpret the PASS:** it establishes *raw original path presence and content identity relative to conversion metadata*, not full text extraction fidelity, semantic validity, copyright clearance or canonical admission of disputed versions. It does not cover source documents absent from this particular 18-file bundle.
+
+**Action for SESHAT S1/S3:** preservation of source-hash lineage is practically supported by an existing corpus. Model the source version/digest verification independently of method-authority and quality review. Use synthetic/public fixtures for CI; no need to upload private originals to public Git.
