@@ -32,7 +32,9 @@ class RecordSourceProvider:
     def get_carriers(self, object_id: str) -> Iterable[SourceCarrier]:
         ro = self.get_research_object(object_id)
         for carrier_id in ro.carrier_ids:
-            yield SourceCarrier.model_validate(self._carriers[carrier_id])
+            record = self._carriers.get(carrier_id)
+            if record is not None:
+                yield SourceCarrier.model_validate(record)
 
     def get_observations(self, object_id: str) -> Iterable[Observation]:
         for record in self._observations.get(object_id, ()):
