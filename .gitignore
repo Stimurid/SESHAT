@@ -1,0 +1,27 @@
+# Local runtime state
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+node_modules/
+dist/
+build/
+coverage/
+.coverage
+
+# Evaluation/run artifacts
+runs/
+artifacts/
+tmp/
+.cache/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
