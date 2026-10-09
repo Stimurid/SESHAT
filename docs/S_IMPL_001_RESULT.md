@@ -4,9 +4,9 @@
 
 - **REPO:** `https://github.com/Stimurid/SESHAT.git`
 - **BASE_SHA:** `39cb6b6833c622442cde1e6720c501afd3752329`
-- **HEAD_SHA:** pending delivery commit
+- **HEAD_SHA (implementation commit):** `12803b6682e3121bc4e55ad49cc383cd4101aba0`
 - **BRANCH:** `codex/s1-source-access`
-- **PR:** pending push
+- **PR:** [#5 — S-IMPL-001: enforce truthful source access](https://github.com/Stimurid/SESHAT/pull/5)
 
 ## Files modified
 
@@ -48,7 +48,8 @@ See [ADR 0001](ADR_0001_TRUTHFUL_SOURCE_ACCESS.md) for the detailed contract.
 - Final local suite: `python -m pytest -q` → `27 passed`.
 - Static checks: `python -m ruff check .` → all checks passed.
 - Whitespace/error check: `git diff --check` → passed.
-- CI run and conclusion: pending PR.
+- CI: [run 37998841484](https://github.com/Stimurid/SESHAT/actions/runs/37998841484) →
+  `success` (`test`, Python 3.12, 27 tests).
 
 The tests cover metadata-only access, valid complete reads, multi-carrier partial availability,
 version/digest drift, snippet-only content, bounded DRILLBACK, invalid ranges/carriers, NEVER,
@@ -92,5 +93,5 @@ gate, not as an equivalent implementation.
 
 ## Next owned act or blocker
 
-Push the branch, open the PR linked to Issue #3, record the final commit and CI result here, and return
-the PR for Hephaestus/user review. S2/S3 remain separate work and were not started.
+PR #5 is ready for Hephaestus/user review. S2/S3 remain separate work and were not started. The only
+remaining external action is review/merge; there is no implementation blocker in S1.
