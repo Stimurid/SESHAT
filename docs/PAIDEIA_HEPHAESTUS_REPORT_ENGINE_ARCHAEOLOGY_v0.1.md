@@ -101,3 +101,24 @@ PAI-T12: alternate architecture options and risk/consent decisions remain separa
 PAI-T13: `PREPARATION_ONLY` regex classification is surfaced as deterministic weak approximation, never as strong semantic or human-accepted reconstruction.
 PAI-T14: importing `PaideiaProjectPacket` demands precise source/version/anchor identity and rejects orphan reports.
 PAI-T15: deterministic test PASS or mock/synthetic H3 PASS never upgrades L6 `BLOCKED_EXTERNAL` to production acceptance.
+
+## VIII. Rejected Hephaestus generations V1→V2→V3 and unresolved currentness
+
+**This is essential donor genealogy:** the independent Hephaestus repository has exactly one visible branch `main`, but a sequence of real commits Aug 26–28 and three separately frozen reviewer candidates. The newest pretty output is NOT enough to infer its contract.
+
+Commit outline:
+- `0919b1cc917` (Aug 26): H2 deterministic first forge: interop types/SQLite event store and mock/fixture compilers; software not accepted.
+- `7db56c91eb4` (Aug 27): H3 joint vertical slice, real typed critic/frontier/provenance controls and failure matrix; software not accepted.
+- `04159d3e11b` (Aug 27): HP-009 12 deidentified REAL_PROJECT + 48 SYNTHETIC_EVALUATION packets, historically reported 136/136 named automated tests PASS; L6 independent human review blocked.
+- `9f6dc135bbb` (Aug 27): freeze V1, independently diagnosed flaws; A/B AI diagnostics explicitly **NON_GATING**, not a substitute for human reviewers.
+- `5ec8b873cfc` → `9aa1433a3af`: V2 critique and owner's architecture selection added; candidate still retained as non-gating, later explicitly **DIAGNOSTICALLY_REJECTED_FOR_HUMAN_USE** at `93cbe0a87fe` (Aug 27).
+- `bca8d65c0b2` → `b1b0f7a2141` → `ffe5b73b390` (Aug 27): V3 refactors a separate target-system body, decision debt and clean-room/multi-case repair and freezes new review candidate.
+- `146ae906702` → `429efc703ce` → `860d52007d5` → `23efd775654` (Aug 27–28): productization/API persistence, PREPARATION_ONLY derivations, explicit labeling of regex baseline.
+
+`evaluation/L6_PRE_REVIEW_DIAGNOSTICS/L6_PRE_REVIEW_DEFECT_REGISTER.md` lists **15 defect families A–O**, including: improperly fusing independent dissent into bipolar tension, losing consent/authorization in handoff, **fabricating a human architecture selection**, unimplemented component interfaces, three near-identical options pretending to be alternatives, omitting a participant, collapsing provenance of MUST requirements, critic appearing to select, unknowns with wrong blocking status, no handoff completeness validation, citation-thin frontier operators, hidden missing state transition and agent A/B papers in a blind human review packet. These are **historical negative controls** for SESHAT. In particular the 'human selection fabricated' case must remain a hard negative fixture; later canonical V3 code must be inspected for true closure before calling it an accepted donor.
+
+`evaluation/FUNCTIONAL_COMPLETION_V3_REPORT.md` reports 12 real cases reforged, 11 `ENGINEERING_READY`, 1 stopped on human/research gates, *still* `SOFTWARE_NOT_ACCEPTED`.
+`evaluation/L6_REVIEW_PACKAGE_V3/STATUS.json` says `L6_REVIEW_CANDIDATE_V3_READY`, 0 submitted independent reviewers of 2 required, `SOFTWARE_ACCEPTED=false`, `BLOCKED_EXTERNAL`.
+**Currentness caveat:** `evaluation/RELEASE_CANDIDATE_MANIFEST.json` still names V2 awaiting reviewers, while a later candidate V3 package is frozen in separate files. Do not silently privilege the manifest over actual reviewer-package status or assume one has been formally superseded everywhere; keep as a currentness discrepancy to resolve before any Hephaestus donor-release claim.
+
+Donor lesson: preserve acceptance scope and actual source/decision rights as code/test constraints. More detailed V3 architecture and real software tests cannot retroactively erase why V1/V2 were rejected or manufacture the missing human review.
