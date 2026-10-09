@@ -4,7 +4,7 @@
 
 - **REPO:** `https://github.com/Stimurid/SESHAT.git`
 - **BASE_SHA:** `39cb6b6833c622442cde1e6720c501afd3752329`
-- **HEAD_SHA (implementation commit):** `12803b6682e3121bc4e55ad49cc383cd4101aba0`
+- **HEAD_SHA (implementation commit):** `12803b6484a6950d9335f0fc807cdda1bfb73d70`
 - **BRANCH:** `codex/s1-source-access`
 - **PR:** [#5 — S-IMPL-001: enforce truthful source access](https://github.com/Stimurid/SESHAT/pull/5)
 
