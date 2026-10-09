@@ -7,6 +7,55 @@
 **Inspected executable baseline:** `main@d0b324ed78057dea5c39bbb4de8176ec01c34c91`; subsequently a documentation-only planning commit `4288c2398e9b889aa532b2070607327f1ac31ec9` was created. **Fetch current main and record its actual SHA before coding.**
 **Known CI:** [run 37982798112](https://github.com/Stimurid/SESHAT/actions/runs/37982798112) = SUCCESS for prior docs-only HEAD, not proof of the new S1 code.
 
+## 0. MANDATORY WORKSPACE BOOTSTRAP — BEFORE ANY CODING
+
+**This is an executable preflight gate, not a suggestion.** The handoff is not complete until Codex identifies an actual writable checkout and reports its absolute path, origin and HEAD. A GitHub issue or document by itself does **not** launch Codex or attach a workspace.
+
+- **Canonical origin:** `https://github.com/Stimurid/SESHAT.git`; **the only implementation repository**.
+- **Intended Windows local checkout:** `C:\projects\seshat` (already named in README and workstream docs; its presence on the user's disk has **not** been independently verified here).
+- **Cloud Codex / non-Windows runner:** use the runner-provided checkout for `Stimurid/SESHAT`. Do **not** try to access `C:\projects\seshat` from Linux or create a fictitious Windows path. If no checkout is provided but cloning is available, clone into a real runner workspace and report the resulting absolute path. The user's local Windows folder will not be modified by cloud cloning.
+- **Windows local Codex:** use exactly `C:\projects\seshat`. If a correct Git checkout already exists, reuse it. If the folder is absent, clone the canonical origin to **that path**. If the path exists but is non-Git, another repository, or dirty/conflicted, **do not delete, reset, stash, overwrite, relocate, or silently clone somewhere else**; report `BLOCKED_WORKSPACE` or the existing uncommitted state for safe resolution.
+
+**Windows PowerShell preflight (execute on the actual Windows host, not in cloud):**
+
+```powershell
+$root = 'C:\projects\seshat'
+$canonical = 'https://github.com/Stimurid/SESHAT.git'
+$allowed = @(
+  'https://github.com/Stimurid/SESHAT.git',
+  'https://github.com/Stimurid/SESHAT',
+  'git@github.com:Stimurid/SESHAT.git'
+)
+if (-not (Test-Path -LiteralPath $root)) {
+  New-Item -ItemType Directory -Path (Split-Path -Parent $root) -Force | Out-Null
+  git clone $canonical $root
+  if ($LASTEXITCODE -ne 0) { throw 'BLOCKED_WORKSPACE: clone failed' }
+}
+$top = git -C $root rev-parse --show-toplevel 2>$null
+if ($LASTEXITCODE -ne 0) { throw 'BLOCKED_WORKSPACE: not a Git checkout' }
+if ([IO.Path]::GetFullPath($top).TrimEnd('\') -ine [IO.Path]::GetFullPath($root).TrimEnd('\')) {
+  throw "BLOCKED_WORKSPACE: Git root is $top, expected $root"
+}
+$origin = git -C $root remote get-url origin
+if ($LASTEXITCODE -ne 0 -or $origin -notin $allowed) {
+  throw "BLOCKED_WORKSPACE: unexpected origin $origin"
+}
+git -C $root status --porcelain=v1
+git -C $root branch --show-current
+git -C $root rev-parse HEAD
+git -C $root remote -v
+```
+
+**After preflight in either environment:**
+
+1. State `WORKSPACE_MODE = WINDOWS_LOCAL | CLOUD_CHECKOUT | OTHER_CHECKOUT` and exact `WORKDIR_ABSOLUTE`.
+2. State `ORIGIN_URL`, `CURRENT_BRANCH`, `HEAD_SHA`, `DIRTY_STATUS`. Verify that the checkout is genuinely `Stimurid/SESHAT`, not a similarly named unrelated directory.
+3. If dirty or another implementation executor is active in that directory/branch, do not overwrite their changes. Coordinate a distinct working tree/branch only with explicit safe isolation; otherwise `BLOCKED_WORKSPACE`.
+4. When clean and correctly bound, `git fetch origin`, create `codex/s1-source-access` from the **actual latest** `origin/main` (or a collision-free task branch), and perform the numbered S-IMPL-001 steps below.
+5. If the environment has no filesystem, Git checkout or write permission, return `BLOCKED_WORKSPACE` with the missing capability. **Do not report CODING_STARTED, CODE_WRITTEN or PR_CREATED.**
+
+The first Codex message/receipt must include the four identifiers above. Do not start code changes before this gate passes.
+
 ## 1. Your identity, assignment and execution ownership
 
 You are **Codex acting as the exclusive implementation executor** in the SESHAT workstream. Hephaestus provides engineering direction and reviews acceptance; the user owns methodological and consequential decisions. You may edit code/tests and raise a PR; do not create a second repo, rewrite all architecture, or ask the user for already known context.
