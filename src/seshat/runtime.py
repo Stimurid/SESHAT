@@ -7,12 +7,14 @@ domain reasoning to OperationProvider implementations.
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Iterable
 from typing import ClassVar
 
 from seshat.adapters.base import OperationProvider, SourceContentProvider, SourceProvider
 from seshat.blackboard import Blackboard
 from seshat.contracts import (
+    AcceptanceState,
     DependencyEdge,
     DerivedObject,
     Observation,
@@ -45,6 +47,10 @@ class UnsupportedOperationError(RuntimeError):
     pass
 
 
+class ProviderResultError(ValueError):
+    """An operation provider returned a result it is not authorized to assert."""
+
+
 class RuntimeSourceAccess:
     """Policy-scoped, receipt-producing access to validated source bytes."""
 
@@ -62,9 +68,15 @@ class RuntimeSourceAccess:
         policy: RawAccessPolicy,
         carriers: Iterable[SourceCarrier],
         content_provider: SourceContentProvider | None,
+        carrier_ids: Iterable[str],
     ) -> None:
         self.policy = policy
-        self._carriers = {carrier.carrier_id: carrier for carrier in carriers}
+        self._carrier_ids = frozenset(carrier_ids)
+        self._carriers = {
+            carrier.carrier_id: carrier
+            for carrier in carriers
+            if carrier.carrier_id in self._carrier_ids
+        }
         self._content_provider = content_provider
         self._receipts: list[SourceAccessReceipt] = []
         self._validated: dict[str, SourceContent] = {}
@@ -75,6 +87,22 @@ class RuntimeSourceAccess:
             policy=self.policy,
             receipts=list(self._receipts),
             all_declared_sources_verified=self._all_declared_sources_verified,
+        )
+
+    @staticmethod
+    def _receipt_address(address: SourceAddress | None) -> SourceAddress | None:
+        """Retain stable bounds while pseudonymizing untrusted selector values."""
+        if address is None or not address.selector:
+            return address
+        serialized = json.dumps(
+            address.selector,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=lambda value: {"type": type(value).__qualname__},
+        ).encode("utf-8")
+        return address.model_copy(
+            update={"selector": {"selector_sha256": hashlib.sha256(serialized).hexdigest()}}
         )
 
     def _fail(
@@ -97,7 +125,7 @@ class RuntimeSourceAccess:
                     if code is SourceAccessErrorCode.POLICY_DENIED
                     else SourceAccessStatus.FAILED
                 ),
-                address=address,
+                address=self._receipt_address(address),
                 error_code=code,
                 detail=message,
             )
@@ -133,24 +161,24 @@ class RuntimeSourceAccess:
                 carrier_id=carrier_id,
                 read_kind=read_kind,
             )
-        except PermissionError as exc:
+        except PermissionError:
             self._fail(
                 SourceAccessErrorCode.UNAUTHORIZED,
-                f"content is unauthorized for carrier {carrier_id!r}: {exc}",
+                f"content is unauthorized for carrier {carrier_id!r}",
                 carrier_id=carrier_id,
                 read_kind=read_kind,
             )
-        except NotImplementedError as exc:
+        except NotImplementedError:
             self._fail(
                 SourceAccessErrorCode.UNSUPPORTED_MEDIA,
-                f"content reader is unsupported for carrier {carrier_id!r}: {exc}",
+                f"content reader is unsupported for carrier {carrier_id!r}",
                 carrier_id=carrier_id,
                 read_kind=read_kind,
             )
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        except (OSError, RuntimeError, TypeError, ValueError):
             self._fail(
                 SourceAccessErrorCode.READ_ERROR,
-                f"content read failed for carrier {carrier_id!r}: {exc}",
+                f"content read failed for carrier {carrier_id!r}",
                 carrier_id=carrier_id,
                 read_kind=read_kind,
             )
@@ -179,7 +207,7 @@ class RuntimeSourceAccess:
         if content.media_type not in self._SUPPORTED_MEDIA_TYPES:
             self._fail(
                 SourceAccessErrorCode.UNSUPPORTED_MEDIA,
-                f"unsupported media type {content.media_type!r} for carrier {carrier_id!r}",
+                f"unsupported media type for carrier {carrier_id!r}",
                 carrier_id=carrier_id,
                 read_kind=read_kind,
             )
@@ -315,17 +343,17 @@ class RuntimeSourceAccess:
             if content.media_type not in self._TEXT_MEDIA_TYPES:
                 self._fail(
                     SourceAccessErrorCode.UNSUPPORTED_MEDIA,
-                    f"char_range is unsupported for {content.media_type!r}",
+                    "char_range is unsupported for this carrier media type",
                     carrier_id=address.carrier_id,
                     read_kind="RANGE",
                     address=address,
                 )
             try:
                 text = content.content.decode("utf-8")
-            except UnicodeDecodeError as exc:
+            except UnicodeDecodeError:
                 self._fail(
                     SourceAccessErrorCode.READ_ERROR,
-                    f"UTF-8 decode failed for carrier {address.carrier_id!r}: {exc}",
+                    f"UTF-8 decode failed for carrier {address.carrier_id!r}",
                     carrier_id=address.carrier_id,
                     read_kind="RANGE",
                     address=address,
@@ -342,7 +370,7 @@ class RuntimeSourceAccess:
         else:
             self._fail(
                 SourceAccessErrorCode.INVALID_ADDRESS,
-                f"unsupported address type {address.address_type!r}",
+                "unsupported address type",
                 carrier_id=address.carrier_id,
                 read_kind="RANGE",
                 address=address,
@@ -354,7 +382,7 @@ class RuntimeSourceAccess:
                 source_version=content.source_version,
                 read_kind="RANGE",
                 status=SourceAccessStatus.VERIFIED,
-                address=address,
+                address=self._receipt_address(address),
                 content_sha256=content.content_sha256,
                 byte_length=content.byte_length,
                 returned_byte_length=len(selected),
@@ -416,6 +444,7 @@ class Runtime:
             spec.raw_access_policy,
             carriers,
             self.source_content_provider,
+            research_object.carrier_ids,
         )
         self._enforce_access(spec, research_object, carriers, source_access)
 
@@ -431,6 +460,14 @@ class Runtime:
             )
         if result.research_object_id != research_object_id:
             raise ValueError("provider returned result for a different ResearchObject")
+        if result.acceptance_state not in {
+            AcceptanceState.WORKING,
+            AcceptanceState.PROPOSED,
+        }:
+            raise ProviderResultError(
+                "provider-origin acceptance_state "
+                f"{result.acceptance_state.value!r} requires an authorized acceptance workflow"
+            )
         result = result.model_copy(update={"source_access_manifest": source_access.manifest()})
 
         previous = self.blackboard.latest(research_object_id, result.object_type)

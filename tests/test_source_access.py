@@ -14,6 +14,7 @@ from seshat.contracts import (
     RawAccessPolicy,
     SourceAccessErrorCode,
     SourceAddress,
+    SourceCarrier,
 )
 from seshat.runtime import EvidenceAccessError, Runtime
 
@@ -326,3 +327,177 @@ def test_source_read_error_persists_no_misleading_derived_object() -> None:
     assert caught.value.code is SourceAccessErrorCode.READ_ERROR
     assert caught.value.manifest.receipts[0].error_code is SourceAccessErrorCode.READ_ERROR
     assert runtime.blackboard.latest("r1", "analysis") is None
+
+
+@pytest.mark.parametrize("policy", [RawAccessPolicy.FULL_REQUIRED, RawAccessPolicy.DRILLBACK])
+def test_source_access_rejects_carrier_outside_research_object_scope(policy) -> None:
+    spec = _spec(policy)
+    inside = b"INSIDE_RESEARCH_OBJECT"
+    outside = b"OUTSIDE_RESEARCH_OBJECT"
+    opened = []
+
+    class OverbroadSourceProvider(RecordSourceProvider):
+        def get_carriers(self, object_id):
+            return tuple(
+                SourceCarrier.model_validate(self._carriers[carrier_id])
+                for carrier_id in ("c1", "c2")
+            )
+
+        def open_content(self, carrier_id):
+            opened.append(carrier_id)
+            return super().open_content(carrier_id)
+
+    sources = OverbroadSourceProvider(
+        research_objects={
+            "r1": {
+                "object_id": "r1",
+                "object_type": "document",
+                "version": "1",
+                "carrier_ids": ["c1"],
+            }
+        },
+        carriers={
+            carrier_id: {
+                "carrier_id": carrier_id,
+                "source_identity": f"source:{carrier_id}",
+                "version": "1",
+                "media_type": "text/plain",
+                "content_sha256": hashlib.sha256(data).hexdigest(),
+                "byte_length": len(data),
+            }
+            for carrier_id, data in {"c1": inside, "c2": outside}.items()
+        },
+        observations={"r1": []},
+        contents={
+            carrier_id: {
+                "carrier_id": carrier_id,
+                "source_version": "1",
+                "media_type": "text/plain",
+                "content": data,
+                "content_sha256": hashlib.sha256(data).hexdigest(),
+                "byte_length": len(data),
+            }
+            for carrier_id, data in {"c1": inside, "c2": outside}.items()
+        },
+    )
+
+    def read_outside(access):
+        if policy is RawAccessPolicy.FULL_REQUIRED:
+            return access.read_all("c2")
+        return access.read(
+            SourceAddress(
+                carrier_id="c2",
+                source_version="1",
+                address_type="byte_range",
+                start=0,
+                end=len(outside),
+            )
+        )
+
+    runtime = Runtime(sources)
+    with pytest.raises(EvidenceAccessError) as caught:
+        runtime.run(spec, _provider(spec, read_outside), research_object_id="r1")
+
+    assert "c2" not in opened
+    assert outside.decode() not in str(caught.value)
+    assert all(
+        receipt.carrier_id != "c2" or receipt.status.value != "VERIFIED"
+        for receipt in caught.value.manifest.receipts
+    )
+    assert runtime.blackboard.latest("r1", "analysis") is None
+
+
+@pytest.mark.parametrize(
+    "forged_state",
+    [
+        AcceptanceState.ACCEPTED,
+        AcceptanceState.CONTESTED,
+        AcceptanceState.REJECTED,
+        AcceptanceState.STALE,
+    ],
+)
+def test_provider_cannot_forge_consequential_acceptance_state(forged_state) -> None:
+    spec = _spec(RawAccessPolicy.NEVER)
+    sources = _source_provider({"c1": b"unused"})
+    provider = DeterministicOperationProvider(
+        {spec.operation_id},
+        lambda op, ro, observations, prior, access: DerivedObject(
+            derived_id=f"forged-{forged_state.value.lower()}",
+            object_type=op.output_type,
+            version="1",
+            operation_id=op.operation_id,
+            research_object_id=ro.object_id,
+            payload={},
+            acceptance_state=forged_state,
+        ),
+    )
+    runtime = Runtime(sources)
+
+    with pytest.raises(ValueError, match="provider-origin acceptance_state"):
+        runtime.run(spec, provider, research_object_id="r1")
+
+    assert runtime.blackboard.latest("r1", "analysis") is None
+
+
+def test_provider_may_return_proposed_result_without_status_rewrite() -> None:
+    spec = _spec(RawAccessPolicy.NEVER)
+    sources = _source_provider({"c1": b"unused"})
+    provider = DeterministicOperationProvider(
+        {spec.operation_id},
+        lambda op, ro, observations, prior, access: DerivedObject(
+            derived_id="proposal",
+            object_type=op.output_type,
+            version="1",
+            operation_id=op.operation_id,
+            research_object_id=ro.object_id,
+            payload={},
+            acceptance_state=AcceptanceState.PROPOSED,
+        ),
+    )
+
+    result = Runtime(sources).run(spec, provider, research_object_id="r1")
+
+    assert result.acceptance_state is AcceptanceState.PROPOSED
+
+
+def test_provider_error_detail_does_not_leak_private_source_text() -> None:
+    spec = _spec(RawAccessPolicy.FULL_REQUIRED)
+    secret = "private source content: patient-id-12345"
+    sources = _source_provider({"c1": b"available metadata"})
+
+    class RaisingContentProvider:
+        def open_content(self, carrier_id):
+            raise OSError(secret)
+
+    with pytest.raises(EvidenceAccessError) as caught:
+        Runtime(sources, source_content_provider=RaisingContentProvider()).run(
+            spec, _provider(spec, lambda access: {}), research_object_id="r1"
+        )
+
+    assert secret not in str(caught.value)
+    assert secret not in caught.value.manifest.model_dump_json()
+
+
+def test_receipt_hashes_untrusted_address_selector_instead_of_echoing_it() -> None:
+    spec = _spec(RawAccessPolicy.DRILLBACK)
+    secret = "private path: C:/patients/patient-id-12345.txt"
+    address = SourceAddress(
+        carrier_id="c1",
+        source_version="1",
+        address_type="byte_range",
+        start=0,
+        end=999,
+        selector={"private_locator": secret},
+    )
+
+    with pytest.raises(EvidenceAccessError) as caught:
+        Runtime(_source_provider({"c1": b"short"})).run(
+            spec,
+            _provider(spec, lambda access: access.read(address)),
+            research_object_id="r1",
+        )
+
+    serialized = caught.value.manifest.model_dump_json()
+    assert secret not in str(caught.value)
+    assert secret not in serialized
+    assert "selector_sha256" in serialized

@@ -51,6 +51,22 @@ exception, streaming reads, remote acquisition, PDF/OCR parsing, prompt-size/cov
 semantic method bodies, or scientific acceptance. A verified full read proves byte availability and
 integrity, not methodological completeness.
 
+## Corrective S1 addendum
+
+Runtime source scope is derived exclusively from `ResearchObject.carrier_ids`. Adapter-returned
+carrier metadata outside that allowlist is ignored by the operation-facing access session, for both
+`FULL_REQUIRED` and `DRILLBACK`; it cannot be opened or receive a verified receipt.
+
+Operation providers may originate only `WORKING` or `PROPOSED` results. Provider-origin
+`ACCEPTED`, `CONTESTED`, `REJECTED`, or `STALE` states fail before blackboard persistence because
+they require an authorized acceptance or runtime state-transition workflow. The runtime does not
+silently rewrite those states.
+
+Provider exception messages are treated as private adapter detail and are not copied into public
+exceptions or receipts. Receipts preserve address carrier/version/type/bounds, but replace any
+free-form `SourceAddress.selector` with a deterministic `selector_sha256` pseudonym so repeated
+evidence references remain correlatable without echoing selector values.
+
 ## Rollback
 
 Revert the S-IMPL-001 commit/PR. No data migration or external store mutation is required. Reverting
