@@ -39,6 +39,10 @@ For the complete preflight procedure, see [CODEX_IMPLEMENTATION_HANDOFF_v0.1.md]
 - Donor capabilities require source- and generation-pinned implementation evidence. See [Donor census](docs/DONOR_IMPLEMENTATION_CENSUS_v0.1.md) and [Quinta archaeology](docs/QUINTA_MULTI_GENERATION_DONOR_ARCHAEOLOGY_v0.1.md). Do not repeat archaeology as a substitute for the assigned code.
 - Git is the current verified code/durable handoff surface; do not assert Google Drive synchronization without successful write and readback.
 
+## Autonomous Codex completion watch
+
+**Installed:** [ops/codex_watch/README.md](ops/codex_watch/README.md) and recoverable [monitor.ps1](ops/codex_watch/monitor.ps1) / [run-codex.ps1](ops/codex_watch/run-codex.ps1). Aorustim Windows task `SESHAT-Codex-Watch` checks local job state every **five minutes**, with state/transition/exit receipts under `%LOCALAPPDATA%\SESHAT\watch`; a separate **hourly ChatGPT condition-watch automation** reads this state and GitHub PR/CI and notifies on completion or failure. On re-entry, inspect `state.json` and `exit.json` before deciding whether an agent is still running. Do not infer completion from missing PID or green tests alone; do not confuse another process (e.g. Hestia) with the SESHAT runner. Watchdog scripts cannot accept scientific results, merge code or restart agents. Local monitoring is host-dependent, and a sleeping/offline Aorustim prevents five-minute checks.
+
 ## Execution truth
 
 Creating a Git issue, handoff or agent instruction file does **not** start a Codex session. If no executor is running or attached to this checkout, report `READY_FOR_CODEX`, not `RUNNING`. Mark implementation complete only with a commit, PR, tests and CI evidence.
