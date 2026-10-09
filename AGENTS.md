@@ -19,6 +19,16 @@ For the complete preflight procedure, see [CODEX_IMPLEMENTATION_HANDOFF_v0.1.md]
 - The first handed-off implementation task (unless already closed/superseded when you start) is [S-IMPL-001 / Issue #3](https://github.com/Stimurid/SESHAT/issues/3). Read the exact [Codex handoff](docs/CODEX_IMPLEMENTATION_HANDOFF_v0.1.md), then re-check actual `origin/main` and task status.
 - Work on a task-specific branch and open a PR with tests, CI links, changed paths, known limits and rollback. No unreviewed executable edits straight to main.
 
+## Standing implementation inbox and cross-workstream intake
+
+**Mandatory re-entry channel:** [S-COORD-001 — Implementation Inbox / issue #6](https://github.com/Stimurid/SESHAT/issues/6), together with [Drive Implementation Lead Sync v0.1](https://docs.google.com/document/d/1OyIuHINMj7Lgv_snDGs8cRDV50txgGyqyyguyesW7Zk/edit). These govern *coordination and recovery*, not a replacement for the accepted engineering plan.
+
+- On every implementation session start / cold re-entry: check actual repository HEAD and dirty status, `docs/SESHAT_IMPLEMENTATION_PLAN_v0.1.md` (or proven successor), active implementation task/PR/CI, and new comments/issues in #6.
+- Before entering another S1-S6 gate, donor import, method/public-contract edit, or PR acceptance: re-read relevant pinned donor archaeological returns and negative tests. During long uninterrupted **active** work check the inbox about every two hours; this is not a background watcher.
+- Classify each source-pinned return as `ACK_NEEDED_NOW`, `NEXT_SLICE`, `VERIFY_WITH_TEST`, `ARCHIVE_ONLY`, `NOT_APPLICABLE` or `BLOCKED_ON_SEMANTIC_DECISION`. Record its effect on current task, exact evidence/pin, concrete negative/acceptance tests and owning issue/PR. Do not change methodology on archaeology/Indago authority alone.
+- First known intake: [Quinta PR #4](https://github.com/Stimurid/SESHAT/pull/4) and [Socrates/Tinkuy PR #7](https://github.com/Stimurid/SESHAT/pull/7), with deferred regression backlog [S-REG-001 / issue #8](https://github.com/Stimurid/SESHAT/issues/8). These do not automatically block unrelated S1 [PR #5](https://github.com/Stimurid/SESHAT/pull/5); review affected S2/S3/S5/S6 work before merge.
+- After re-entry record `BASE_SHA`, `CURRENT_TASK`, `CURRENT_PR`, `NEXT_GATE` and `BLOCKERS` in the durable task/PR receipt. Preserve one executable-core writer.
+
 ## Invariants
 
 - Do **not** replace this repository with a new scaffold. Extend existing Pydantic contracts, minimal runtime, adapters, blackboard and tests.
