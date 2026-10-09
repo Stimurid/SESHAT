@@ -14,8 +14,13 @@ from .contracts import (
     RawAccessPolicy,
     ResearchNeed,
     ResearchObject,
+    SourceAccessErrorCode,
+    SourceAccessManifest,
+    SourceAccessReceipt,
+    SourceAccessStatus,
     SourceAddress,
     SourceCarrier,
+    SourceContent,
 )
 
 __all__ = [
@@ -32,6 +37,11 @@ __all__ = [
     "RawAccessPolicy",
     "ResearchNeed",
     "ResearchObject",
+    "SourceAccessErrorCode",
+    "SourceAccessManifest",
+    "SourceAccessReceipt",
+    "SourceAccessStatus",
     "SourceAddress",
     "SourceCarrier",
+    "SourceContent",
 ]

@@ -8,8 +8,7 @@ accepted/working version can mark downstream objects stale.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import replace
-from typing import Iterable
+from collections.abc import Iterable
 
 from seshat.contracts import AcceptanceState, DependencyEdge, DerivedObject
 

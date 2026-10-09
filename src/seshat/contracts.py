@@ -33,6 +33,25 @@ class RawAccessPolicy(StrEnum):
     FULL_REQUIRED = "FULL_REQUIRED"
 
 
+class SourceAccessStatus(StrEnum):
+    VERIFIED = "VERIFIED"
+    DENIED = "DENIED"
+    FAILED = "FAILED"
+
+
+class SourceAccessErrorCode(StrEnum):
+    MISSING_CARRIER = "MISSING_CARRIER"
+    CONTENT_UNAVAILABLE = "CONTENT_UNAVAILABLE"
+    SOURCE_DRIFT = "SOURCE_DRIFT"
+    INTEGRITY_ERROR = "INTEGRITY_ERROR"
+    UNAUTHORIZED = "UNAUTHORIZED"
+    UNSUPPORTED_MEDIA = "UNSUPPORTED_MEDIA"
+    PARTIAL_SOURCE = "PARTIAL_SOURCE"
+    POLICY_DENIED = "POLICY_DENIED"
+    INVALID_ADDRESS = "INVALID_ADDRESS"
+    READ_ERROR = "READ_ERROR"
+
+
 class AcceptanceState(StrEnum):
     WORKING = "WORKING"
     PROPOSED = "PROPOSED"
@@ -44,6 +63,7 @@ class AcceptanceState(StrEnum):
 
 class SourceAddress(BaseModel):
     carrier_id: str
+    source_version: str | None = None
     address_type: str
     start: str | int | None = None
     end: str | int | None = None
@@ -56,7 +76,45 @@ class SourceCarrier(BaseModel):
     version: str
     media_type: str | None = None
     uri: str | None = None
+    content_sha256: str | None = None
+    byte_length: int | None = Field(default=None, ge=0)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SourceContent(BaseModel):
+    """Authorized bytes returned by a source-content adapter.
+
+    This is an execution-side value and must not be persisted in run receipts.
+    Integrity fields are independently checked by the runtime.
+    """
+
+    carrier_id: str
+    source_version: str
+    media_type: str
+    content: bytes
+    content_sha256: str
+    byte_length: int = Field(ge=0)
+    complete: bool = True
+    authorized: bool = True
+
+
+class SourceAccessReceipt(BaseModel):
+    carrier_id: str
+    source_version: str | None = None
+    read_kind: str
+    status: SourceAccessStatus
+    address: SourceAddress | None = None
+    content_sha256: str | None = None
+    byte_length: int | None = Field(default=None, ge=0)
+    returned_byte_length: int | None = Field(default=None, ge=0)
+    error_code: SourceAccessErrorCode | None = None
+    detail: str | None = None
+
+
+class SourceAccessManifest(BaseModel):
+    policy: RawAccessPolicy
+    receipts: list[SourceAccessReceipt] = Field(default_factory=list)
+    all_declared_sources_verified: bool = False
 
 
 class ResearchObject(BaseModel):
@@ -114,6 +172,7 @@ class DerivedObject(BaseModel):
     applicability: list[str] = Field(default_factory=list)
     uncertainty: list[str] = Field(default_factory=list)
     acceptance_state: AcceptanceState = AcceptanceState.WORKING
+    source_access_manifest: SourceAccessManifest | None = None
 
 
 class DependencyEdge(BaseModel):

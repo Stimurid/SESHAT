@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from typing import Callable
+from collections.abc import Callable, Iterable
 
+from seshat.adapters.base import SourceAccess
 from seshat.contracts import DerivedObject, Observation, OperationSpec, ResearchObject
 
 
@@ -13,7 +13,13 @@ class DeterministicOperationProvider:
         self,
         operation_ids: set[str],
         fn: Callable[
-            [OperationSpec, ResearchObject, tuple[Observation, ...], tuple[DerivedObject, ...]],
+            [
+                OperationSpec,
+                ResearchObject,
+                tuple[Observation, ...],
+                tuple[DerivedObject, ...],
+                SourceAccess,
+            ],
             DerivedObject,
         ],
     ) -> None:
@@ -29,5 +35,12 @@ class DeterministicOperationProvider:
         research_object: ResearchObject,
         observations: Iterable[Observation],
         prior_state: Iterable[DerivedObject],
+        source_access: SourceAccess,
     ) -> DerivedObject:
-        return self.fn(spec, research_object, tuple(observations), tuple(prior_state))
+        return self.fn(
+            spec,
+            research_object,
+            tuple(observations),
+            tuple(prior_state),
+            source_access,
+        )

@@ -16,7 +16,10 @@ from seshat.contracts import (
     OperationSpec,
     ResearchNeed,
     ResearchObject,
+    SourceAccessManifest,
+    SourceAddress,
     SourceCarrier,
+    SourceContent,
 )
 
 
@@ -28,6 +31,18 @@ class SourceProvider(Protocol):
     def get_observations(self, object_id: str) -> Iterable[Observation]: ...
 
 
+class SourceContentProvider(Protocol):
+    def open_content(self, carrier_id: str) -> SourceContent: ...
+
+
+class SourceAccess(Protocol):
+    def read_all(self, carrier_id: str) -> bytes: ...
+
+    def read(self, address: SourceAddress) -> bytes: ...
+
+    def manifest(self) -> SourceAccessManifest: ...
+
+
 class OperationProvider(Protocol):
     def supports(self, spec: OperationSpec) -> bool: ...
 
@@ -37,6 +52,7 @@ class OperationProvider(Protocol):
         research_object: ResearchObject,
         observations: Iterable[Observation],
         prior_state: Iterable[DerivedObject],
+        source_access: SourceAccess,
     ) -> DerivedObject: ...
 
 
