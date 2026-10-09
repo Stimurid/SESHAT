@@ -2,6 +2,14 @@
 
 Status: source/code-grounded first pass. This census separates semantic identity from physical code carrier. One donor line may share a repository with other systems.
 
+## Mandatory generation-aware closure gate
+
+**Owner correction:** A latest-HEAD or latest-design scan is only a **CURRENT_SNAPSHOT**, never a complete implementation census. Before closing any donor line, examine initial and intermediate generations, other branches/tags, old project roots and source copies, deliberately rejected/superseded designs, and negative/regression evidence. For each candidate capability record: source version/path/commit; whether code is present; whether still reachable; whether tested; reasons for rejection; and separately `REUSE / WRAP / EXTRACT / COMPLETE / DEPRECATE / UNKNOWN_HOLD`.
+
+This applies to **all seven lines**, not only Quinta. The other lines in this file remain **PROVISIONAL_HISTORICAL_COVERAGE** until generation-aware checks are repeated. Do not conflate no current path with no earlier implementation, or a rejected *whole architecture* with unusable *parts*. Do not reinstate rejected architecture as domain authority without addressing its original failure mode.
+
+First applied to Quinta: [multi-generation donor archaeology](QUINTA_MULTI_GENERATION_DONOR_ARCHAEOLOGY_v0.1.md). The old `inventive-memory-bench-mvp` and TRIZ roots remain `UNKNOWN_HOLD` pending actual retrieval.
+
 ## Summary
 
 | Line | Physical implementation witness | Pin used | SESHAT disposition |
