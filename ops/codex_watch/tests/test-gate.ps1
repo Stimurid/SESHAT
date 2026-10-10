@@ -90,7 +90,11 @@ $owned=@('src/seshat/reconciliation.py','tests/test_reconciliation.py','docs/S_I
 if((Test-SeshatOwnedPathSet -ApprovedPaths $approved -OwnedPaths $owned -DirtyPaths $owned) -ne 'ADMIT'){throw 'VALID_OWNED_PATH_SET_REJECTED'}
 $dirtyWithUnrelated=@($owned+'tests/unrelated.py')
 if((Test-SeshatOwnedPathSet -ApprovedPaths $approved -OwnedPaths $owned -DirtyPaths $dirtyWithUnrelated) -ne 'BLOCK_DIRTY_PATH_SET_MISMATCH'){throw 'UNRELATED_TEST_PATH_ACCEPTED'}
-if(Test-SeshatCanonicalJobPath -JobPath 'C:\arbitrary\job.json' -Root 'C:\trusted\watch'){throw 'ARBITRARY_JOB_PATH_ACCEPTED'}
+# Use host-native paths: this pure test also runs in Ubuntu PowerShell CI.
+$syntheticTrustedRoot=Join-Path ([System.IO.Path]::GetTempPath()) 'seshat-authorized-root'
+$syntheticOtherRoot=Join-Path ([System.IO.Path]::GetTempPath()) 'seshat-unauthorized-root'
+if(-not(Test-SeshatCanonicalJobPath -JobPath (Join-Path $syntheticTrustedRoot 'job.json') -Root $syntheticTrustedRoot)){throw 'VALID_CANONICAL_JOB_PATH_REJECTED'}
+if(Test-SeshatCanonicalJobPath -JobPath (Join-Path $syntheticOtherRoot 'job.json') -Root $syntheticTrustedRoot){throw 'ARBITRARY_JOB_PATH_ACCEPTED'}
 
 $publishedPr=[pscustomobject]@{number=19;state='OPEN';isDraft=$true;baseRefName='main';headRefName=$job.branch;headRefOid=('2'*40)}
 if((Test-SeshatPublishedPullRequest -PullRequest $publishedPr -Branch $job.branch -HeadSha ('2'*40)) -ne 'ADMIT'){throw 'VALID_DRAFT_PR_REJECTED'}
