@@ -75,6 +75,17 @@ $job=[pscustomobject]@{
     dispatch_key=('pr16-'+('f'*40)+'-issue17');approved_paths=@(Get-SeshatApprovedS2BPaths)
     ops_bundle=$bundle;repo='C:\projects\seshat';authorization_digest=''
 }
+# Regression for the real first-launch bootstrap failure (#25): deserialized JSON lacks started_at_utc.
+$bootstrapJob=('{"job_id":"fixture","runner_pid":0}' | ConvertFrom-Json)
+if($bootstrapJob.PSObject.Properties['started_at_utc']){throw 'BOOTSTRAP_FIXTURE_NOT_MISSING_FIELD'}
+Set-SeshatRunnerStart -Job $bootstrapJob -RunnerPid 32145 -StartedUtc '2026-10-10T00:01:02Z'
+if([int]$bootstrapJob.runner_pid -ne 32145 -or [string]$bootstrapJob.started_at_utc -cne '2026-10-10T00:01:02Z'){throw 'RUNNER_START_METADATA_NOT_ADDED'}
+Set-SeshatRunnerStart -Job $bootstrapJob -RunnerPid 32146 -StartedUtc '2026-10-10T00:01:03Z'
+$roundtrip=($bootstrapJob|ConvertTo-Json -Compress|ConvertFrom-Json)
+$expectedStartUtc=([datetime]'2026-10-10T00:01:03Z').ToUniversalTime()
+$actualStartUtc=([datetime]$roundtrip.started_at_utc).ToUniversalTime()
+if([int]$roundtrip.runner_pid -ne 32146 -or $actualStartUtc -ne $expectedStartUtc){throw 'RUNNER_START_METADATA_NOT_IDEMPOTENT'}
+if($executeSource -notmatch 'Set-SeshatRunnerStart -Job \$job -RunnerPid \$PID -StartedUtc \$Started'){throw 'EXECUTOR_MISSING_BOOTSTRAP_HELPER'}
 $job.authorization_digest=Get-SeshatJobAuthorizationDigest -Job $job
 $marker=[pscustomobject]@{key=$job.dispatch_key;job_id=$job.job_id;state='AUTHORIZED';authorization_digest=$job.authorization_digest}
 if((Test-SeshatJobAuthorization -Job $job -Marker $marker) -ne 'ADMIT'){throw 'VALID_JOB_AUTHORIZATION_REJECTED'}
