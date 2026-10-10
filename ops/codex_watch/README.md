@@ -40,7 +40,7 @@
 | `BRANCH_MISMATCH` | Worktree branch changed relative to the registered job; do not certify run status until reconcile. |
 | `WATCHDOG_ERROR` | Local script exception; writes safe exception type only, not raw errors or source text. |
 
-State is a monitoring projection, not SESHAT scientific state. GitHub PR/CI is a separate independent witness. Watchdog emits event records when state/HEAD/dirty-count/exit-code changes; no automatic job chaining.
+State is a monitoring projection, not SESHAT scientific state. GitHub PR/CI is a separate independent witness. The watchdog itself only emits event records; the separate acceptance-gated dispatcher handles the one explicitly authorized next-task transition.
 
 ## Verify and recover
 
@@ -76,7 +76,7 @@ The normal Codex workspace-write sandbox refuses writes to .git even when the .g
 - task_queue.json: one preapproved mapping, PR 16 (S2A) to issue 17 (S2B).
 - dispatch.ps1: dry run by default; -Apply is for the Windows scheduled task.
 - execute-task.ps1: starts a bounded Codex CLI run with workspace-write, local JSON logging, no Git credentials and no Git writes.
-- publish.ps1: the trusted host validates canonical repository, task branch, clean base, allowed file paths and tests before committing/pushing and opening a draft PR. No automatic merge.
+- publish.ps1: the trusted host validates canonical repository, task branch, clean base, allowed file paths, credential patterns and staged diff before committing/pushing and opening a draft PR. It does not execute agent-produced tests; isolated GitHub PR CI runs pytest and Ruff. No automatic merge.
 - monitor.ps1: detects the new execute-task.ps1 runner as well as the legacy resume runner.
 
 Admission requires ALL of: previous PR manually reviewed and labeled seshat:engineering-accepted; previous PR MANUALLY merged to main; successful GitHub workflow ci on current main SHA; preapproved next issue still open and labeled seshat:codex-ready; one explicit mapping in task_queue.json; clean worktree; matching previous exit receipt; no duplicate branch or prior dispatch marker.
