@@ -224,3 +224,104 @@ def test_candidate_view_is_detached_from_provider_mutation() -> None:
     stored = board.get("candidate")
     assert stored.acceptance_state is AcceptanceState.WORKING
     assert "forged" not in stored.payload
+
+
+def test_supersede_rejects_replacement_in_invalidation_path_transactionally() -> None:
+    board = Blackboard()
+    prior = board.put(_derived("prior"))
+    replacement = board.put(_derived("replacement", version="2", parents=("prior",)))
+    board.add_dependency(
+        DependencyEdge(
+            upstream_id="prior",
+            downstream_id="replacement",
+            dependency_type="validity",
+        )
+    )
+
+    with pytest.raises(ValueError, match="invalidate the replacement"):
+        board.supersede("prior", "replacement")
+
+    assert board.get("prior") == prior
+    assert board.get("replacement") == replacement
+
+
+def test_self_supersession_fails_without_state_change_even_with_self_parent() -> None:
+    board = Blackboard()
+    original = board.put(_derived("same", parents=("same",)))
+
+    with pytest.raises(ValueError, match="cannot supersede itself"):
+        board.supersede("same", "same")
+
+    assert board.get("same") == original
+    assert board.state_history("same")[0].obj == original
+    assert len(board.state_history("same")) == 1
+
+
+def test_invalidated_acceptance_remains_inspectable_but_not_candidate_input() -> None:
+    board = Blackboard()
+    board.put(_derived("source", object_type="source"))
+    accepted = board.put(
+        _derived("accepted", state=AcceptanceState.ACCEPTED)
+    )
+    board.add_dependency(
+        DependencyEdge(
+            upstream_id="source",
+            downstream_id="accepted",
+            dependency_type="validity",
+        )
+    )
+
+    assert board.mark_changed("source") == {"accepted"}
+
+    assert board.get("accepted").acceptance_state is AcceptanceState.STALE
+    assert board.accepted_state("r1") == (accepted,)
+    assert board.candidate_state("r1", "analysis") == ()
+    revisions = board.state_history("accepted")
+    assert [revision.state_revision for revision in revisions] == [0, 1]
+    assert [revision.obj.acceptance_state for revision in revisions] == [
+        AcceptanceState.ACCEPTED,
+        AcceptanceState.STALE,
+    ]
+    assert revisions[1].reason == "dependency_invalidation:source"
+
+
+def test_lineage_does_not_imply_invalidation_but_explicit_edge_does() -> None:
+    board = Blackboard()
+    board.put(_derived("parent", object_type="object"))
+    child = board.put(_derived("child", parents=("parent",)))
+
+    assert board.mark_changed("parent") == set()
+    assert board.get("child") == child
+
+    board.add_dependency(
+        DependencyEdge(
+            upstream_id="parent",
+            downstream_id="child",
+            dependency_type="validity",
+        )
+    )
+    assert board.mark_changed("parent") == {"child"}
+    assert board.get("child").acceptance_state is AcceptanceState.STALE
+    assert board.candidate_state("r1", "analysis") == ()
+
+
+def test_content_version_pin_is_distinct_from_state_revision_pin() -> None:
+    board = Blackboard()
+    original = board.put(_derived("child", version="content-v1"))
+    board.put(_derived("parent", object_type="object"))
+    board.add_dependency(
+        DependencyEdge(
+            upstream_id="parent",
+            downstream_id="child",
+            dependency_type="validity",
+        )
+    )
+    board.mark_changed("parent")
+
+    current = board.get("child", version="content-v1")
+    initial = board.get("child", version="content-v1", state_revision=0)
+
+    assert current.acceptance_state is AcceptanceState.STALE
+    assert initial == original
+    with pytest.raises(ValueError, match="state revision drift"):
+        board.get("child", version="content-v1", state_revision=2)

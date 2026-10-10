@@ -2,8 +2,8 @@
 
 ## Status
 
-**IMPLEMENTED IN WORKING TREE; EXECUTION AND GIT DELIVERY BLOCKED BY THE CURRENT
-MANAGED SANDBOX. NOT ACCEPTED.**
+**PR #16 FOLLOW-UP IMPLEMENTED IN WORKING TREE; TEST EXECUTION AND GIT DELIVERY
+ARE OUTSIDE THIS MANAGED SANDBOX. NOT ACCEPTED.**
 
 This receipt covers the bounded coherent-blackboard slice in issue
 [S-IMPL-002A / #14](https://github.com/Stimurid/SESHAT/issues/14). It does not claim S2B
@@ -11,28 +11,25 @@ reconciliation scheduling, durable traces, semantic review, or human acceptance.
 
 ## Preflight
 
-- **WORKSPACE_MODE:** Windows local verified checkout
-- **WORKDIR_ABSOLUTE:** `C:\projects\seshat`
+- **WORKSPACE_MODE:** Windows separate Git worktree
+- **WORKDIR_ABSOLUTE:** `C:\projects\seshat-impl-p16`
 - **ORIGIN_URL:** `https://github.com/Stimurid/SESHAT.git`
 - **BRANCH:** `codex/s2a-coherent-blackboard-20261010`
-- **BASE_SHA:** `4a58907cf55d5af408c61866103212e0320927fb`
-- **HEAD_SHA:** `4a58907cf55d5af408c61866103212e0320927fb` (unchanged because `.git` is
-  read-only in this session)
+- **BASE_SHA:** `0110935d0f8df37543a45aa5e811bb55938fdcaf`
+- **HEAD_SHA:** `0110935d0f8df37543a45aa5e811bb55938fdcaf` (no Git writes requested)
 - **INITIAL_DIRTY_STATUS:** clean
-- **CURRENT_TASK:** S-IMPL-002A / issue #14
-- **CURRENT_PR:** none
-- **NEXT_GATE:** S2B bounded Object/Method reconciliation, only after S2A review
-- **BLOCKERS:** Python executables and GitHub network are inaccessible from the managed shell;
-  `.git/index.lock` cannot be created, so commit/push/PR and CI triggering are blocked.
+- **CURRENT_TASK:** PR #16 follow-up review blockers B1-B5 for S-IMPL-002A
+- **CURRENT_PR:** #16
+- **NEXT_GATE:** publisher/reviewer test and review of this bounded S2A repair; S2B is excluded
+- **BLOCKERS:** no Python executable is visible from the managed shell, so tests and Ruff are
+  not run here; commit, push, `gh`, merge and self-approval were explicitly excluded.
 
-Only one Git worktree was present, at `C:\projects\seshat`, and no local competing core-writer
-worktree was found before editing.
+The user designated this separate worktree as the sole write target. The primary worktree at
+`C:\projects\seshat` was not inspected or modified.
 
 ## Changed paths
 
 - `src/seshat/blackboard.py`
-- `src/seshat/runtime.py`
-- `tests/test_runtime.py`
 - `tests/test_state_views.py`
 - `docs/S_IMPL_002A_RESULT.md`
 
@@ -50,10 +47,16 @@ The views have intentionally different meanings:
 
 - `candidate_state(...)` contains only `WORKING` and `PROPOSED`. It is the sole prior-state view
   supplied by `Runtime.run`.
-- `accepted_state(...)` exposes `ACCEPTED` objects explicitly. Accepted objects are not fed to a
-  provider as current candidates and are not silently displaced by a proposal.
-- `history(...)` exposes all retained objects, including `STALE`, `REJECTED`, and `CONTESTED`.
-- `get(derived_id, version=...)` is the exact version-pinned lookup and fails on version drift.
+- `accepted_state(...)` exposes historical `ACCEPTED` admissions explicitly, including an
+  admission whose current evidence validity later became `STALE`. Accepted or stale snapshots are
+  not fed to a provider as current candidates.
+- `history(...)` exposes every retained content object at its current status, including `STALE`,
+  `REJECTED`, and `CONTESTED`; status-transition snapshots are exposed separately by
+  `state_history(derived_id)`.
+- `get(derived_id, version=...)` pins the immutable content version but returns its current status.
+  `get(..., state_revision=N)` retrieves an exact numbered status snapshot. Each in-memory
+  `StateRevision` preserves the object/provenance, status and transition reason. This is a minimal
+  S2A receipt, not a durable or immutable S6 event store.
 - `get_candidate(...)` additionally fails if the addressed object is not an admissible candidate.
 - `latest(...)` returns a value only when exactly one candidate exists. Multiple rivals raise an
   ambiguity error instead of granting last-writer authority.
@@ -69,19 +72,31 @@ provider-origin `ACCEPTED`, `CONTESTED`, `REJECTED`, and `STALE` results.
 Appending another result does not automatically supersede or invalidate an existing candidate.
 Rival `WORKING`/`PROPOSED` projections remain separately visible.
 
-`supersede(prior_id, replacement_id)` is explicit. It requires the same research object and object
-type, a candidate replacement, and a declared parent-lineage link to the prior candidate. It marks
-the prior candidate `STALE` and transitively invalidates only dependency descendants. It refuses to
-supersede `ACCEPTED` (or any other non-candidate) state without a future authorized workflow.
+`supersede(prior_id, replacement_id)` is explicit. It requires distinct IDs, the same research
+object and object type, a candidate replacement, and a declared parent-lineage link to the prior
+candidate. Before mutation it rejects any active invalidation path from the prior to the
+replacement, preventing the replacement from being made stale by its own supersession. It marks
+the prior candidate `STALE` and transitively invalidates only dependency descendants. It refuses
+to supersede `ACCEPTED` (or any other non-candidate) state without a future authorized workflow.
 
-`invalidate_descendants(upstream_id)` is distinct: it changes only transitively linked descendants,
-preserves the upstream object, every stored object and dependency edge, and unrelated branches.
-Cycle traversal excludes the root from self-invalidation. `mark_changed(...)` remains a compatibility
+`invalidate_descendants(upstream_id)` is distinct: it changes only descendants connected through
+explicit `DependencyEdge` records with `invalidates_on_change=True`, preserves the upstream object,
+every stored content object, transition history, dependency edge and unrelated branch. A
+`parent_derived_ids` lineage declaration alone never creates an invalidation dependency. Cycle
+traversal excludes the root from self-invalidation. `mark_changed(...)` remains a compatibility
 alias for this descendant-only behavior.
 
 ## Test evidence
 
-Nine S2A tests were added, covering:
+The original nine S2A tests remain. Five PR #16 follow-up tests were added:
+
+1. `test_supersede_rejects_replacement_in_invalidation_path_transactionally`;
+2. `test_self_supersession_fails_without_state_change_even_with_self_parent`;
+3. `test_invalidated_acceptance_remains_inspectable_but_not_candidate_input`;
+4. `test_lineage_does_not_imply_invalidation_but_explicit_edge_does`;
+5. `test_content_version_pin_is_distinct_from_state_revision_pin`.
+
+The prior nine tests cover:
 
 1. runtime prior-state includes `WORKING`/`PROPOSED` and excludes accepted, contested, rejected, and
    stale objects;
@@ -100,39 +115,30 @@ updated to use explicit lineage and explicit supersession rather than append-ord
 
 ### RED evidence
 
-The focused RED command was attempted before changing source code:
+The focused RED command was attempted after adding the follow-up tests and before changing source:
 
 ```text
-python -m pytest -q tests/test_state_views.py::test_runtime_prior_state_excludes_stale_downstream
+C:\Users\Homee\AppData\Local\Programs\Python\Python314\python.exe -m pytest -q tests/test_state_views.py
 ```
 
-The managed shell could not resolve `python`. A retry with the machine's known Python 3.14 path was
-denied by the filesystem sandbox. Therefore no executed RED result is claimed. The base source
-witness was direct: `Runtime.run` passed `tuple(blackboard.working_state(...))`, while
-`working_state` yielded every object regardless of state; the new T01 assertion would therefore
-receive all six seeded states instead of only `working` and `proposed`.
+The managed shell could not resolve that executable (`CommandNotFoundException`). Therefore no
+executed RED result is claimed. Direct source inspection established that the new tests referenced
+missing `state_history` / `state_revision` behavior and that existing supersession mutated the
+prior before invalidating its replacement.
 
 ### GREEN and static evidence
 
 - `git diff --check` — **PASS** (line-ending conversion warnings only).
-- `python -m pytest -q` — **NOT EXECUTED**: installed Python is outside the shell's permitted
-  filesystem surface (`Access is denied`). The prior main receipt records 36 passing tests; the
-  working tree now defines 9 additional tests, but **45 passing is not claimed**.
-- `python -m ruff check .` — **NOT EXECUTED** for the same sandbox reason.
-- GitHub Actions — **NOT TRIGGERED** because shell network access to `github.com:443` failed and no
-  commit/PR could be created.
+- `python -m pytest -q` — **NOT EXECUTED**: no Python executable is visible in this shell. The
+  branch arrived with 45 tests and this follow-up adds 5, but **50 passing is not claimed**.
+- `python -m ruff check .` — **NOT EXECUTED**: no Ruff executable is visible in this shell.
+- GitHub Actions — **NOT TRIGGERED**; publishing and CI are assigned to the host reviewer.
 
-## Delivery blocker
+## Delivery constraint
 
-`git add` and `git commit` failed with:
-
-```text
-fatal: Unable to create 'C:/projects/seshat/.git/index.lock': Permission denied
-```
-
-The session permission profile exposes `.git` read-only. A read-only `git ls-remote` also failed to
-connect to `github.com:443`. No commit SHA, push, PR, or CI URL is fabricated. The implementation is
-left as an inspectable uncommitted working-tree delta on the requested branch.
+The assignment explicitly prohibits Git writes, `gh`, push, merge and self-approval. None was
+attempted. No commit SHA, CI result or review approval is fabricated. The implementation is left
+as an inspectable working-tree delta on the requested PR branch for the host publisher/reviewer.
 
 The mandatory coordination inbox is
 [S-COORD-001 / #6](https://github.com/Stimurid/SESHAT/issues/6). Live issue retrieval was attempted,
@@ -142,8 +148,9 @@ they are later-stage warnings with no permission or need to import donor code in
 
 ## Limitations
 
-- State, transitions, dependencies, and access receipts remain in memory only.
-- Status mutation preserves stored objects and lineage but is not a durable event log.
+- State, numbered status transitions, dependencies, and access receipts remain in memory only.
+- Status transition snapshots preserve stored content, provenance and lineage but are not a
+  durable or tamper-evident event log.
 - No acceptance workflow is introduced; authorized host code remains responsible for inserting or
   transitioning accepted state.
 - No S2B scheduler, reconciliation budget, convergence/conflict/exhaustion receipt, APORIA loop, or
@@ -152,10 +159,9 @@ they are later-stage warnings with no permission or need to import donor code in
 
 ## Rollback
 
-Discard or revert only the five changed paths listed above. There is no schema migration, external
-store mutation, donor import, or Drive write to undo. Because Git commit creation was blocked in
-this session, rollback currently means restoring those working-tree files from the verified base,
-and must not be performed while unrelated user changes overlap them.
+Discard or revert only the three changed paths listed above. There is no schema migration, external
+store mutation, donor import, or Drive write to undo. Rollback means restoring those working-tree
+files from the verified base and must not be performed while unrelated user changes overlap them.
 
 ## Recommended S2B scope
 
