@@ -451,7 +451,7 @@ class Runtime:
         if not provider.supports(spec):
             raise UnsupportedOperationError(spec.operation_id)
 
-        prior_state = tuple(self.blackboard.working_state(research_object_id))
+        prior_state = self.blackboard.candidate_state(research_object_id)
         result = provider.execute(spec, research_object, observations, prior_state, source_access)
         if result.operation_id != spec.operation_id:
             raise ValueError(
@@ -470,11 +470,7 @@ class Runtime:
             )
         result = result.model_copy(update={"source_access_manifest": source_access.manifest()})
 
-        previous = self.blackboard.latest(research_object_id, result.object_type)
         self.blackboard.put(result)
-
-        if previous is not None and previous.derived_id != result.derived_id:
-            self.blackboard.mark_changed(previous.derived_id)
 
         return result
 
