@@ -1,0 +1,20 @@
+{
+  "schema_version": 2,
+  "transitions": [
+    {
+      "after_pr": 16,
+      "after_issue": 14,
+      "ops_pr": 18,
+      "next_issue": 17,
+      "next_issue_body_utf8_sha256": "541bf6271d9a0c8f7c0ade9bc710d5fdc5d5ae3083ed6e898be04f5c8c0780b8",
+      "next_branch": "codex/s2b-bounded-reconciliation",
+      "approved_paths": [
+        "src/seshat/reconciliation.py",
+        "tests/test_reconciliation.py",
+        "docs/S_IMPL_002B_RESULT.md"
+      ],
+      "accepted_label": "seshat:engineering-accepted",
+      "ready_label": "seshat:codex-ready"
+    }
+  ]
+}
