@@ -69,8 +69,9 @@ Implements #$issue from pre-approved SESHAT dispatch.
 Branch: $branch
 Commit: $sha
 
-Codex generated changes in sandbox. Trusted host checked pytest, Ruff, allowed paths,
-performed Git commit/push, and created this draft PR. No auto-merge and no semantic acceptance.
+Codex generated changes in a restricted sandbox. Trusted host validated the scoped file set,
+credential-pattern scan and staged diff before commit/push. Isolated GitHub PR CI runs pytest
+and Ruff after publication. No local execution of unreviewed code, auto-merge or semantic approval.
 Result: docs/S_IMPL_002B_RESULT.md
 Coordination: https://github.com/Stimurid/SESHAT/issues/6
 "@ | Set-Content -LiteralPath $bodyFile -Encoding UTF8
