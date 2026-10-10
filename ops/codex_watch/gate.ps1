@@ -79,6 +79,16 @@ function Get-SeshatJobAuthorizationDigest {
     )
     return Get-SeshatUtf8Sha256 -Text ($fields -join "`n")
 }
+function Set-SeshatRunnerStart {
+    param(
+        [Parameter(Mandatory=$true)][object] $Job,
+        [Parameter(Mandatory=$true)][int] $RunnerPid,
+        [Parameter(Mandatory=$true)][string] $StartedUtc
+    )
+    # ConvertFrom-Json yields a PSCustomObject: strict mode forbids assigning missing properties.
+    $Job | Add-Member -NotePropertyName runner_pid -NotePropertyValue $RunnerPid -Force
+    $Job | Add-Member -NotePropertyName started_at_utc -NotePropertyValue $StartedUtc -Force
+}
 function Test-SeshatJobAuthorization {
     param(
         [Parameter(Mandatory=$true)][object] $Job,
