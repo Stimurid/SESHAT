@@ -65,3 +65,35 @@ Before registering a new job, clear/reconcile the *previous job's terminal statu
 - ChatGPT hourly automation sends condition-based notifications, avoiding duplicate alerts when possible; cloud automation scheduling and tool access can vary. It cannot provide hard real-time delivery.
 - Implementation Lead reviews exact code and CI before merge, follows [S-COORD-001](https://github.com/Stimurid/SESHAT/issues/6). User retains semantic-method acceptance.
 - All task/PR decisions return to Git; local logs and machine-specific task registration are operational witnesses. Do not call a source read, CLI exit, test pass or GitHub CI pass scientific acceptance.
+
+## Automatic Codex publication and acceptance-gated dispatch
+
+On Aorustim, GitHub CLI is already authorized as Stimurid via the Windows keyring and Git Credential Manager; repository push rights are verified. There is no need to install, disclose, or copy a token.
+
+The normal Codex workspace-write sandbox refuses writes to .git even when the .git directory is explicitly added, and does not expose gh. Do NOT bypass the whole operating-system sandbox. Instead, the following trusted host scripts use the existing Windows account and its credentials:
+
+- gate.ps1: pure authorization check. tests/test-gate.ps1 covers admission and denial cases.
+- task_queue.json: one preapproved mapping, PR 16 (S2A) to issue 17 (S2B).
+- dispatch.ps1: dry run by default; -Apply is for the Windows scheduled task.
+- execute-task.ps1: starts a bounded Codex CLI run with workspace-write, local JSON logging, no Git credentials and no Git writes.
+- publish.ps1: the trusted host validates canonical repository, task branch, clean base, allowed file paths and tests before committing/pushing and opening a draft PR. No automatic merge.
+- monitor.ps1: detects the new execute-task.ps1 runner as well as the legacy resume runner.
+
+Admission requires ALL of: previous PR manually reviewed and labeled seshat:engineering-accepted; previous PR MANUALLY merged to main; successful GitHub workflow ci on current main SHA; preapproved next issue still open and labeled seshat:codex-ready; one explicit mapping in task_queue.json; clean worktree; matching previous exit receipt; no duplicate branch or prior dispatch marker.
+
+The two labels are different independent permissions. Engineering acceptance does NOT mean scientific-method approval. Codex must never invent another task, import a donor wholesale, or modify the research ontology on its own.
+
+Task S-IMPL-002B (#17) is prepared; current predecessor PR #16 remains draft/unmerged. Automatic dispatch is therefore BLOCKED until explicit review and merge. Do not apply the PR acceptance label merely because tests pass.
+
+Operational state is stored locally in %LOCALAPPDATA%\SESHAT\watch: dispatch_state.json, dispatch_events.jsonl, job.json, exit.json, publish_receipt.json and per-run archived logs. The dispatcher creates a one-time gate marker under dispatches BEFORE spawning the worker to guarantee fail-closed recovery. A stale marker requires investigation; never delete it automatically.
+
+Windows Task Scheduler task SESHAT-Codex-Dispatch runs every five minutes while Aorustim is available. It is distinct from the existing SESHAT-Codex-Watch task and from hourly ChatGPT notifications. The machine must be awake/logged in for the local scheduled process to run.
+
+Verification:
+- powershell -NoProfile -File C:\projects\seshat\ops\codex_watch\tests\test-gate.ps1
+- powershell -NoProfile -File C:\Users\Homee\AppData\Local\SESHAT\watch\dispatch.ps1 (safe dry-run)
+- schtasks /query /tn SESHAT-Codex-Dispatch /fo LIST /v
+- Inspect local dispatch_state.json and GitHub current HEAD/PR/CI.
+- To stop automatic task dispatch: schtasks /change /tn SESHAT-Codex-Dispatch /disable
+
+Implementation limitations: this first version handles ONE queued transition and ONE active job per Windows checkout; it is not a general self-programming scheduler. It preserves old job logs, never resets a dirty repository, never auto-merges, never self-certifies acceptance, and cannot work while the host is unavailable.

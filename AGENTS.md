@@ -46,3 +46,9 @@ For the complete preflight procedure, see [CODEX_IMPLEMENTATION_HANDOFF_v0.1.md]
 ## Execution truth
 
 Creating a Git issue, handoff or agent instruction file does **not** start a Codex session. If no executor is running or attached to this checkout, report `READY_FOR_CODEX`, not `RUNNING`. Mark implementation complete only with a commit, PR, tests and CI evidence.
+
+## Trusted host Git publishing and conditional task dispatch
+
+The Codex Windows workspace-write sandbox denies .git writes even with --add-dir. Do not bypass the sandbox or copy GitHub secrets into prompts. The authorized Windows host account already has gh/GCM rights; the trusted SESHAT host runner (see ops/codex_watch/README.md) validates tests, allowed paths and repository identity, then performs Git commit, push and opens a DRAFT PR on Codex's behalf. The Codex worker itself remains sandboxed.
+
+The next approved issue can start automatically only after human/Implementation Lead review recorded by label seshat:engineering-accepted, manual predecessor PR merge, green current-main CI and a separately labeled seshat:codex-ready issue pinned in the one-transition task queue. No automatic PR merge, automatic scientific-method approval, or agent-invented tasks. Current queue is PR #16 -> issue #17, blocked until predecessor acceptance. Local watchdog/dispatcher records persist only while Aorustim is available. Always read Inbox #6 before review or the next task.

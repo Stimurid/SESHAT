@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "transitions": [
+    {
+      "after_pr": 16,
+      "after_issue": 14,
+      "next_issue": 17,
+      "next_branch": "codex/s2b-bounded-reconciliation",
+      "accepted_label": "seshat:engineering-accepted",
+      "ready_label": "seshat:codex-ready"
+    }
+  ]
+}

@@ -36,7 +36,7 @@ try {
         $runnerPid = [int]$job.runner_pid
         if ($runnerPid -gt 0) {
             $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$runnerPid" -ErrorAction SilentlyContinue
-            if ($null -ne $proc -and $proc.CommandLine -like '*run-codex.ps1*') {
+            if ($null -ne $proc -and ($proc.CommandLine -like '*run-codex.ps1*' -or $proc.CommandLine -like '*execute-task.ps1*')) {
                 $alive = $true
             }
         }
