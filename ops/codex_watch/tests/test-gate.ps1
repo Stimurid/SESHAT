@@ -82,7 +82,9 @@ Set-SeshatRunnerStart -Job $bootstrapJob -RunnerPid 32145 -StartedUtc '2026-10-1
 if([int]$bootstrapJob.runner_pid -ne 32145 -or [string]$bootstrapJob.started_at_utc -cne '2026-10-10T00:01:02Z'){throw 'RUNNER_START_METADATA_NOT_ADDED'}
 Set-SeshatRunnerStart -Job $bootstrapJob -RunnerPid 32146 -StartedUtc '2026-10-10T00:01:03Z'
 $roundtrip=($bootstrapJob|ConvertTo-Json -Compress|ConvertFrom-Json)
-if([int]$roundtrip.runner_pid -ne 32146 -or [string]$roundtrip.started_at_utc -cne '2026-10-10T00:01:03Z'){throw 'RUNNER_START_METADATA_NOT_IDEMPOTENT'}
+$expectedStartUtc=([datetime]'2026-10-10T00:01:03Z').ToUniversalTime()
+$actualStartUtc=([datetime]$roundtrip.started_at_utc).ToUniversalTime()
+if([int]$roundtrip.runner_pid -ne 32146 -or $actualStartUtc -ne $expectedStartUtc){throw 'RUNNER_START_METADATA_NOT_IDEMPOTENT'}
 if($executeSource -notmatch 'Set-SeshatRunnerStart -Job \$job -RunnerPid \$PID -StartedUtc \$Started'){throw 'EXECUTOR_MISSING_BOOTSTRAP_HELPER'}
 $job.authorization_digest=Get-SeshatJobAuthorizationDigest -Job $job
 $marker=[pscustomobject]@{key=$job.dispatch_key;job_id=$job.job_id;state='AUTHORIZED';authorization_digest=$job.authorization_digest}
