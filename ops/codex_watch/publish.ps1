@@ -39,18 +39,18 @@ foreach($line in $lines) {
     $paths+= $path
 }
 Need ((Test-Path (Join-Path $Repo 'docs\S_IMPL_002B_RESULT.md'))) 'MISSING_REQUIRED_RESULT_RECEIPT'
-$testLog=Join-Path $Root 'host-pytest.log'
-$lintLog=Join-Path $Root 'host-ruff.log'
+# Deliberately DO NOT execute Codex-written Python code under the privileged host account.
+# The isolated GitHub Actions PR CI runs pytest and Ruff after publication.
 Push-Location $Repo
 try {
-    & python -m pytest -q *> $testLog
-    Need ($LASTEXITCODE -eq 0) 'PYTEST_FAILED_SEE_LOCAL_LOG'
-    & python -m ruff check . *> $lintLog
-    Need ($LASTEXITCODE -eq 0) 'RUFF_FAILED_SEE_LOCAL_LOG'
     & git add -- @paths
     Need ($LASTEXITCODE -eq 0) 'GIT_ADD_FAILED'
     & git diff --cached --check
     Need ($LASTEXITCODE -eq 0) 'DIFF_CHECK_FAILED'
+    # Fail closed on common credential/key patterns without revealing matched values.
+    $diffText=(@(& git diff --cached --no-ext-diff --unified=0) -join [Environment]::NewLine)
+    Need ($LASTEXITCODE -eq 0) 'DIFF_SCAN_FAILED'
+    Need ($diffText -notmatch '(?mi)^\+.*(gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----)') 'POSSIBLE_CREDENTIAL_IN_DIFF'
     $staged=@(& git diff --cached --name-only)
     Need ($staged.Count -eq $paths.Count) 'STAGED_PATH_SET_MISMATCH'
     $msg="impl(s2b): bounded reconciliation controller (#$issue)"
@@ -80,7 +80,7 @@ Coordination: https://github.com/Stimurid/SESHAT/issues/6
     $result=[ordered]@{
         status='PUBLISHED_DRAFT_PR'; issue=$issue; branch=$branch; head_sha=$sha
         pr_url=[string]($url | Select-Object -Last 1); changed_paths=$paths
-        pytest_log=$testLog; ruff_log=$lintLog
+        ci_tests='PENDING_GITHUB_PR_CI'; local_code_execution='NONE'
         published_at_utc=(Get-Date).ToUniversalTime().ToString('o')
     }
     $result | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $Root 'publish_receipt.json') -Encoding UTF8

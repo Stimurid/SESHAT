@@ -97,3 +97,5 @@ Verification:
 - To stop automatic task dispatch: schtasks /change /tn SESHAT-Codex-Dispatch /disable
 
 Implementation limitations: this first version handles ONE queued transition and ONE active job per Windows checkout; it is not a general self-programming scheduler. It preserves old job logs, never resets a dirty repository, never auto-merges, never self-certifies acceptance, and cannot work while the host is unavailable.
+
+Security boundary: the trusted host publisher MUST NOT execute Codex-produced Python or tests while GitHub credentials are accessible. After an allowed-files/secret-pattern/diff check it opens a draft PR; isolated GitHub Actions CI runs both pytest and Ruff on the proposed branch. PR reviewers examine code and CI before manual engineering acceptance. The scanner detects common secret formats but cannot prove arbitrary content contains no sensitive data; review remains mandatory.
