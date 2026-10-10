@@ -42,8 +42,7 @@ try {
     if([string](& git -C $Repo branch --show-current) -ne [string]$job.branch){throw 'BRANCH_MISMATCH'}
     if([string](& git -C $Repo rev-parse HEAD) -ne [string]$job.base_sha){throw 'BASE_MISMATCH'}
     if(@(& git -C $Repo status --porcelain=v1).Count -ne 0){throw 'DIRTY_BEFORE_START'}
-    $job.runner_pid=$PID
-    $job.started_at_utc=$Started
+    Set-SeshatRunnerStart -Job $job -RunnerPid $PID -StartedUtc $Started
     AtomicJson $job $JobPath
     Set-Location -LiteralPath $Repo
     $env:PYTHONIOENCODING='utf-8'
