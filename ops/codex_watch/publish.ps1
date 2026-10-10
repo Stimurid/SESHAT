@@ -5,13 +5,21 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $Repo='C:\projects\seshat'
 $Root='C:\Users\Homee\AppData\Local\SESHAT\watch'
+. (Join-Path $PSScriptRoot 'gate.ps1')
 function Need($condition, $reason) { if (-not $condition) { throw $reason } }
 function RunGit([string[]]$argv) {
     $output=@(& git -C $Repo @argv 2>&1)
     Need ($LASTEXITCODE -eq 0) ("GIT_FAILED_"+($argv[0].ToUpperInvariant()))
     return $output
 }
+Need (Test-SeshatCanonicalJobPath -JobPath $JobPath -Root $Root) 'UNAUTHORIZED_JOB_PATH'
 $job=Get-Content -LiteralPath $JobPath -Raw -Encoding UTF8 | ConvertFrom-Json
+Need ([string]$job.dispatch_key -cmatch '^pr16-[0-9a-f]{40}-issue17$') 'INVALID_DISPATCH_KEY'
+$markerPath=Join-Path (Join-Path $Root 'dispatches') (([string]$job.dispatch_key)+'.json')
+Need (Test-Path -LiteralPath $markerPath) 'DISPATCH_MARKER_MISSING'
+$marker=Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8|ConvertFrom-Json
+Need ((Test-SeshatJobAuthorization -Job $job -Marker $marker) -eq 'ADMIT') 'JOB_NOT_AUTHORIZED'
+Assert-SeshatBundleProvenance -Job $job -Repo $Repo -ScriptRoot $PSScriptRoot
 $branch=[string]$job.branch
 $issue=[int]$job.issue_number
 Need ($branch -match '^codex/[a-z0-9][a-z0-9-]{4,79}$') 'UNSAFE_BRANCH_NAME'
@@ -23,21 +31,9 @@ Need ($before -eq [string]$job.base_sha) 'UNEXPECTED_HEAD_BEFORE_PUBLISH'
 $lines=@(& git -C $Repo -c core.quotePath=false status --porcelain=v1 -uall)
 Need ($LASTEXITCODE -eq 0) 'STATUS_FAILED'
 Need ($lines.Count -gt 0) 'NO_CODE_CHANGES'
-$paths=@()
-foreach($line in $lines) {
-    Need ($line.Length -gt 3) 'BAD_PORCELAIN_RECORD'
-    $status=$line.Substring(0,2)
-    $path=$line.Substring(3).Replace('\','/')
-    Need ($status -notmatch 'R|C|D') 'NO_RENAMES_OR_DELETIONS_AUTOMATICALLY'
-    Need ($path -notmatch '"| -> |\.\.|^/|:') 'UNSAFE_DIFF_PATH'
-    $allowed=($path -match '^src/seshat/[A-Za-z0-9_./-]+\.py$' -or
-              $path -match '^tests/[A-Za-z0-9_./-]+\.py$' -or
-              $path -match '^profiles/[A-Za-z0-9_./-]+\.(py|md|json)$' -or
-              $path -match '^docs/(S_IMPL_[A-Za-z0-9_]+_RESULT|ADR_[A-Za-z0-9_-]+)\.md$')
-    Need $allowed ('UNAPPROVED_MODIFIED_PATH: '+$path)
-    Need ($path -notmatch '(?i)(\.env|password|credential|secret|private_key|\.pem|\.pfx|\.key)$') 'SENSITIVE_PATH_BLOCKED'
-    $paths+= $path
-}
+$paths=@(Get-SeshatStatusPaths -StatusLines $lines)
+$pathDecision=Test-SeshatOwnedPathSet -ApprovedPaths @($job.approved_paths) -OwnedPaths @($job.owned_paths) -DirtyPaths $paths
+Need ($pathDecision -eq 'ADMIT') $pathDecision
 Need ((Test-Path (Join-Path $Repo 'docs\S_IMPL_002B_RESULT.md'))) 'MISSING_REQUIRED_RESULT_RECEIPT'
 # Deliberately DO NOT execute Codex-written Python code under the privileged host account.
 # The isolated GitHub Actions PR CI runs pytest and Ruff after publication.
@@ -52,7 +48,7 @@ try {
     Need ($LASTEXITCODE -eq 0) 'DIFF_SCAN_FAILED'
     Need ($diffText -notmatch '(?mi)^\+.*(gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----)') 'POSSIBLE_CREDENTIAL_IN_DIFF'
     $staged=@(& git diff --cached --name-only)
-    Need ($staged.Count -eq $paths.Count) 'STAGED_PATH_SET_MISMATCH'
+    Need (Test-SeshatExactStringSet -Left $staged -Right @($job.owned_paths)) 'STAGED_PATH_SET_MISMATCH'
     $msg="impl(s2b): bounded reconciliation controller (#$issue)"
     & git commit -m $msg
     Need ($LASTEXITCODE -eq 0) 'GIT_COMMIT_FAILED'
@@ -61,8 +57,8 @@ try {
     & git push --set-upstream origin $branch
     Need ($LASTEXITCODE -eq 0) 'GIT_PUSH_FAILED'
     # gh is already authorized in this Windows user's keyring; no token in files/arguments.
-    $url=@(& gh pr view $branch --json url --jq '.url' 2>$null)
-    if($LASTEXITCODE -ne 0 -or -not $url) {
+    $prRaw=@(& gh pr view $branch --repo Stimurid/SESHAT --json number,url,state,isDraft,baseRefName,headRefName,headRefOid 2>$null)
+    if($LASTEXITCODE -ne 0 -or -not $prRaw) {
         $bodyFile=Join-Path $Root 'generated-pr-body.md'
         @"
 Implements #$issue from pre-approved SESHAT dispatch.
@@ -75,12 +71,20 @@ and Ruff after publication. No local execution of unreviewed code, auto-merge or
 Result: docs/S_IMPL_002B_RESULT.md
 Coordination: https://github.com/Stimurid/SESHAT/issues/6
 "@ | Set-Content -LiteralPath $bodyFile -Encoding UTF8
-        $url=@(& gh pr create --draft --base main --head $branch --title "S-IMPL-002B: bounded reconciliation controller" --body-file $bodyFile)
-        Need ($LASTEXITCODE -eq 0 -and $url.Count -gt 0) 'GITHUB_PR_CREATE_FAILED'
+        & gh pr create --repo Stimurid/SESHAT --draft --base main --head $branch --title "S-IMPL-002B: bounded reconciliation controller" --body-file $bodyFile *> $null
+        Need ($LASTEXITCODE -eq 0) 'GITHUB_PR_CREATE_FAILED'
+        $prRaw=@(& gh pr view $branch --repo Stimurid/SESHAT --json number,url,state,isDraft,baseRefName,headRefName,headRefOid 2>$null)
+        Need ($LASTEXITCODE -eq 0 -and $prRaw.Count -gt 0) 'GITHUB_PR_VERIFY_QUERY_FAILED'
     }
+    $publishedPr=($prRaw -join [Environment]::NewLine)|ConvertFrom-Json
+    $prDecision=Test-SeshatPublishedPullRequest -PullRequest $publishedPr -Branch $branch -HeadSha $sha
+    Need ($prDecision -eq 'ADMIT') $prDecision
     $result=[ordered]@{
-        status='PUBLISHED_DRAFT_PR'; issue=$issue; branch=$branch; head_sha=$sha
-        pr_url=[string]($url | Select-Object -Last 1); changed_paths=$paths
+        status='PUBLISHED_DRAFT_PR';job_id=[string]$job.job_id;issue=$issue;branch=$branch;head_sha=$sha
+        pr_number=[int]$publishedPr.number;pr_url=[string]$publishedPr.url
+        pr_state=[string]$publishedPr.state;pr_is_draft=[bool]$publishedPr.isDraft
+        pr_base=[string]$publishedPr.baseRefName;pr_head=[string]$publishedPr.headRefName
+        changed_paths=$paths
         ci_tests='PENDING_GITHUB_PR_CI'; local_code_execution='NONE'
         published_at_utc=(Get-Date).ToUniversalTime().ToString('o')
     }

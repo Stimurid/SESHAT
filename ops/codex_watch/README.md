@@ -7,6 +7,8 @@
 1. **Aorustim / Windows Task Scheduler:** task `SESHAT-Codex-Watch`, every **5 minutes**, current user `AORUSTIM\Homee`, launch command `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\Users\Homee\AppData\Local\SESHAT\watch\monitor.ps1`. Created 2026-10-10; manual `schtasks /run` produced Scheduler `LastTaskResult=0`. Watch script is read-only toward the repository, writes local machine state and transition events.
 2. **ChatGPT Automation / condition_watch:** `SESHAT — Codex Watch`, **hourly**, enabled 2026-10-10. Each wake checks the local `state.json` and `exit.json` via connected Remote Desktop Commander (Aorustim) plus GitHub current PR/CI/issue, and notifies the user on meaningful terminal state, lost executor, failed CI, PR ready, or stalled execution. It does **not** auto-merge or auto-restart Codex.
 
+**Security review hold:** the separate Windows task `SESHAT-Codex-Dispatch` is temporarily **DISABLED** while PR #18 is under review. Do not enable it from this worktree. It may be considered for manual re-enablement only after PR #18 is manually merged, the canonical `.github/workflows/ci.yml` push run succeeds on the then-current `main` SHA, and the installed bundle matches the reviewed PR #18 source hashes.
+
 **Do not confuse these:** the five-minute task detects local changes and saves durable local evidence; outbound ChatGPT notifications are at most hourly, not five-minute push notifications. A powered-off/sleeping Aorustim cannot run its local task; remote connectivity is a separate prerequisite. This is bounded supervision, not an always-on service guarantee.
 
 ## Installed local paths
@@ -72,14 +74,32 @@ On Aorustim, GitHub CLI is already authorized as Stimurid via the Windows keyrin
 
 The normal Codex workspace-write sandbox refuses writes to .git even when the .git directory is explicitly added, and does not expose gh. Do NOT bypass the whole operating-system sandbox. Instead, the following trusted host scripts use the existing Windows account and its credentials:
 
-- gate.ps1: pure authorization check. tests/test-gate.ps1 covers admission and denial cases.
+- gate.ps1: pure authorization and security helpers. tests/test-gate.ps1 covers admission, entrypoint binding, exact manifests, publication verification and immutable-exit denial cases.
 - task_queue.json: one preapproved mapping, PR 16 (S2A) to issue 17 (S2B).
 - dispatch.ps1: dry run by default; -Apply is for the Windows scheduled task.
-- execute-task.ps1: starts a bounded Codex CLI run with workspace-write, local JSON logging, no Git credentials and no Git writes.
-- publish.ps1: the trusted host validates canonical repository, task branch, clean base, allowed file paths, credential patterns and staged diff before committing/pushing and opening a draft PR. It does not execute agent-produced tests; isolated GitHub PR CI runs pytest and Ruff. No automatic merge.
+- execute-task.ps1: starts a bounded Codex CLI run with workspace-write, local JSON logging, no Git credentials and no Git writes. It rejects a noncanonical `JobPath`, missing/mismatched dispatch marker, altered job binding or installed-bundle drift before code execution.
+- publish.ps1: the trusted host revalidates the same job/marker/bundle, requires the exact executor-owned dirty path set, scans the staged diff, commits/pushes, and creates or verifies a draft PR. It does not execute agent-produced tests; isolated GitHub PR CI runs pytest and Ruff. No automatic merge.
 - monitor.ps1: detects the new execute-task.ps1 runner as well as the legacy resume runner.
 
-Admission requires ALL of: previous PR manually reviewed and labeled seshat:engineering-accepted; previous PR MANUALLY merged to main; successful GitHub workflow ci on current main SHA; preapproved next issue still open and labeled seshat:codex-ready; one explicit mapping in task_queue.json; clean worktree; matching previous exit receipt; no duplicate branch or prior dispatch marker.
+Admission requires ALL of: previous PR manually reviewed and labeled seshat:engineering-accepted; an exact-line comment `SESHAT_ENGINEERING_ACCEPTED_SHA=<40-hex reviewed PR head SHA>` authored by GitHub actor `Stimurid`; previous PR MANUALLY merged to main; PR #18 MANUALLY merged to main; successful GitHub workflow at exact path `.github/workflows/ci.yml`, repository `Stimurid/SESHAT`, event `push`, branch `main`, and exact current main SHA; preapproved next issue still open, labeled seshat:codex-ready, and byte-for-byte equal to its approved UTF-8 SHA-256 pin; one explicit mapping in task_queue.json; clean worktree; matching previous exit receipt; no duplicate branch or prior dispatch marker.
+
+The label is intentionally insufficient by itself: if PR #16's head changes after review, the old SHA comment no longer admits it. A Codex worker cannot self-accept because only a comment returned by GitHub for the exact actor `Stimurid` and exact current PR head token is recognized. The operations code in PR #18 cannot authorize its own use: the gate rejects dispatch until GitHub reports PR #18 closed and merged.
+
+`task_queue.json` contains the trusted-host-verified issue #17 body digest `541bf6271d9a0c8f7c0ade9bc710d5fdc5d5ae3083ed6e898be04f5c8c0780b8`. It was computed from the GitHub response value itself, without newline normalization or copy/paste:
+
+```powershell
+$next = gh api repos/Stimurid/SESHAT/issues/17 | ConvertFrom-Json
+$bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$next.body)
+$sha = [System.Security.Cryptography.SHA256]::Create()
+try { ([System.BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant() }
+finally { $sha.Dispose() }
+```
+
+The offline test pins this exact digest against accidental replacement. After admission, `task_prompt.txt` is written as exactly that approved issue body in BOM-less UTF-8: no dispatcher-authored prefix, suffix, or appended newline.
+
+The queue also carries a finite S2B `approved_paths` set. After Codex exits, the trusted executor records the exact dirty set as `owned_paths`; publication requires `dirty paths == owned_paths` and every owned path to be in the reviewed queue set. A broadly allowlisted file such as `tests/unrelated.py` is rejected. The publisher never runs the proposed Python or tests under the credential-holding process.
+
+The installed runtime bundle (`dispatch.ps1`, `gate.ps1`, `execute-task.ps1`, `publish.ps1`, and `task_queue.json`) must byte-match the repository files, remain unchanged between the merged PR #18 SHA and the dispatched main SHA, and carry its SHA-256 manifest inside the marker-bound job. Both execution entrypoints recheck this provenance. After push, publication succeeds only when GitHub reports the PR `OPEN`, draft, based on `main`, headed by the registered branch, and pointing to the just-pushed commit SHA. Existing `exit.json` is never overwritten; duplicate execution is rejected before the operational `try/finally`, and final creation uses create-new semantics.
 
 The two labels are different independent permissions. Engineering acceptance does NOT mean scientific-method approval. Codex must never invent another task, import a donor wholesale, or modify the research ontology on its own.
 
@@ -87,15 +107,18 @@ Task S-IMPL-002B (#17) is prepared; current predecessor PR #16 remains draft/unm
 
 Operational state is stored locally in %LOCALAPPDATA%\SESHAT\watch: dispatch_state.json, dispatch_events.jsonl, job.json, exit.json, publish_receipt.json and per-run archived logs. The dispatcher creates a one-time gate marker under dispatches BEFORE spawning the worker to guarantee fail-closed recovery. A stale marker requires investigation; never delete it automatically.
 
-Windows Task Scheduler task SESHAT-Codex-Dispatch runs every five minutes while Aorustim is available. It is distinct from the existing SESHAT-Codex-Watch task and from hourly ChatGPT notifications. The machine must be awake/logged in for the local scheduled process to run.
+Windows Task Scheduler task SESHAT-Codex-Dispatch is a five-minute task distinct from the existing SESHAT-Codex-Watch task and from hourly ChatGPT notifications. It is temporarily **DISABLED for PR #18 review**. If it is later re-enabled after all security gates are satisfied, the machine must be awake/logged in for the local scheduled process to run.
 
 Verification:
-- powershell -NoProfile -File C:\projects\seshat\ops\codex_watch\tests\test-gate.ps1
+- powershell.exe -NoProfile -ExecutionPolicy Bypass -File ops\codex_watch\tests\test-gate.ps1
+- pwsh -File ops/codex_watch/tests/test-gate.ps1 (isolated GitHub Actions job; checkout uses `persist-credentials: false` and `contents: read`)
 - powershell -NoProfile -File C:\Users\Homee\AppData\Local\SESHAT\watch\dispatch.ps1 (safe dry-run)
-- schtasks /query /tn SESHAT-Codex-Dispatch /fo LIST /v
+- schtasks /query /tn SESHAT-Codex-Dispatch /fo LIST /v (must report disabled during PR #18 review)
 - Inspect local dispatch_state.json and GitHub current HEAD/PR/CI.
 - To stop automatic task dispatch: schtasks /change /tn SESHAT-Codex-Dispatch /disable
 
 Implementation limitations: this first version handles ONE queued transition and ONE active job per Windows checkout; it is not a general self-programming scheduler. It preserves old job logs, never resets a dirty repository, never auto-merges, never self-certifies acceptance, and cannot work while the host is unavailable.
 
 Security boundary: the trusted host publisher MUST NOT execute Codex-produced Python or tests while GitHub credentials are accessible. After an allowed-files/secret-pattern/diff check it opens a draft PR; isolated GitHub Actions CI runs both pytest and Ruff on the proposed branch. PR reviewers examine code and CI before manual engineering acceptance. The scanner detects common secret formats but cannot prove arbitrary content contains no sensitive data; review remains mandatory.
+
+The offline PowerShell gate test is pure simulation: it uses synthetic GitHub-shaped objects, performs no network calls, and asserts that the current branch, local branch refs, and worktree status are unchanged. Its negative cases include issue-body drift, a stale/wrong reviewed SHA, a wrong acceptance actor, a missing acceptance comment, unmerged PR #18, wrong-workflow success at the matching SHA, arbitrary job/marker binding, `tests/unrelated.py`, wrong PR head SHA, and byte-for-byte preservation of a pre-existing exit sentinel.
