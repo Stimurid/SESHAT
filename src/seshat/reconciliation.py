@@ -15,7 +15,7 @@ import hashlib
 import json
 from collections.abc import Iterable, Mapping
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -265,17 +265,33 @@ def _source_refs(manifest: SourceAccessManifest) -> tuple[SourceRef, ...]:
 def _semantic_fingerprint(proposal: ReconciliationProposal) -> str:
     material = {
         "payload": proposal.candidate.payload,
-        "constraints": [item.model_dump(mode="json") for item in proposal.constraints],
-        "mismatches": [item.model_dump(mode="json") for item in proposal.mismatches],
+        "source_observation_ids": proposal.candidate.source_observation_ids,
+        "applicability": proposal.candidate.applicability,
+        "uncertainty": proposal.candidate.uncertainty,
+        "constraints": [item.model_dump(mode="python") for item in proposal.constraints],
+        "mismatches": [item.model_dump(mode="python") for item in proposal.mismatches],
     }
+    _require_string_json_keys(material)
     encoded = json.dumps(
         material,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
-        default=lambda value: {"type": type(value).__qualname__},
+        allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _require_string_json_keys(value: Any) -> None:
+    """Reject Python mappings that do not have a unique canonical JSON spelling."""
+    if isinstance(value, dict):
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("canonical JSON objects require string keys")
+        for item in value.values():
+            _require_string_json_keys(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _require_string_json_keys(item)
 
 
 class _OperationAdapter:
@@ -291,6 +307,7 @@ class _OperationAdapter:
         self.spec = spec
         self.provider = provider
         self.proposal: ReconciliationProposal | None = None
+        self.fingerprint: str | None = None
         self.manifest: SourceAccessManifest | None = None
 
     def supports(self, spec: OperationSpec) -> bool:
@@ -386,6 +403,16 @@ class _OperationAdapter:
                 "proposal and candidate provenance are required",
                 manifest=self.manifest,
             )
+        peer_operation_id = self.controller._peer_operation_id(spec.operation_id)
+        if any(
+            mismatch.against_operation_id != peer_operation_id
+            for mismatch in proposal.mismatches
+        ):
+            raise _ProposalViolation(
+                StopReason.INVALID_PROPOSAL,
+                "mismatch target must be the reciprocal peer operation",
+                manifest=self.manifest,
+            )
 
         available = {(obj.derived_id, obj.version): obj for obj in prior}
         requested = {(ref.derived_id, ref.version) for ref in proposal.input_candidate_refs}
@@ -439,13 +466,23 @@ class _OperationAdapter:
             _candidate_ref(available[(ref.derived_id, ref.version)])
             for ref in proposal.input_candidate_refs
         ]
-        self.proposal = proposal.model_copy(
+        normalized_proposal = proposal.model_copy(
             update={
                 "input_source_refs": list(actual_sources),
                 "input_candidate_refs": normalized_inputs,
             },
             deep=True,
         )
+        try:
+            fingerprint = _semantic_fingerprint(normalized_proposal)
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            raise _ProposalViolation(
+                StopReason.INVALID_PROPOSAL,
+                "proposal semantic material is not canonically JSON-serializable",
+                manifest=self.manifest,
+            ) from None
+        self.proposal = normalized_proposal
+        self.fingerprint = fingerprint
         self.controller._seen_proposal_refs.add(proposal_ref)
         return candidate.model_copy(deep=True)
 
@@ -484,6 +521,13 @@ class ReconciliationController:
         self._seen_proposal_refs: set[tuple[str, str]] = set()
         self._run_output_ids: list[str] = []
         self._quarantined_candidate_refs: list[CandidateRef] = []
+
+    def _peer_operation_id(self, operation_id: str) -> str:
+        return next(
+            item.operation_id
+            for item in self.operations
+            if item.operation_id != operation_id
+        )
 
     def _pin_sources(
         self,
@@ -527,6 +571,33 @@ class ReconciliationController:
             proposal.constraints and not proposal.mismatches
             for proposal in proposals.values()
         ) and not ReconciliationController._has_contradiction(proposals)
+
+    @staticmethod
+    def _validate_pair_integrity(
+        proposals: Mapping[str, ReconciliationProposal],
+    ) -> None:
+        constraint_owners: dict[str, str] = {}
+        constraint_ids: set[str] = set()
+        referenced_ids: set[str] = set()
+        for operation_id, proposal in proposals.items():
+            for constraint in proposal.constraints:
+                owner = constraint_owners.get(constraint.constraint_id)
+                if owner is not None:
+                    raise _ProposalViolation(
+                        StopReason.INVALID_PROPOSAL,
+                        "constraint IDs must be unique across the reciprocal pair",
+                    )
+                constraint_owners[constraint.constraint_id] = operation_id
+                constraint_ids.add(constraint.constraint_id)
+                referenced_ids.update(constraint.incompatible_with)
+            for mismatch in proposal.mismatches:
+                referenced_ids.update(mismatch.constraint_ids)
+
+        if not referenced_ids.issubset(constraint_ids):
+            raise _ProposalViolation(
+                StopReason.INVALID_PROPOSAL,
+                "proposal references a constraint absent from the current reciprocal pair",
+            )
 
     @staticmethod
     def _aporia(
@@ -660,10 +731,11 @@ class ReconciliationController:
         operation_ids = tuple(item.operation_id for item in self.operations)
         specs = {item.operation_id: item for item in self.operations}
         attempts: list[ReconciliationAttempt] = []
-        latest: dict[str, ReconciliationProposal] = {}
+        round_proposals: dict[str, ReconciliationProposal] = {}
         seen_fingerprints: dict[str, set[str]] = {item: set() for item in operation_ids}
         last_fingerprint: dict[str, str] = {}
         pending_duplicate: StopReason | None = None
+        consecutive_contradictory_rounds = 0
         operation_calls = 0
         rounds_completed = 0
         expected_candidates = _candidate_snapshot(
@@ -705,7 +777,7 @@ class ReconciliationController:
                     outcome=RunOutcome.EXHAUSTED,
                     stop_reason=reason,
                 )
-            round_number = operation_calls // len(operation_ids) + 1
+            round_number = rounds_completed + 1
             if round_number > self.budget.max_rounds:
                 return self._ledger(
                     run_id=run_id,
@@ -717,16 +789,42 @@ class ReconciliationController:
                     stop_reason=StopReason.MAX_ROUNDS,
                 )
 
-            operation_id = self.strategy.choose_next(
-                operation_ids, tuple(attempts), operation_calls
-            )
-            if operation_id not in specs:
+            try:
+                selected_operation = self.strategy.choose_next(
+                    operation_ids, tuple(attempts), operation_calls
+                )
+                valid_selection = (
+                    isinstance(selected_operation, str)
+                    and selected_operation in specs
+                )
+            except Exception:  # noqa: BLE001 - sanitize untrusted strategy errors
+                selected_operation = None
+                valid_selection = False
+            if not valid_selection:
                 self._blocked_attempt(
                     attempts,
                     round_number=round_number,
-                    operation_id=operation_id or "<none>",
+                    operation_id="<invalid>",
                     reason=StopReason.STRATEGY_STOPPED,
                     detail="strategy did not select an operation in the bounded pair",
+                )
+                return self._ledger(
+                    run_id=run_id,
+                    research_object_id=research_object_id,
+                    attempts=attempts,
+                    operation_calls=operation_calls,
+                    rounds_completed=rounds_completed,
+                    outcome=RunOutcome.BLOCKED,
+                    stop_reason=StopReason.STRATEGY_STOPPED,
+                )
+            operation_id = cast(str, selected_operation)
+            if operation_id in round_proposals:
+                self._blocked_attempt(
+                    attempts,
+                    round_number=round_number,
+                    operation_id=operation_id,
+                    reason=StopReason.STRATEGY_STOPPED,
+                    detail="strategy repeated one side before completing the reciprocal round",
                 )
                 return self._ledger(
                     run_id=run_id,
@@ -794,6 +892,7 @@ class ReconciliationController:
                     StopReason.SOURCE_DRIFT,
                     StopReason.CANDIDATE_DRIFT,
                     StopReason.SOURCE_ACCESS_BLOCKED,
+                    StopReason.INVALID_PROPOSAL,
                 }:
                     self._quarantine_run_outputs(
                         run_id=run_id,
@@ -895,7 +994,7 @@ class ReconciliationController:
                     stop_reason=reason,
                 )
 
-            fingerprint = _semantic_fingerprint(proposal)
+            fingerprint = cast(str, adapter.fingerprint)
             unchanged = last_fingerprint.get(operation_id) == fingerprint
             duplicate = fingerprint in seen_fingerprints[operation_id]
             if unchanged:
@@ -904,7 +1003,7 @@ class ReconciliationController:
                 pending_duplicate = StopReason.DUPLICATE_CANDIDATE
             seen_fingerprints[operation_id].add(fingerprint)
             last_fingerprint[operation_id] = fingerprint
-            latest[operation_id] = proposal
+            round_proposals[operation_id] = proposal
             manifest = result.source_access_manifest
             attempts.append(
                 ReconciliationAttempt(
@@ -933,10 +1032,40 @@ class ReconciliationController:
                 self.runtime.blackboard.candidate_state(research_object_id)
             )
 
-            if operation_calls % len(operation_ids) != 0:
+            if len(round_proposals) != len(operation_ids):
                 continue
-            rounds_completed = round_number
-            if set(latest) == set(operation_ids) and self._has_converged(latest):
+            try:
+                self._validate_pair_integrity(round_proposals)
+            except _ProposalViolation as exc:
+                attempts[-1] = attempts[-1].model_copy(
+                    update={
+                        "error_code": exc.reason.value,
+                        "error_detail": exc.detail,
+                    }
+                )
+                self._quarantine_run_outputs(
+                    run_id=run_id,
+                    research_object_id=research_object_id,
+                    reason=exc.reason,
+                )
+                return self._ledger(
+                    run_id=run_id,
+                    research_object_id=research_object_id,
+                    attempts=attempts,
+                    operation_calls=operation_calls,
+                    rounds_completed=rounds_completed,
+                    outcome=RunOutcome.BLOCKED,
+                    stop_reason=exc.reason,
+                )
+
+            rounds_completed += 1
+            contradiction = self._has_contradiction(round_proposals)
+            if contradiction:
+                consecutive_contradictory_rounds += 1
+            else:
+                consecutive_contradictory_rounds = 0
+
+            if self._has_converged(round_proposals):
                 return self._ledger(
                     run_id=run_id,
                     research_object_id=research_object_id,
@@ -947,9 +1076,8 @@ class ReconciliationController:
                     stop_reason=StopReason.CONSTRAINTS_COMPATIBLE,
                 )
             if (
-                rounds_completed >= self.budget.aporia_after_rounds
-                and set(latest) == set(operation_ids)
-                and self._has_contradiction(latest)
+                consecutive_contradictory_rounds
+                >= self.budget.aporia_after_rounds
             ):
                 return self._ledger(
                     run_id=run_id,
@@ -959,7 +1087,9 @@ class ReconciliationController:
                     rounds_completed=rounds_completed,
                     outcome=RunOutcome.APORIA,
                     stop_reason=StopReason.PERSISTENT_CONTRADICTION,
-                    aporia=self._aporia(run_id, research_object_id, latest, attempts),
+                    aporia=self._aporia(
+                        run_id, research_object_id, round_proposals, attempts
+                    ),
                 )
             if pending_duplicate is not None:
                 return self._ledger(
@@ -971,3 +1101,4 @@ class ReconciliationController:
                     outcome=RunOutcome.EXHAUSTED,
                     stop_reason=pending_duplicate,
                 )
+            round_proposals = {}

@@ -167,9 +167,12 @@ class SequenceProvider:
                 version=str(self.calls),
                 operation_id=spec.operation_id,
                 research_object_id=research_object.object_id,
-                payload={"body": body["body"]},
+                payload=body.get("payload", {"body": body.get("body")}),
+                source_observation_ids=body.get("source_observation_ids", []),
                 parent_derived_ids=[ref.derived_id for ref in refs],
                 provenance=["synthetic:deterministic-provider"],
+                applicability=body.get("applicability", []),
+                uncertainty=body.get("uncertainty", []),
                 acceptance_state=self.forged_state or AcceptanceState.PROPOSED,
             ),
             constraints=body.get("constraints", []),
@@ -180,7 +183,15 @@ class SequenceProvider:
         )
 
 
-def _controller(object_provider, method_provider, *, sources=None, board=None, budget=None):
+def _controller(
+    object_provider,
+    method_provider,
+    *,
+    sources=None,
+    board=None,
+    budget=None,
+    strategy=None,
+):
     runtime = Runtime(sources or _sources(), blackboard=board)
     return ReconciliationController(
         runtime=runtime,
@@ -190,6 +201,7 @@ def _controller(object_provider, method_provider, *, sources=None, board=None, b
             METHOD.operation_id: method_provider,
         },
         budget=budget or ReconciliationBudget(max_rounds=3, max_operation_calls=6),
+        strategy=strategy,
     )
 
 
@@ -297,6 +309,201 @@ def test_s2b_t02_persistent_contradiction_yields_aporia_with_both_sides() -> Non
     proposal_refs = {attempt.output_proposal_ref.proposal_id for attempt in ledger.attempts}
     assert len(proposal_refs) == 4
     assert set(ledger.aporia.evidence_ids).issuperset(proposal_refs)
+
+
+def test_aporia_threshold_counts_consecutive_contradictory_complete_rounds() -> None:
+    object_constraint = ProposedConstraint(
+        constraint_id="object-exclusive",
+        subject="population",
+        predicate="equals",
+        value="A",
+        incompatible_with=["method-exclusive"],
+    )
+    method_constraint = ProposedConstraint(
+        constraint_id="method-exclusive",
+        subject="population",
+        predicate="equals",
+        value="B",
+        incompatible_with=["object-exclusive"],
+    )
+    object_mismatch = DeclaredMismatch(
+        mismatch_id="object-v-method",
+        against_operation_id=METHOD.operation_id,
+        constraint_ids=["object-exclusive", "method-exclusive"],
+        description="Object and method populations conflict",
+    )
+    method_mismatch = DeclaredMismatch(
+        mismatch_id="method-v-object",
+        against_operation_id=OBJECT.operation_id,
+        constraint_ids=["method-exclusive", "object-exclusive"],
+        description="Method and object populations conflict",
+    )
+    controller = _controller(
+        SequenceProvider(
+            OBJECT.operation_id,
+            [
+                {"body": "object-nonconvergent"},
+                {
+                    "body": "object-contradiction-1",
+                    "constraints": [object_constraint],
+                    "mismatches": [object_mismatch],
+                },
+                {
+                    "body": "object-contradiction-2",
+                    "constraints": [object_constraint],
+                    "mismatches": [object_mismatch],
+                },
+            ],
+        ),
+        SequenceProvider(
+            METHOD.operation_id,
+            [
+                {"body": "method-nonconvergent"},
+                {
+                    "body": "method-contradiction-1",
+                    "constraints": [method_constraint],
+                    "mismatches": [method_mismatch],
+                },
+                {
+                    "body": "method-contradiction-2",
+                    "constraints": [method_constraint],
+                    "mismatches": [method_mismatch],
+                },
+            ],
+        ),
+        budget=ReconciliationBudget(
+            max_rounds=3,
+            max_operation_calls=6,
+            aporia_after_rounds=2,
+        ),
+    )
+
+    ledger = controller.run(
+        run_id="run-consecutive-aporia", research_object_id="r1"
+    )
+
+    assert ledger.outcome is RunOutcome.APORIA
+    assert ledger.stop_reason is StopReason.PERSISTENT_CONTRADICTION
+    assert ledger.rounds_completed == 3
+    assert ledger.operation_calls == 6
+
+
+@pytest.mark.parametrize("invalid_target", [OBJECT.operation_id, "synthetic.ghost"])
+def test_mismatch_target_must_be_reciprocal_peer_before_persistence(
+    invalid_target,
+) -> None:
+    invalid_mismatch = DeclaredMismatch(
+        mismatch_id="object-v-invalid-target",
+        against_operation_id=invalid_target,
+        constraint_ids=["object-scope"],
+        description="Invalid self or ghost target",
+    )
+    controller = _controller(
+        SequenceProvider(
+            OBJECT.operation_id,
+            [
+                {
+                    "body": "object",
+                    "constraints": [
+                        ProposedConstraint(
+                            constraint_id="object-scope",
+                            subject="scope",
+                            predicate="includes",
+                            value="x",
+                        )
+                    ],
+                    "mismatches": [invalid_mismatch],
+                }
+            ],
+        ),
+        SequenceProvider(METHOD.operation_id, [{"body": "method"}]),
+    )
+
+    ledger = controller.run(run_id="run-invalid-target", research_object_id="r1")
+
+    assert ledger.outcome is RunOutcome.BLOCKED
+    assert ledger.stop_reason is StopReason.INVALID_PROPOSAL
+    assert ledger.operation_calls == 1
+    assert ledger.attempts[-1].output_candidate_ref is None
+    assert not controller.runtime.blackboard.history("r1")
+
+
+def test_dangling_cross_proposal_constraint_blocks_and_quarantines_round_outputs() -> None:
+    missing_constraint = DeclaredMismatch(
+        mismatch_id="object-v-missing",
+        against_operation_id=METHOD.operation_id,
+        constraint_ids=["object-scope", "missing-method-scope"],
+        description="References a missing peer constraint",
+    )
+    controller = _controller(
+        SequenceProvider(
+            OBJECT.operation_id,
+            [
+                {
+                    "body": "object",
+                    "constraints": [
+                        ProposedConstraint(
+                            constraint_id="object-scope",
+                            subject="scope",
+                            predicate="includes",
+                            value="x",
+                        )
+                    ],
+                    "mismatches": [missing_constraint],
+                }
+            ],
+        ),
+        SequenceProvider(METHOD.operation_id, [_compatible_body("method")]),
+    )
+
+    ledger = controller.run(run_id="run-missing-constraint", research_object_id="r1")
+
+    assert ledger.outcome is RunOutcome.BLOCKED
+    assert ledger.stop_reason is StopReason.INVALID_PROPOSAL
+    assert ledger.operation_calls == 2
+    assert ledger.rounds_completed == 0
+    assert all(attempt.output_candidate_ref is not None for attempt in ledger.attempts)
+    assert ledger.attempts[-1].error_code == StopReason.INVALID_PROPOSAL.value
+    assert len(ledger.quarantined_candidate_refs) == 2
+    assert all(
+        ref.acceptance_state is AcceptanceState.STALE
+        for ref in ledger.quarantined_candidate_refs
+    )
+
+
+def test_conflicting_duplicate_constraint_ids_block_before_outcome_classification() -> None:
+    shared_left = ProposedConstraint(
+        constraint_id="shared-id",
+        subject="scope",
+        predicate="equals",
+        value="left",
+    )
+    shared_right = ProposedConstraint(
+        constraint_id="shared-id",
+        subject="scope",
+        predicate="equals",
+        value="right",
+    )
+    controller = _controller(
+        SequenceProvider(
+            OBJECT.operation_id,
+            [{"body": "object", "constraints": [shared_left]}],
+        ),
+        SequenceProvider(
+            METHOD.operation_id,
+            [{"body": "method", "constraints": [shared_right]}],
+        ),
+    )
+
+    ledger = controller.run(
+        run_id="run-conflicting-constraint-id", research_object_id="r1"
+    )
+
+    assert ledger.outcome is RunOutcome.BLOCKED
+    assert ledger.stop_reason is StopReason.INVALID_PROPOSAL
+    assert ledger.operation_calls == 2
+    assert ledger.rounds_completed == 0
+    assert len(ledger.quarantined_candidate_refs) == 2
 
 
 def test_s2b_t03_oscillation_exhausts_on_duplicate_without_endless_retry() -> None:
@@ -446,6 +653,128 @@ def test_provider_error_is_typed_sanitized_and_stops_the_pair() -> None:
     assert not controller.runtime.blackboard.history("r1")
 
 
+def test_strategy_repeating_one_side_blocks_incomplete_round_without_false_convergence() -> None:
+    class DuplicateSideStrategy:
+        selections = (
+            OBJECT.operation_id,
+            OBJECT.operation_id,
+            METHOD.operation_id,
+            METHOD.operation_id,
+        )
+
+        def choose_next(self, operation_ids, attempts, operation_calls):
+            return self.selections[operation_calls]
+
+    object_provider = SequenceProvider(
+        OBJECT.operation_id, [_compatible_body("object")]
+    )
+    method_provider = SequenceProvider(
+        METHOD.operation_id, [_compatible_body("method")]
+    )
+    controller = _controller(
+        object_provider,
+        method_provider,
+        strategy=DuplicateSideStrategy(),
+    )
+
+    ledger = controller.run(run_id="run-duplicate-side", research_object_id="r1")
+
+    assert ledger.outcome is RunOutcome.BLOCKED
+    assert ledger.stop_reason is StopReason.STRATEGY_STOPPED
+    assert ledger.operation_calls == 1
+    assert ledger.rounds_completed == 0
+    assert object_provider.calls == 1
+    assert method_provider.calls == 0
+    assert [attempt.round_number for attempt in ledger.attempts] == [1, 1]
+    assert ledger.attempts[-1].error_code == StopReason.STRATEGY_STOPPED.value
+
+
+def test_strategy_may_complete_reciprocal_round_in_reverse_order() -> None:
+    class ReversePairStrategy:
+        selections = (METHOD.operation_id, OBJECT.operation_id)
+
+        def choose_next(self, operation_ids, attempts, operation_calls):
+            return self.selections[operation_calls]
+
+    controller = _controller(
+        SequenceProvider(OBJECT.operation_id, [_compatible_body("object")]),
+        SequenceProvider(METHOD.operation_id, [_compatible_body("method")]),
+        strategy=ReversePairStrategy(),
+    )
+
+    ledger = controller.run(run_id="run-reverse-pair", research_object_id="r1")
+
+    assert ledger.outcome is RunOutcome.CONVERGED
+    assert ledger.rounds_completed == 1
+    assert [attempt.operation_id for attempt in ledger.attempts] == [
+        METHOD.operation_id,
+        OBJECT.operation_id,
+    ]
+
+
+@pytest.mark.parametrize("selection", ["raises", [], "private-strategy-detail"])
+def test_strategy_failure_or_unhashable_selection_is_typed_and_sanitized(selection) -> None:
+    secret = "private-strategy-detail"
+
+    class InvalidStrategy:
+        def choose_next(self, operation_ids, attempts, operation_calls):
+            if selection == "raises":
+                raise RuntimeError(secret)
+            return selection
+
+    object_provider = SequenceProvider(OBJECT.operation_id, [{"body": "object"}])
+    method_provider = SequenceProvider(METHOD.operation_id, [{"body": "method"}])
+    controller = _controller(
+        object_provider,
+        method_provider,
+        strategy=InvalidStrategy(),
+    )
+
+    ledger = controller.run(run_id="run-invalid-strategy", research_object_id="r1")
+
+    assert ledger.outcome is RunOutcome.BLOCKED
+    assert ledger.stop_reason is StopReason.STRATEGY_STOPPED
+    assert ledger.operation_calls == 0
+    assert object_provider.calls == 0
+    assert method_provider.calls == 0
+    assert secret not in ledger.model_dump_json()
+    assert not controller.runtime.blackboard.history("r1")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"payload": {"opaque": object()}},
+        {"payload": {1: "integer-key"}},
+        {"payload": {1: "integer-key", "1": "string-key"}},
+        {
+            "body": "constraint-with-opaque-value",
+            "constraints": [
+                ProposedConstraint(
+                    constraint_id="opaque-constraint",
+                    subject="scope",
+                    predicate="includes",
+                    value=object(),
+                )
+            ],
+        },
+    ],
+)
+def test_noncanonical_semantic_material_blocks_before_candidate_persistence(body) -> None:
+    object_provider = SequenceProvider(OBJECT.operation_id, [body])
+    method_provider = SequenceProvider(METHOD.operation_id, [{"body": "method"}])
+    controller = _controller(object_provider, method_provider)
+
+    ledger = controller.run(run_id="run-invalid-fingerprint", research_object_id="r1")
+
+    assert ledger.outcome is RunOutcome.BLOCKED
+    assert ledger.stop_reason is StopReason.INVALID_PROPOSAL
+    assert ledger.operation_calls == 1
+    assert method_provider.calls == 0
+    assert ledger.attempts[-1].output_candidate_ref is None
+    assert not controller.runtime.blackboard.history("r1")
+
+
 def test_unchanged_candidate_is_detected_and_exhausts_after_complete_round() -> None:
     controller = _controller(
         SequenceProvider(OBJECT.operation_id, [{"body": "same-object"}]),
@@ -458,6 +787,34 @@ def test_unchanged_candidate_is_detected_and_exhausts_after_complete_round() -> 
     assert ledger.outcome is RunOutcome.EXHAUSTED
     assert ledger.stop_reason is StopReason.UNCHANGED_CANDIDATE
     assert ledger.operation_calls == 4
+
+
+def test_changed_uncertainty_is_not_an_unchanged_or_duplicate_candidate() -> None:
+    controller = _controller(
+        SequenceProvider(
+            OBJECT.operation_id,
+            [
+                {"body": "same-object", "uncertainty": ["low"]},
+                {"body": "same-object", "uncertainty": ["high"]},
+            ],
+        ),
+        SequenceProvider(
+            METHOD.operation_id,
+            [
+                {"body": "same-method", "uncertainty": ["low"]},
+                {"body": "same-method", "uncertainty": ["high"]},
+            ],
+        ),
+        budget=ReconciliationBudget(max_rounds=2, max_operation_calls=4),
+    )
+
+    ledger = controller.run(run_id="run-changing-uncertainty", research_object_id="r1")
+
+    assert ledger.outcome is RunOutcome.EXHAUSTED
+    assert ledger.stop_reason is StopReason.MAX_ROUNDS
+    assert ledger.rounds_completed == 2
+    assert not any(attempt.unchanged_candidate for attempt in ledger.attempts)
+    assert not any(attempt.duplicate_candidate for attempt in ledger.attempts)
 
 
 def test_s2b_t06_provider_cannot_launder_acceptance_or_human_flag() -> None:

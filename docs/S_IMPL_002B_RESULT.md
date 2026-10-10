@@ -2,9 +2,10 @@
 
 ## Status
 
-**IMPLEMENTED IN THE SANDBOXED WORKING TREE; LOCAL PYTHON TEST EXECUTION IS
-UNAVAILABLE; TRUSTED-HOST DRAFT PUBLICATION AND ISOLATED PR CI ARE PENDING.
-TESTED/ACCEPTED ARE NOT CLAIMED.**
+**ENGINEERING REVIEW REPAIR IMPLEMENTED IN THE SANDBOXED WORKING TREE FOR
+PR #27 AT INPUT HEAD `c34cad720c6c21ae58a6affe4076939f33bc9c18`;
+LOCAL PYTHON TEST EXECUTION IS PROHIBITED; ISOLATED PR CI IS
+PENDING. TESTED/ACCEPTED ARE NOT CLAIMED.**
 
 This receipt covers the bounded, domain-neutral reconciliation controller in
 [S-IMPL-002B / issue #17](https://github.com/Stimurid/SESHAT/issues/17). It does not
@@ -17,12 +18,16 @@ durable S6 persistence, or scientific acceptance.
 - **WORKDIR_ABSOLUTE:** `C:\projects\seshat`
 - **ORIGIN_URL:** `https://github.com/Stimurid/SESHAT.git`
 - **BRANCH:** `codex/s2b-bounded-reconciliation`
-- **BASE_SHA / INITIAL_HEAD_SHA:** `041ea2e8c69a4fb9d6a640dee04aa52833e47575`
+- **ORIGINAL TASK BASE_SHA:** `041ea2e8c69a4fb9d6a640dee04aa52833e47575`
+- **REPAIR INPUT HEAD_SHA:** `c34cad720c6c21ae58a6affe4076939f33bc9c18`
 - **INITIAL_DIRTY_STATUS:** clean
+- **RESUME_DIRTY_STATUS:** exactly the three allowed paths below, containing the
+  interrupted repair attempt; preserved and completed without reset or checkout
 - **CURRENT_TASK:** S-IMPL-002B / issue #17
-- **CURRENT_PR:** none at implementation time; trusted publisher owns draft creation
-- **NEXT_GATE:** exact-path publication, isolated PR CI, and independent code review
-- **BLOCKERS:** no Python/Ruff executable is visible in the managed worker shell
+- **CURRENT_PR:** #27, engineering review status `CHANGES REQUIRED`
+- **NEXT_GATE:** exact-path trusted handoff, isolated PR CI, and independent re-review
+- **BLOCKERS:** Codex-written Python/pytest must not run on the credential-bearing host;
+  isolated PR CI has not yet evaluated this repair
 
 The SHA-bound dispatcher receipt records:
 
@@ -40,7 +45,10 @@ The SHA-bound dispatcher receipt records:
 The local dispatcher had already verified the predecessor acceptance token, merge,
 main CI, issue label/body pin, clean worktree, and reviewed runtime bundle before it
 created this branch and job. A later watchdog wrapper error is an operational monitor
-state, not authority to weaken or repeat the admission decision.
+state, not authority to weaken or repeat the admission decision. The wrapper exited
+with code 92 after treating a recoverable documentation patch-context diagnostic as
+fatal. This was not a pytest, Ruff, or GitHub Actions result; publication remained
+`NOT_STARTED`.
 
 ## Changed paths
 
@@ -80,7 +88,7 @@ return is treated as scientific-method acceptance.
 
 ## Engineering contract
 
-### Typed bounded controller
+### Typed bounded controller and complete-round law
 
 `ReconciliationBudget` bounds rounds and operation calls. The controller stops with a
 typed `RunOutcome` and `StopReason`; it has explicit gates for maximum budgets,
@@ -94,6 +102,13 @@ host may supply another bounded `NextOperationStrategy` without adding domain me
 semantics to the controller. This is not a universal cyclic DAG or a compulsory
 `cut -> derive -> analyze` pipeline.
 
+A complete round now contains exactly one call of each member of the reciprocal pair,
+in either order. A strategy exception, non-string/unhashable/out-of-pair selection, or
+same-side repeat within an incomplete round produces sanitized
+`BLOCKED / STRATEGY_STOPPED`; it cannot call the selected provider or synthesize a
+complete round. Round numbers and `rounds_completed` therefore describe reciprocal
+pairs rather than every two arbitrary calls.
+
 ### Versioned proposals and evidence
 
 Every successful attempt records:
@@ -106,6 +121,14 @@ Every successful attempt records:
 - the S1 `SourceAccessManifest` without raw source content;
 - unchanged/duplicate detection.
 
+Before `Runtime.run()` can persist a candidate, the operation adapter computes a
+strict canonical JSON semantic fingerprint. Non-serializable values, non-canonical
+mixed key types, and equivalent unknown-object type fallbacks are rejected as
+`BLOCKED / INVALID_PROPOSAL`. The fingerprint includes payload, constraints,
+mismatches, source observation IDs, applicability, and uncertainty. Candidate/proposal
+identity, parent lineage, provenance/receipts, and acceptance state remain outside
+semantic equivalence so fresh receipt IDs do not conceal or manufacture oscillation.
+
 `FULL_REQUIRED` access is still enforced by the existing S1 runtime. The controller
 pins the research-object version and verified source IDs/versions/digests on the first
 attempt and blocks a later mismatch before the candidate is persisted. It compares the
@@ -116,12 +139,22 @@ If source/access/candidate drift blocks a later attempt, candidates already emit
 that run are explicitly quarantined to `STALE` through a recorded guard dependency;
 their history remains addressable and the ledger lists the quarantined refs.
 
+Mismatch validation is deliberately two-stage. `against_operation_id` must name the
+other member of the bounded pair and is rejected before candidate persistence if it is
+self/ghost. Constraint references may name the peer's future constraint during the
+first call (required by T02). Once both current-round proposals exist, the controller
+requires pair-wide unique constraint IDs and resolves every mismatch and
+`incompatible_with` reference before convergence or APORIA classification. A dangling
+or ambiguous duplicate ID blocks as `INVALID_PROPOSAL`; already persisted outputs from
+that unsafe round are quarantined while their attempt receipts remain inspectable.
+
 ### Outcome and authority separation
 
 - `CONVERGED` requires a complete pair of non-empty, provider-declared compatible
   constraints with no declared mismatch. A provider's `claims_convergence` field is
   retained as a statement but is not the decision rule.
-- `APORIA` requires contradiction to persist through the configured minimum rounds.
+- `APORIA` requires contradiction in the configured number of consecutive complete
+  reciprocal rounds. A prior non-contradictory/non-convergent round does not count.
   The first-class `Aporia` references every attempted proposal plus the latest
   constraint and mismatch IDs.
 - `EXHAUSTED` preserves the trace for duplicate, unchanged, round-budget, or call-budget
@@ -165,14 +198,29 @@ explicit causal references remain addressable.
 The full existing S1 and S2A suite remains selected by the repository-wide pytest
 configuration. No tests were weakened or removed.
 
+### PR #27 engineering-review correction matrix
+
+| Review finding | Repair witness | Added regression expectation |
+|---|---|---|
+| Incomplete custom `A,A,B,B` schedule could look converged | A round is a per-round map and rejects a repeated side before provider dispatch | `A,A,B,B` blocks as sanitized `STRATEGY_STOPPED`; `B,A` completes and may converge |
+| Strategy exception or malformed/unhashable selection escaped typed handling | `choose_next` is inside a sanitizing boundary and selection is type-checked before membership | exception and `[]` both block with zero provider calls and no leaked detail |
+| Fingerprinting happened after persistence and accepted ambiguous Python material | strict canonical fingerprint is computed in `_OperationAdapter.execute` before it returns to `Runtime.run`; JSON object keys must be strings | opaque payload, non-string/mixed keys, and opaque constraint value block as `INVALID_PROPOSAL` with empty Blackboard |
+| Fingerprint omitted semantic candidate state | payload, observations, applicability, uncertainty, constraints, and mismatches are fingerprinted; IDs/lineage/receipts remain excluded | changed uncertainty is neither unchanged nor duplicate and reaches the round budget |
+| Mismatch/constraint references could manufacture a false contradiction | peer target is checked before persistence; pair-wide ID uniqueness and references are checked only after both proposals exist | self/ghost target blocks pre-persistence; dangling and duplicate IDs block before outcome and quarantine prior outputs; T02 future peer refs remain valid |
+| APORIA used absolute round position | a counter advances only for contradictory complete reciprocal rounds and resets on a non-contradictory round | clean round 1 plus contradictory rounds 2-3 reaches APORIA only after the second consecutive contradictory round |
+
+These are static implementation and test witnesses. None is reported as executed until
+the trusted publisher produces a new PR head and isolated CI reports the exact results.
+
 ## Verification
 
 ### RED order
 
-`tests/test_reconciliation.py` was created before
-`src/seshat/reconciliation.py`. The required import and controller API did not exist at
-that point. An executable RED result is not claimed because neither `python`, `py`,
-`uv`, nor Ruff is available in this managed shell.
+The original S2B test file preceded its implementation. For this review repair, the
+negative cases were written before the narrow controller corrections in the interrupted
+attempt. An executable RED result is not claimed: task policy prohibits running
+Codex-written Python/pytest on this credential-bearing Windows host, and delegates Ruff
+and pytest to the trusted publisher and isolated GitHub CI.
 
 ### Commands
 
@@ -186,12 +234,10 @@ git diff --check
 
 Results at sandbox handoff:
 
-- `python -m pytest -q` — **NOT EXECUTED LOCALLY**: no accessible interpreter;
-- `python -m ruff check .` — **NOT EXECUTED LOCALLY**: no accessible interpreter/Ruff;
+- `python -m pytest -q` — **NOT EXECUTED LOCALLY / CI_PENDING** by explicit host policy;
+- `python -m ruff check .` — **NOT EXECUTED LOCALLY / CI_PENDING** by explicit host policy;
 - `git diff --check` — **PASS** for tracked deltas;
-- `git diff --no-index --check NUL <new-file>` for each of the three new files —
-  **PASS** (exit status denotes a new-file diff; no whitespace diagnostics; LF/CRLF
-  conversion warnings only);
+- static path review — **PASS**: only the three approved tracked paths are dirty;
 - GitHub Actions — **PENDING** trusted draft publication.
 
 The trusted host policy explicitly prevents credential-bearing publication code from
