@@ -27,7 +27,6 @@ from seshat.reconciliation import (
 )
 from seshat.runtime import Runtime
 
-
 OBJECT = OperationSpec(
     operation_id="synthetic.object",
     name="Synthetic Object",

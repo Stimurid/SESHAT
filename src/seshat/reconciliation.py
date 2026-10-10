@@ -875,7 +875,7 @@ class ReconciliationController:
                     outcome=RunOutcome.BLOCKED,
                     stop_reason=reason,
                 )
-            except Exception as exc:  # provider failures become typed, sanitized receipts
+            except Exception as exc:  # noqa: BLE001 - sanitize untrusted provider errors
                 reason = StopReason.PROVIDER_ERROR
                 self._blocked_attempt(
                     attempts,
