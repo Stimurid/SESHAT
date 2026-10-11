@@ -74,10 +74,10 @@ function Invoke-SeshatNativeCommand {
         $stderrTask=$process.StandardError.ReadToEndAsync()
         if($hasStandardInput){
             $stdinTask=$process.StandardInput.WriteAsync($StandardInputText)
-            $stdinTask.GetAwaiter().GetResult()
-            $process.StandardInput.Close()
+            [void]($stdinTask.GetAwaiter().GetResult())
+            [void]($process.StandardInput.Close())
         }
-        $process.WaitForExit()
+        [void]($process.WaitForExit())
         $stdout=[string]$stdoutTask.GetAwaiter().GetResult()
         $stderr=[string]$stderrTask.GetAwaiter().GetResult()
         $result=[pscustomobject]@{
@@ -93,10 +93,10 @@ function Invoke-SeshatNativeCommand {
                 stderr_line_count=if($result.stderr_present){@($stderr -split "\r?\n"|Where-Object{$_}).Count}else{0}
                 classification=if($result.exit_code -ne 0){'NONZERO_EXIT'}elseif($result.stderr_present){'EXIT_ZERO_STDERR'}else{'CLEAN_EXIT'}
             }
-            Write-SeshatAppendJsonLine -Value $event -Path $AuditPath
+            [void](Write-SeshatAppendJsonLine -Value $event -Path $AuditPath)
         }
         return $result
-    }finally{$process.Dispose()}
+    }finally{[void]($process.Dispose())}
 }
 function Invoke-SeshatStreamingNativeCommand {
     param(
@@ -172,8 +172,8 @@ function Invoke-SeshatStreamingNativeCommand {
         while(-not($stdoutDone -and $stderrDone)){
             $madeProgress=$false
             if(-not $stdinClosed -and $stdinTask.IsCompleted){
-                $stdinTask.GetAwaiter().GetResult()
-                $process.StandardInput.Close()
+                [void]($stdinTask.GetAwaiter().GetResult())
+                [void]($process.StandardInput.Close())
                 $stdinClosed=$true
                 $madeProgress=$true
             }

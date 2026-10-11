@@ -43,14 +43,21 @@ if($Mode -eq 'floodstderr'){
 }
 exit 99
 '@|Set-Content -LiteralPath $childScript -Encoding UTF8
-    $zeroWarning=Invoke-SeshatNativeCommand -FilePath $engine -ArgumentList @('-NoProfile','-NonInteractive','-Command',"[Console]::Error.WriteLine('synthetic warning'); exit 0") -WorkingDirectory $temp -Label 'mock-zero-warning' -AuditPath $audit -JobId 'synthetic-job'
+    $zeroWarningResults=@(Invoke-SeshatNativeCommand -FilePath $engine -ArgumentList @('-NoProfile','-NonInteractive','-Command',"[Console]::Error.WriteLine('synthetic warning'); exit 0") -WorkingDirectory $temp -Label 'mock-zero-warning' -AuditPath $audit -JobId 'synthetic-job')
+    if($zeroWarningResults.Count -ne 1){throw 'NO_STDIN_NATIVE_RESULT_COUNT_CHANGED'}
+    $zeroWarning=$zeroWarningResults[0]
+    if($zeroWarning -isnot [System.Management.Automation.PSCustomObject]){throw 'NO_STDIN_NATIVE_RESULT_TYPE_CHANGED'}
+    foreach($property in @('exit_code','stdout','stderr','stderr_present')){if(-not $zeroWarning.PSObject.Properties[$property]){throw ('NO_STDIN_NATIVE_RESULT_PROPERTY_MISSING_'+$property)}}
     if($zeroWarning.exit_code -ne 0 -or -not $zeroWarning.stderr_present){throw 'EXIT_ZERO_STDERR_NOT_CAPTURED'}
     Assert-SeshatNativeSuccess -Result $zeroWarning -FailureClass 'SHOULD_NOT_FAIL'
     $zeroAudit=(Get-Content -LiteralPath $audit -Encoding UTF8|Select-Object -First 1)|ConvertFrom-Json
     if([string]$zeroAudit.classification -cne 'EXIT_ZERO_STDERR'){throw 'EXIT_ZERO_STDERR_NOT_CLASSIFIED'}
     if($zeroAudit.PSObject.Properties['stderr']){throw 'RAW_STDERR_LEAKED_TO_AUDIT'}
 
-    $nonzero=Invoke-SeshatNativeCommand -FilePath $engine -ArgumentList @('-NoProfile','-NonInteractive','-Command',"[Console]::Error.WriteLine('synthetic failure'); exit 7") -WorkingDirectory $temp -Label 'mock-nonzero' -AuditPath $audit -JobId 'synthetic-job'
+    $nonzeroResults=@(Invoke-SeshatNativeCommand -FilePath $engine -ArgumentList @('-NoProfile','-NonInteractive','-Command',"[Console]::Error.WriteLine('synthetic failure'); exit 7") -WorkingDirectory $temp -Label 'mock-nonzero' -AuditPath $audit -JobId 'synthetic-job')
+    if($nonzeroResults.Count -ne 1){throw 'NONZERO_NATIVE_RESULT_COUNT_CHANGED'}
+    $nonzero=$nonzeroResults[0]
+    if($nonzero -isnot [System.Management.Automation.PSCustomObject]){throw 'NONZERO_NATIVE_RESULT_TYPE_CHANGED'}
     if($nonzero.exit_code -ne 7 -or -not $nonzero.stderr_present){throw 'NONZERO_STDERR_NOT_CAPTURED'}
     $blocked=$false
     try{Assert-SeshatNativeSuccess -Result $nonzero -FailureClass 'SYNTHETIC_NATIVE_FAILED'}catch{$blocked=($_.Exception.Message -eq 'SYNTHETIC_NATIVE_FAILED')}
@@ -62,7 +69,11 @@ exit 99
     $argTwo='embedded"quote'
     $argThree='C:\path with spaces\'
     $unicodeInput='ввод по-русски'
-    $quoted=Invoke-SeshatNativeCommand -FilePath $engine -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$childScript,'args',$argOne,$argTwo,$argThree) -WorkingDirectory $temp -Label 'mock-quoted-arguments' -AuditPath $audit -JobId 'synthetic-job' -StandardInputText $unicodeInput
+    $quotedResults=@(Invoke-SeshatNativeCommand -FilePath $engine -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$childScript,'args',$argOne,$argTwo,$argThree) -WorkingDirectory $temp -Label 'mock-quoted-arguments' -AuditPath $audit -JobId 'synthetic-job' -StandardInputText $unicodeInput)
+    if($quotedResults.Count -ne 1){throw 'STDIN_NATIVE_RESULT_COUNT_CHANGED'}
+    $quoted=$quotedResults[0]
+    if($quoted -isnot [System.Management.Automation.PSCustomObject]){throw 'STDIN_NATIVE_RESULT_TYPE_CHANGED'}
+    foreach($property in @('exit_code','stdout','stderr','stderr_present')){if(-not $quoted.PSObject.Properties[$property]){throw ('STDIN_NATIVE_RESULT_PROPERTY_MISSING_'+$property)}}
     if($quoted.exit_code -ne 0 -or -not $quoted.stderr_present){throw 'QUOTED_ARGUMENT_CHILD_FAILED'}
     $quotedPayload=$quoted.stdout.Trim()|ConvertFrom-Json
     if([string]$quotedPayload.one -cne $argOne -or [string]$quotedPayload.two -cne $argTwo -or [string]$quotedPayload.three -cne $argThree){throw 'NATIVE_ARGUMENT_QUOTING_CHANGED'}
