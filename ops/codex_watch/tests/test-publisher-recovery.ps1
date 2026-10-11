@@ -187,6 +187,21 @@ exit 99
     if($reconcileSource -match "(?m)ArgumentList.*'(add|commit|push|create|edit|close|merge)'"){throw 'RECONCILE_CONTAINS_MUTATING_COMMAND'}
     if($reconcileSource -notmatch "automatic_retry='DENIED'" -or $reconcileSource -notmatch "automatic_mutation='NONE'"){throw 'RECONCILE_DENIAL_MARKERS_MISSING'}
     Write-Output 'PASS: synthetic buffered/streaming native IO, bounded durable partial logs, quoting, immutable receipts, stage recovery, and no-retry checks'
+}catch{
+    # Preserve the original test failure; a Windows child can transiently hold
+    # its working directory and a finally-cleanup exception must not obscure it.
+    [Console]::Error.WriteLine(('PUBLISHER_RECOVERY_TEST_FAILURE={0}: {1}' -f $_.Exception.GetType().Name,$_.Exception.Message))
+    throw
 }finally{
-    Remove-Item -LiteralPath $temp -Recurse -Force
+    $removed=$false
+    for($cleanupAttempt=0;$cleanupAttempt -lt 8;$cleanupAttempt++){
+        try{
+            if(Test-Path -LiteralPath $temp){Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction Stop}
+            $removed=$true
+            break
+        }catch{
+            Start-Sleep -Milliseconds 500
+        }
+    }
+    if(-not $removed){Write-Warning 'PUBLISHER_TEST_TEMP_CLEANUP_DEFERRED'}
 }
