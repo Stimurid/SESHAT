@@ -1,5 +1,167 @@
 # Pure governance gate. Source facts come from GitHub, not from Codex statements.
 Set-StrictMode -Version Latest
+function ConvertTo-SeshatNativeArgument {
+    param([Parameter(Mandatory=$true)][AllowEmptyString()][string]$Value)
+    if($Value -notmatch '[\s"]'){return $Value}
+    # Windows PowerShell 5 lacks ProcessStartInfo.ArgumentList. This is the
+    # CommandLineToArgvW-compatible quoting used only on that fallback path.
+    return '"'+([regex]::Replace($Value,'(\\*)"','$1$1\"') -replace '(\\+)$','$1$1')+'"'
+}
+function Get-SeshatTextSha256 {
+    param([Parameter(Mandatory=$true)][AllowEmptyString()][string]$Text)
+    return Get-SeshatUtf8Sha256 -Text $Text
+}
+function Get-SeshatSafeErrorClass {
+    param([Parameter(Mandatory=$true)][object]$ErrorRecord)
+    $message=[string]$ErrorRecord.Exception.Message
+    if($message -cmatch '^[A-Z][A-Z0-9_]{2,127}$'){return $message}
+    $type=[string]$ErrorRecord.Exception.GetType().Name
+    if($type -cmatch '^[A-Za-z][A-Za-z0-9]{1,127}$'){return $type}
+    return 'UNCLASSIFIED_ERROR'
+}
+function ConvertTo-SeshatSanitizedLogText {
+    param([AllowEmptyString()][string]$Text,[int]$MaximumLength=65536)
+    $safe=[string]$Text
+    $safe=$safe -replace '(?i)(gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})','[REDACTED_CREDENTIAL]'
+    $safe=$safe -replace '(?i)(https?://)[^/@\s:]+:[^/@\s]+@','$1[REDACTED_USERINFO]@'
+    if($safe.Length -gt $MaximumLength){$safe=$safe.Substring(0,$MaximumLength)+"`n[TRUNCATED]"}
+    return $safe
+}
+function Write-SeshatAppendJsonLine {
+    param([Parameter(Mandatory=$true)][object]$Value,[Parameter(Mandatory=$true)][string]$Path)
+    $parent=Split-Path -Parent $Path
+    [void][System.IO.Directory]::CreateDirectory($parent)
+    $json=($Value|ConvertTo-Json -Depth 8 -Compress)+"`n"
+    $bytes=[System.Text.UTF8Encoding]::new($false).GetBytes($json)
+    $stream=[System.IO.File]::Open($Path,[System.IO.FileMode]::Append,[System.IO.FileAccess]::Write,[System.IO.FileShare]::Read)
+    try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush()}finally{$stream.Dispose()}
+}
+function Invoke-SeshatNativeCommand {
+    param(
+        [Parameter(Mandatory=$true)][string]$FilePath,
+        [Parameter(Mandatory=$true)][AllowEmptyCollection()][string[]]$ArgumentList,
+        [Parameter(Mandatory=$true)][string]$WorkingDirectory,
+        [Parameter(Mandatory=$true)][string]$Label,
+        [string]$AuditPath,
+        [string]$JobId='unknown',
+        [AllowEmptyString()][string]$StandardInputText
+    )
+    if($Label -cnotmatch '^[a-z0-9][a-z0-9-]{1,63}$'){throw 'INVALID_NATIVE_COMMAND_LABEL'}
+    $start=[System.Diagnostics.ProcessStartInfo]::new()
+    $start.FileName=$FilePath
+    $start.WorkingDirectory=$WorkingDirectory
+    $start.UseShellExecute=$false
+    $start.CreateNoWindow=$true
+    $start.RedirectStandardOutput=$true
+    $start.RedirectStandardError=$true
+    $hasStandardInput=$PSBoundParameters.ContainsKey('StandardInputText')
+    $start.RedirectStandardInput=$hasStandardInput
+    if($start.PSObject.Properties['ArgumentList']){
+        foreach($argument in $ArgumentList){[void]$start.ArgumentList.Add([string]$argument)}
+    }else{
+        $start.Arguments=(@($ArgumentList|ForEach-Object{ConvertTo-SeshatNativeArgument -Value ([string]$_)}) -join ' ')
+    }
+    $process=[System.Diagnostics.Process]::new()
+    $process.StartInfo=$start
+    try{
+        if(-not $process.Start()){throw 'NATIVE_PROCESS_START_FAILED'}
+        $stdoutTask=$process.StandardOutput.ReadToEndAsync()
+        $stderrTask=$process.StandardError.ReadToEndAsync()
+        if($hasStandardInput){
+            $process.StandardInput.Write($StandardInputText)
+            $process.StandardInput.Close()
+        }
+        $process.WaitForExit()
+        $stdout=[string]$stdoutTask.GetAwaiter().GetResult()
+        $stderr=[string]$stderrTask.GetAwaiter().GetResult()
+        $result=[pscustomobject]@{
+            label=$Label;exit_code=[int]$process.ExitCode;stdout=$stdout;stderr=$stderr
+            stderr_present=(-not [string]::IsNullOrWhiteSpace($stderr))
+        }
+        if($AuditPath){
+            $event=[ordered]@{
+                schema='seshat.native-command.v1';recorded_at_utc=(Get-Date).ToUniversalTime().ToString('o')
+                job_id=$JobId;command=$Label;exit_code=$result.exit_code
+                stderr_present=$result.stderr_present
+                stderr_sha256=if($result.stderr_present){Get-SeshatTextSha256 -Text $stderr}else{$null}
+                stderr_line_count=if($result.stderr_present){@($stderr -split "\r?\n"|Where-Object{$_}).Count}else{0}
+                classification=if($result.exit_code -ne 0){'NONZERO_EXIT'}elseif($result.stderr_present){'EXIT_ZERO_STDERR'}else{'CLEAN_EXIT'}
+            }
+            Write-SeshatAppendJsonLine -Value $event -Path $AuditPath
+        }
+        return $result
+    }finally{$process.Dispose()}
+}
+function Assert-SeshatNativeSuccess {
+    param([Parameter(Mandatory=$true)][object]$Result,[Parameter(Mandatory=$true)][string]$FailureClass)
+    if([int]$Result.exit_code -ne 0){throw $FailureClass}
+}
+function Get-SeshatOutputLines {
+    param([Parameter(Mandatory=$true)][AllowEmptyString()][string]$Text)
+    if([string]::IsNullOrEmpty($Text)){return @()}
+    return @($Text -split "\r?\n"|Where-Object{$_ -ne ''})
+}
+function Write-SeshatPublicationEvent {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [Parameter(Mandatory=$true)][string]$JobId,
+        [Parameter(Mandatory=$true)][ValidateSet('BEFORE_COMMIT','STAGED_ONLY','COMMITTED_ONLY','PUSHED_WITHOUT_PR','DRAFT_PUBLISHED')][string]$Phase,
+        [Parameter(Mandatory=$true)][string]$Branch,
+        [Parameter(Mandatory=$true)][string]$BaseSha,
+        [string]$HeadSha,
+        [string]$ErrorClass
+    )
+    $event=[ordered]@{
+        schema='seshat.publication-stage.v1';recorded_at_utc=(Get-Date).ToUniversalTime().ToString('o')
+        job_id=$JobId;phase=$Phase;branch=$Branch;base_sha=$BaseSha;head_sha=$HeadSha;error_class=$ErrorClass
+    }
+    Write-SeshatAppendJsonLine -Value $event -Path $Path
+}
+function Assert-SeshatPublicationAttemptAbsent {
+    param([Parameter(Mandatory=$true)][string]$EventPath,[Parameter(Mandatory=$true)][string]$ReceiptPath)
+    if(Test-Path -LiteralPath $ReceiptPath){throw 'PUBLICATION_RECEIPT_ALREADY_EXISTS'}
+    if(Test-Path -LiteralPath $EventPath){throw 'PUBLICATION_ATTEMPT_ALREADY_RECORDED'}
+}
+function Start-SeshatPublicationAttempt {
+    param(
+        [Parameter(Mandatory=$true)][string]$EventPath,
+        [Parameter(Mandatory=$true)][string]$ReceiptPath,
+        [Parameter(Mandatory=$true)][string]$JobId,
+        [Parameter(Mandatory=$true)][string]$Branch,
+        [Parameter(Mandatory=$true)][string]$BaseSha
+    )
+    if(Test-Path -LiteralPath $ReceiptPath){throw 'PUBLICATION_RECEIPT_ALREADY_EXISTS'}
+    $parent=Split-Path -Parent $EventPath
+    [void][System.IO.Directory]::CreateDirectory($parent)
+    $event=[ordered]@{
+        schema='seshat.publication-stage.v1';recorded_at_utc=(Get-Date).ToUniversalTime().ToString('o')
+        job_id=$JobId;phase='BEFORE_COMMIT';branch=$Branch;base_sha=$BaseSha;head_sha=$BaseSha;error_class=$null
+    }
+    $bytes=[System.Text.UTF8Encoding]::new($false).GetBytes((($event|ConvertTo-Json -Depth 8 -Compress)+"`n"))
+    try{$stream=[System.IO.File]::Open($EventPath,[System.IO.FileMode]::CreateNew,[System.IO.FileAccess]::Write,[System.IO.FileShare]::Read)}catch{if(Test-Path -LiteralPath $EventPath){throw 'PUBLICATION_ATTEMPT_ALREADY_RECORDED'};throw}
+    try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush()}finally{$stream.Dispose()}
+}
+function Test-SeshatPublicationReceipt {
+    param([Parameter(Mandatory=$true)][object]$Receipt,[Parameter(Mandatory=$true)][object]$Job,[Parameter(Mandatory=$true)][string]$HeadSha)
+    try{
+        if([string]$Receipt.status -cne 'PUBLISHED_DRAFT_PR'){return 'BLOCK_PUBLISH_STATUS'}
+        if([string]$Receipt.job_id -cne [string]$Job.job_id -or [int]$Receipt.issue -ne [int]$Job.issue_number){return 'BLOCK_PUBLISH_JOB_MISMATCH'}
+        if([string]$Receipt.branch -cne [string]$Job.branch -or [string]$Receipt.head_sha -cne $HeadSha){return 'BLOCK_PUBLISH_HEAD_MISMATCH'}
+        if([int]$Receipt.pr_number -le 0 -or [string]$Receipt.pr_state -cne 'OPEN' -or -not [bool]$Receipt.pr_is_draft){return 'BLOCK_PUBLISH_PR_STATE'}
+        if([string]$Receipt.pr_base -cne 'main' -or [string]$Receipt.pr_head -cne [string]$Job.branch){return 'BLOCK_PUBLISH_PR_REFS'}
+        return 'ADMIT'
+    }catch{return 'BLOCK_MALFORMED_PUBLICATION_RECEIPT'}
+}
+function Get-SeshatPublicationRecoveryDecision {
+    param([Parameter(Mandatory=$true)][ValidateSet('BEFORE_COMMIT','STAGED_ONLY','COMMITTED_ONLY','PUSHED_WITHOUT_PR','DRAFT_PUBLISHED')][string]$Phase)
+    switch($Phase){
+        'BEFORE_COMMIT' {return 'MANUAL_INSPECT_WORKTREE_DO_NOT_RETRY'}
+        'STAGED_ONLY' {return 'MANUAL_INSPECT_INDEX_DO_NOT_RETRY'}
+        'COMMITTED_ONLY' {return 'MANUAL_VERIFY_REMOTE_BEFORE_ANY_PUSH'}
+        'PUSHED_WITHOUT_PR' {return 'MANUAL_VERIFY_GITHUB_BEFORE_ANY_PR_CREATE'}
+        'DRAFT_PUBLISHED' {return 'READBACK_VERIFY_EXISTING_DRAFT_NO_RETRY'}
+    }
+}
 function Get-SeshatUtf8Sha256 {
     param([Parameter(Mandatory=$true)][AllowEmptyString()][string] $Text)
     $sha256 = [System.Security.Cryptography.SHA256]::Create()
@@ -149,12 +311,12 @@ function New-SeshatBundleManifest {
         [Parameter(Mandatory=$true)][string]$BaseSha
     )
     $paths=@(Get-SeshatBundlePaths)
-    & git -C $Repo merge-base --is-ancestor $OpsMergeSha $BaseSha
-    if($LASTEXITCODE -ne 0){throw 'OPS_MERGE_NOT_ANCESTOR_OF_BASE'}
-    & git -C $Repo diff --quiet $OpsMergeSha $BaseSha -- @paths
-    if($LASTEXITCODE -ne 0){throw 'OPS_BUNDLE_CHANGED_AFTER_REVIEW'}
-    & git -C $Repo diff --quiet $BaseSha -- @paths
-    if($LASTEXITCODE -ne 0){throw 'OPS_BUNDLE_WORKTREE_DRIFT'}
+    $ancestor=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'merge-base','--is-ancestor',$OpsMergeSha,$BaseSha) -WorkingDirectory $Repo -Label 'bundle-ancestor'
+    if($ancestor.exit_code -ne 0){throw 'OPS_MERGE_NOT_ANCESTOR_OF_BASE'}
+    $reviewDiff=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList (@('-C',$Repo,'diff','--quiet',$OpsMergeSha,$BaseSha,'--')+$paths) -WorkingDirectory $Repo -Label 'bundle-reviewed-diff'
+    if($reviewDiff.exit_code -ne 0){throw 'OPS_BUNDLE_CHANGED_AFTER_REVIEW'}
+    $worktreeDiff=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList (@('-C',$Repo,'diff','--quiet',$BaseSha,'--')+$paths) -WorkingDirectory $Repo -Label 'bundle-worktree-diff'
+    if($worktreeDiff.exit_code -ne 0){throw 'OPS_BUNDLE_WORKTREE_DRIFT'}
     $manifest=@()
     foreach($relative in $paths){
         $installed=Join-Path $ScriptRoot ([System.IO.Path]::GetFileName($relative))

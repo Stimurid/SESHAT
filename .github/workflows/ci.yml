@@ -19,6 +19,19 @@ jobs:
           persist-credentials: false
       - run: pwsh -File ops/codex_watch/tests/test-gate.ps1
 
+  ops-publisher-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - shell: pwsh
+        run: ./ops/codex_watch/tests/test-gate.ps1
+      - shell: pwsh
+        run: ./ops/codex_watch/tests/test-publisher-recovery.ps1
+
   test:
     runs-on: ubuntu-latest
     steps:

@@ -9,6 +9,14 @@
 
 **Security review hold:** the separate Windows task `SESHAT-Codex-Dispatch` is temporarily **DISABLED** while PR #18 is under review. Do not enable it from this worktree. It may be considered for manual re-enablement only after PR #18 is manually merged, the canonical `.github/workflows/ci.yml` push run succeeds on the then-current `main` SHA, and the installed bundle matches the reviewed PR #18 source hashes.
 
+**Release provenance hold (S-OPS-PUBLISH-RECOVERY / #28):** branch
+`fix/ops-publisher-recovery-20261011` is review source only and is **not deployed** to
+the trusted-host runtime. The installed, reviewed PR #18 five-file bundle remains
+untouched, and `SESHAT-Codex-Dispatch` stays Disabled. PR #26 is the separate
+strict-mode bootstrap fix for issue #25; the generic next-release decision remains
+separately held in issue #34. None of #28, #25/PR #26, or #34 authorizes a job
+launch, installation, merge, semantic acceptance, or scheduler enablement.
+
 **Do not confuse these:** the five-minute task detects local changes and saves durable local evidence; outbound ChatGPT notifications are at most hourly, not five-minute push notifications. A powered-off/sleeping Aorustim cannot run its local task; remote connectivity is a separate prerequisite. This is bounded supervision, not an always-on service guarantee.
 
 ## Installed local paths
@@ -79,6 +87,9 @@ The normal Codex workspace-write sandbox refuses writes to .git even when the .g
 - dispatch.ps1: dry run by default; -Apply is for the Windows scheduled task.
 - execute-task.ps1: starts a bounded Codex CLI run with workspace-write, local JSON logging, no Git credentials and no Git writes. It rejects a noncanonical `JobPath`, missing/mismatched dispatch marker, altered job binding or installed-bundle drift before code execution.
 - publish.ps1: the trusted host revalidates the same job/marker/bundle, requires the exact executor-owned dirty path set, scans the staged diff, commits/pushes, and creates or verifies a draft PR. It does not execute agent-produced tests; isolated GitHub PR CI runs pytest and Ruff. No automatic merge.
+- reconcile-publish.ps1: read-only partial-publication readback. It reports the
+  recorded stage, local branch/HEAD/dirty count, optional GitHub PR readback and a
+  manual recovery instruction. It never resumes or retries publication.
 - monitor.ps1: detects the new execute-task.ps1 runner as well as the legacy resume runner.
 
 Admission requires ALL of: previous PR manually reviewed and labeled seshat:engineering-accepted; an exact-line comment `SESHAT_ENGINEERING_ACCEPTED_SHA=<40-hex reviewed PR head SHA>` authored by GitHub actor `Stimurid`; previous PR MANUALLY merged to main; PR #18 MANUALLY merged to main; successful GitHub workflow at exact path `.github/workflows/ci.yml`, repository `Stimurid/SESHAT`, event `push`, branch `main`, and exact current main SHA; preapproved next issue still open, labeled seshat:codex-ready, and byte-for-byte equal to its approved UTF-8 SHA-256 pin; one explicit mapping in task_queue.json; clean worktree; matching previous exit receipt; no duplicate branch or prior dispatch marker.
@@ -107,11 +118,55 @@ Task S-IMPL-002B (#17) is prepared; current predecessor PR #16 remains draft/unm
 
 Operational state is stored locally in %LOCALAPPDATA%\SESHAT\watch: dispatch_state.json, dispatch_events.jsonl, job.json, exit.json, publish_receipt.json and per-run archived logs. The dispatcher creates a one-time gate marker under dispatches BEFORE spawning the worker to guarantee fail-closed recovery. A stale marker requires investigation; never delete it automatically.
 
+### Publisher native-process and partial-stage recovery
+
+The publisher and its parent invoke native Git/GitHub processes with stdout and
+stderr captured separately and classify the explicit native exit code. Stderr on
+an exit-zero command (for example a Git CRLF warning) is recorded as
+`EXIT_ZERO_STDERR` in the per-job native audit and does not become a terminating
+PowerShell error. Any nonzero native exit remains fail-closed. Audit records contain
+only command labels, exit status, stderr presence/count/hash and classification;
+they do not contain command arguments, diff bodies, tokens, or raw native output.
+
+The first failed publisher run for issue #28 returned an opaque `RemoteException`
+and an empty publisher log. Its original exception stack was **not captured**.
+An isolated synthetic probe reproduced the relevant Windows PowerShell 5 behavior;
+that probe is evidence for the fix, not a reconstruction of the missing stack.
+
+Each publication attempt has an append-only per-job stage stream under
+`publication-events`: `BEFORE_COMMIT`, `STAGED_ONLY`, `COMMITTED_ONLY`,
+`PUSHED_WITHOUT_PR`, and `DRAFT_PUBLISHED`. A prior stage stream or publication
+receipt blocks another automatic attempt. `exit.json` and `publish_receipt.json`
+use create-new semantics and are never overwritten.
+
+After this change is reviewed and deliberately installed, an authorized operator
+handles an interrupted attempt by performing readback first:
+
+```powershell
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File C:\Users\Homee\AppData\Local\SESHAT\watch\reconcile-publish.ps1 `
+  -JobPath C:\Users\Homee\AppData\Local\SESHAT\watch\job.json
+```
+
+Recovery is deliberately manual and stage-specific:
+
+- `BEFORE_COMMIT`: inspect worktree and authorization evidence; do not rerun.
+- `STAGED_ONLY`: inspect the index and exact allowed paths; do not commit blindly.
+- `COMMITTED_ONLY`: verify the remote branch before any push decision.
+- `PUSHED_WITHOUT_PR`: verify GitHub for an existing PR before any create decision.
+- `DRAFT_PUBLISHED`: verify the existing draft and receipt; never create a duplicate.
+
+Missing, malformed, mismatched, or stale publication receipts always fail the
+executor. Reconciliation does not repair receipts, modify Git, call `gh pr create`,
+or bypass the pinned SHA, bundle provenance, exact path manifest, credential diff
+scanner, human acceptance, or disabled scheduler.
+
 Windows Task Scheduler task SESHAT-Codex-Dispatch is a five-minute task distinct from the existing SESHAT-Codex-Watch task and from hourly ChatGPT notifications. It is temporarily **DISABLED for PR #18 review**. If it is later re-enabled after all security gates are satisfied, the machine must be awake/logged in for the local scheduled process to run.
 
 Verification:
 - powershell.exe -NoProfile -ExecutionPolicy Bypass -File ops\codex_watch\tests\test-gate.ps1
 - pwsh -File ops/codex_watch/tests/test-gate.ps1 (isolated GitHub Actions job; checkout uses `persist-credentials: false` and `contents: read`)
+- pwsh -File ops/codex_watch/tests/test-publisher-recovery.ps1 (synthetic native stderr + temporary local Git, isolated Windows GitHub Actions only; no live GitHub calls)
 - powershell -NoProfile -File C:\Users\Homee\AppData\Local\SESHAT\watch\dispatch.ps1 (safe dry-run)
 - schtasks /query /tn SESHAT-Codex-Dispatch /fo LIST /v (must report disabled during PR #18 review)
 - Inspect local dispatch_state.json and GitHub current HEAD/PR/CI.

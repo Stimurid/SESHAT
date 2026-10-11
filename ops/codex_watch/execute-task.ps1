@@ -11,7 +11,11 @@ $Stdout=Join-Path $Root 'stdout.jsonl'
 $Stderr=Join-Path $Root 'stderr.log'
 $LastMessage=Join-Path $Root 'last_message.txt'
 $ResultLog=Join-Path $Root 'publisher-output.log'
+$PublisherStderr=Join-Path $Root 'publisher-stderr.log'
 $ExitCode=91
+$PublisherExitCode=$null
+$PublisherErrorClass=$null
+$PowerShellExe=(Get-Process -Id $PID).Path
 $ErrorType=$null
 $PublishStatus='NOT_STARTED'
 $Started=(Get-Date).ToUniversalTime().ToString('o')
@@ -37,11 +41,25 @@ try {
     exit 93
 }
 try {
+    $executorAudit=Join-Path (Join-Path $Root 'publication-events') (([string]$job.job_id)+'-executor-native.jsonl')
+    function InvokeExecutorNative([string]$file,[string[]]$arguments,[string]$label,[string]$failureClass,[string]$stdin){
+        if($PSBoundParameters.ContainsKey('stdin')){
+            $result=Invoke-SeshatNativeCommand -FilePath $file -ArgumentList $arguments -WorkingDirectory $Repo -Label $label -AuditPath $executorAudit -JobId ([string]$job.job_id) -StandardInputText $stdin
+        }else{
+            $result=Invoke-SeshatNativeCommand -FilePath $file -ArgumentList $arguments -WorkingDirectory $Repo -Label $label -AuditPath $executorAudit -JobId ([string]$job.job_id)
+        }
+        Assert-SeshatNativeSuccess -Result $result -FailureClass $failureClass
+        return $result
+    }
     if([string]$job.repo -ne $Repo){throw 'JOB_REPOSITORY_MISMATCH'}
-    if([string](& git -C $Repo remote get-url origin) -ne 'https://github.com/Stimurid/SESHAT.git'){throw 'ORIGIN_MISMATCH'}
-    if([string](& git -C $Repo branch --show-current) -ne [string]$job.branch){throw 'BRANCH_MISMATCH'}
-    if([string](& git -C $Repo rev-parse HEAD) -ne [string]$job.base_sha){throw 'BASE_MISMATCH'}
-    if(@(& git -C $Repo status --porcelain=v1).Count -ne 0){throw 'DIRTY_BEFORE_START'}
+    $origin=InvokeExecutorNative 'git' @('-C',$Repo,'remote','get-url','origin') 'executor-git-origin' 'ORIGIN_QUERY_FAILED'
+    if($origin.stdout.Trim() -cne 'https://github.com/Stimurid/SESHAT.git'){throw 'ORIGIN_MISMATCH'}
+    $branchBefore=InvokeExecutorNative 'git' @('-C',$Repo,'branch','--show-current') 'executor-git-branch' 'BRANCH_QUERY_FAILED'
+    if($branchBefore.stdout.Trim() -cne [string]$job.branch){throw 'BRANCH_MISMATCH'}
+    $headBefore=InvokeExecutorNative 'git' @('-C',$Repo,'rev-parse','HEAD') 'executor-git-head' 'HEAD_QUERY_FAILED'
+    if($headBefore.stdout.Trim() -cne [string]$job.base_sha){throw 'BASE_MISMATCH'}
+    $clean=InvokeExecutorNative 'git' @('-C',$Repo,'status','--porcelain=v1') 'executor-git-status-before' 'STATUS_FAILED'
+    if(@(Get-SeshatOutputLines -Text $clean.stdout).Count -ne 0){throw 'DIRTY_BEFORE_START'}
     $job.runner_pid=$PID
     $job.started_at_utc=$Started
     AtomicJson $job $JobPath
@@ -51,47 +69,56 @@ try {
     $prompt=Get-Content -LiteralPath (Join-Path $Root 'task_prompt.txt') -Raw -Encoding UTF8
     # Sandbox intentionally cannot modify .git and cannot use GitHub credentials.
     # Publishing occurs in the trusted host process, not by broadening Codex privileges.
-    $prompt | & codex exec --json --sandbox workspace-write -C $Repo -o $LastMessage - 2> $Stderr | Out-File -LiteralPath $Stdout -Encoding UTF8
-    $ExitCode=[int]$LASTEXITCODE
+    $codexResult=Invoke-SeshatNativeCommand -FilePath 'codex' -ArgumentList @('exec','--json','--sandbox','workspace-write','-C',$Repo,'-o',$LastMessage,'-') -WorkingDirectory $Repo -Label 'codex-exec' -AuditPath $executorAudit -JobId ([string]$job.job_id) -StandardInputText $prompt
+    $codexResult.stdout|Set-Content -LiteralPath $Stdout -Encoding UTF8
+    $codexResult.stderr|Set-Content -LiteralPath $Stderr -Encoding UTF8
+    $ExitCode=[int]$codexResult.exit_code
     if($ExitCode -ne 0){throw 'CODEX_NONZERO'}
-    $statusLines=@(& git -C $Repo -c core.quotePath=false status --porcelain=v1 -uall)
-    if($LASTEXITCODE -ne 0){throw 'STATUS_FAILED'}
+    $statusResult=InvokeExecutorNative 'git' @('-C',$Repo,'-c','core.quotePath=false','status','--porcelain=v1','-uall') 'executor-git-status-after' 'STATUS_FAILED'
+    $statusLines=@(Get-SeshatOutputLines -Text $statusResult.stdout)
     $ownedPaths=@(Get-SeshatStatusPaths -StatusLines $statusLines)
     $pathDecision=Test-SeshatOwnedPathSet -ApprovedPaths @($job.approved_paths) -OwnedPaths $ownedPaths -DirtyPaths $ownedPaths
     if($pathDecision -ne 'ADMIT'){throw $pathDecision}
     if($ownedPaths -cnotcontains 'docs/S_IMPL_002B_RESULT.md'){throw 'MISSING_REQUIRED_RESULT_RECEIPT'}
     $job|Add-Member -NotePropertyName owned_paths -NotePropertyValue $ownedPaths -Force
     AtomicJson $job $JobPath
-    & (Join-Path $PSScriptRoot 'publish.ps1') -JobPath $JobPath *> $ResultLog
-    if($LASTEXITCODE -ne 0){throw 'PUBLISH_PROCESS_NONZERO'}
+    $publisherResult=Invoke-SeshatNativeCommand -FilePath $PowerShellExe -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'publish.ps1'),'-JobPath',$JobPath) -WorkingDirectory $Repo -Label 'publisher-child' -AuditPath $executorAudit -JobId ([string]$job.job_id)
+    $publisherResult.stdout|Set-Content -LiteralPath $ResultLog -Encoding UTF8
+    $publisherSafeStderr=ConvertTo-SeshatSanitizedLogText -Text $publisherResult.stderr
+    $publisherSafeStderr|Set-Content -LiteralPath $PublisherStderr -Encoding UTF8
+    $PublisherExitCode=[int]$publisherResult.exit_code
+    if($publisherSafeStderr -cmatch 'PUBLISH_FAILED error_class=([A-Z][A-Z0-9_]{2,127}) phase=([A-Z_]+)'){$PublisherErrorClass=$Matches[1]}
+    if($PublisherExitCode -ne 0){throw 'PUBLISH_PROCESS_NONZERO'}
     if(-not (Test-Path (Join-Path $Root 'publish_receipt.json'))){throw 'PUBLISH_RECEIPT_MISSING'}
-    $r=Get-Content (Join-Path $Root 'publish_receipt.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    if([string]$r.status -ne 'PUBLISHED_DRAFT_PR'){throw 'PUBLISH_NOT_CONFIRMED'}
-    if([string]$r.job_id -cne [string]$job.job_id -or [int]$r.issue -ne [int]$job.issue_number){throw 'PUBLISH_RECEIPT_JOB_MISMATCH'}
-    if([string]$r.branch -cne [string]$job.branch -or [int]$r.pr_number -le 0){throw 'PUBLISH_RECEIPT_PR_MISMATCH'}
-    $publishedHead=[string](& git -C $Repo rev-parse HEAD|Select-Object -First 1)
-    if([string]$r.head_sha -cne $publishedHead -or [string]$r.pr_state -cne 'OPEN' -or -not [bool]$r.pr_is_draft -or [string]$r.pr_base -cne 'main' -or [string]$r.pr_head -cne [string]$job.branch){throw 'PUBLISH_RECEIPT_VERIFICATION_MISMATCH'}
+    try{$r=Get-Content (Join-Path $Root 'publish_receipt.json') -Raw -Encoding UTF8|ConvertFrom-Json}catch{throw 'PUBLISH_RECEIPT_INVALID'}
+    $publishedHeadResult=InvokeExecutorNative 'git' @('-C',$Repo,'rev-parse','HEAD') 'executor-git-published-head' 'HEAD_QUERY_FAILED'
+    $publishedHead=$publishedHeadResult.stdout.Trim()
+    $receiptDecision=Test-SeshatPublicationReceipt -Receipt $r -Job $job -HeadSha $publishedHead
+    if($receiptDecision -ne 'ADMIT'){throw $receiptDecision}
     $PublishStatus='PUBLISHED_DRAFT_PR'
     $ExitCode=0
 } catch {
     $ErrorType=$_.Exception.GetType().Name
-    if($_.Exception.Message -in @('JOB_REPOSITORY_MISMATCH','ORIGIN_MISMATCH','BRANCH_MISMATCH','BASE_MISMATCH','DIRTY_BEFORE_START','CODEX_NONZERO','STATUS_FAILED','BLOCK_APPROVED_PATH_SET_MISMATCH','BLOCK_EMPTY_JOB_OWNED_MANIFEST','BLOCK_UNAPPROVED_JOB_PATH','BLOCK_DIRTY_PATH_SET_MISMATCH','MISSING_REQUIRED_RESULT_RECEIPT','PUBLISH_PROCESS_NONZERO','PUBLISH_RECEIPT_MISSING','PUBLISH_NOT_CONFIRMED','PUBLISH_RECEIPT_JOB_MISMATCH','PUBLISH_RECEIPT_PR_MISMATCH','PUBLISH_RECEIPT_VERIFICATION_MISMATCH')){
+    if($_.Exception.Message -in @('JOB_REPOSITORY_MISMATCH','ORIGIN_QUERY_FAILED','ORIGIN_MISMATCH','BRANCH_QUERY_FAILED','BRANCH_MISMATCH','HEAD_QUERY_FAILED','BASE_MISMATCH','DIRTY_BEFORE_START','CODEX_NONZERO','STATUS_FAILED','BLOCK_APPROVED_PATH_SET_MISMATCH','BLOCK_EMPTY_JOB_OWNED_MANIFEST','BLOCK_UNAPPROVED_JOB_PATH','BLOCK_DIRTY_PATH_SET_MISMATCH','MISSING_REQUIRED_RESULT_RECEIPT','PUBLISH_PROCESS_NONZERO','PUBLISH_RECEIPT_MISSING','PUBLISH_RECEIPT_INVALID','BLOCK_PUBLISH_STATUS','BLOCK_PUBLISH_JOB_MISMATCH','BLOCK_PUBLISH_HEAD_MISMATCH','BLOCK_PUBLISH_PR_STATE','BLOCK_PUBLISH_PR_REFS','BLOCK_MALFORMED_PUBLICATION_RECEIPT')){
         $ErrorType=$_.Exception.Message
     }
     if($ExitCode -eq 0){$ExitCode=92}
 } finally {
-    $head=[string](& git -C $Repo rev-parse HEAD 2>$null | Select-Object -First 1)
-    $branch=[string](& git -C $Repo branch --show-current 2>$null | Select-Object -First 1)
-    $dirty=@(& git -C $Repo status --porcelain=v1 2>$null)
+    $head=$null;$branch=$null;$dirty=@()
+    try{$finalHead=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'rev-parse','HEAD') -WorkingDirectory $Repo -Label 'executor-final-head';if($finalHead.exit_code -eq 0){$head=$finalHead.stdout.Trim()}}catch{}
+    try{$finalBranch=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'branch','--show-current') -WorkingDirectory $Repo -Label 'executor-final-branch';if($finalBranch.exit_code -eq 0){$branch=$finalBranch.stdout.Trim()}}catch{}
+    try{$finalStatus=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'status','--porcelain=v1') -WorkingDirectory $Repo -Label 'executor-final-status';if($finalStatus.exit_code -eq 0){$dirty=@(Get-SeshatOutputLines -Text $finalStatus.stdout)}}catch{}
     $receipt=[ordered]@{
         job_id=if($job){[string]$job.job_id}else{'unknown'}
         start_utc=$Started; completed_at_utc=(Get-Date).ToUniversalTime().ToString('o')
         exit_code=$ExitCode; error_type=$ErrorType; publish_status=$PublishStatus
+        publisher_exit_code=$PublisherExitCode;publisher_error_class=$PublisherErrorClass
+        publisher_stdout_path=$ResultLog;publisher_stderr_path=$PublisherStderr
         branch=$branch; head_sha=$head; dirty_file_count=$dirty.Count
         log_path=$Stdout; final_message_path=$LastMessage
         publication_receipt=Join-Path $Root 'publish_receipt.json'
     }
     Write-SeshatJsonCreateNew -Value $receipt -Path $ExitPath
-    & (Join-Path $PSScriptRoot 'monitor.ps1') *> $null
+    try{[void](Invoke-SeshatNativeCommand -FilePath $PowerShellExe -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'monitor.ps1')) -WorkingDirectory $Repo -Label 'monitor-after-exit')}catch{}
 }
 exit $ExitCode
