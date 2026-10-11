@@ -7,6 +7,42 @@ New-Item -ItemType Directory -Path $temp|Out-Null
 try{
     $engine=(Get-Process -Id $PID).Path
     $audit=Join-Path $temp 'native.jsonl'
+    $childScript=Join-Path $temp 'native child with spaces.ps1'
+    @'
+param([string]$Mode,[string]$One,[string]$Two,[string]$Three)
+$utf8=New-Object System.Text.UTF8Encoding($false)
+[Console]::InputEncoding=$utf8
+[Console]::OutputEncoding=$utf8
+if($Mode -eq 'args'){
+    $stdin=[Console]::In.ReadToEnd()
+    [Console]::Out.WriteLine((@{one=$One;two=$Two;three=$Three;stdin=$stdin}|ConvertTo-Json -Compress))
+    [Console]::Error.WriteLine('synthetic warning')
+    exit 0
+}
+if($Mode -eq 'stream'){
+    [Console]::Out.WriteLine('first line русский')
+    [Console]::Out.Flush()
+    [Console]::Error.WriteLine('separate stderr русский')
+    [Console]::Error.Flush()
+    Start-Sleep -Seconds 3
+    [Console]::Out.WriteLine('partial before nonzero')
+    [Console]::Out.Flush()
+    exit 7
+}
+if($Mode -eq 'flood'){
+    [Console]::Out.Write(('x')*8192)
+    [Console]::Out.Flush()
+    Start-Sleep -Seconds 1
+    exit 0
+}
+if($Mode -eq 'floodstderr'){
+    [Console]::Error.Write(('e')*8192)
+    [Console]::Error.Flush()
+    Start-Sleep -Seconds 1
+    exit 0
+}
+exit 99
+'@|Set-Content -LiteralPath $childScript -Encoding UTF8
     $zeroWarning=Invoke-SeshatNativeCommand -FilePath $engine -ArgumentList @('-NoProfile','-NonInteractive','-Command',"[Console]::Error.WriteLine('synthetic warning'); exit 0") -WorkingDirectory $temp -Label 'mock-zero-warning' -AuditPath $audit -JobId 'synthetic-job'
     if($zeroWarning.exit_code -ne 0 -or -not $zeroWarning.stderr_present){throw 'EXIT_ZERO_STDERR_NOT_CAPTURED'}
     Assert-SeshatNativeSuccess -Result $zeroWarning -FailureClass 'SHOULD_NOT_FAIL'
@@ -19,6 +55,74 @@ try{
     $blocked=$false
     try{Assert-SeshatNativeSuccess -Result $nonzero -FailureClass 'SYNTHETIC_NATIVE_FAILED'}catch{$blocked=($_.Exception.Message -eq 'SYNTHETIC_NATIVE_FAILED')}
     if(-not $blocked){throw 'NONZERO_NATIVE_DID_NOT_FAIL_CLOSED'}
+
+    # Exercises the Windows PowerShell 5.1 Arguments fallback: spaces, an
+    # embedded quote, a trailing backslash, and UTF-8 stdin/stdout/stderr.
+    $argOne='value with spaces'
+    $argTwo='embedded"quote'
+    $argThree='C:\path with spaces\'
+    $unicodeInput='ввод по-русски'
+    $quoted=Invoke-SeshatNativeCommand -FilePath $engine -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$childScript,'args',$argOne,$argTwo,$argThree) -WorkingDirectory $temp -Label 'mock-quoted-arguments' -AuditPath $audit -JobId 'synthetic-job' -StandardInputText $unicodeInput
+    if($quoted.exit_code -ne 0 -or -not $quoted.stderr_present){throw 'QUOTED_ARGUMENT_CHILD_FAILED'}
+    $quotedPayload=$quoted.stdout.Trim()|ConvertFrom-Json
+    if([string]$quotedPayload.one -cne $argOne -or [string]$quotedPayload.two -cne $argTwo -or [string]$quotedPayload.three -cne $argThree){throw 'NATIVE_ARGUMENT_QUOTING_CHANGED'}
+    if([string]$quotedPayload.stdin -cne $unicodeInput){throw 'UNICODE_STDIN_CHANGED'}
+    if($quoted.stderr -notmatch 'synthetic warning'){throw 'EXIT_ZERO_STDERR_WARNING_MISSING'}
+
+    # Run the blocking streaming helper in a background PowerShell job so the
+    # test can prove the durable file is updated before the child exits.
+    $streamOut=Join-Path $temp 'stream-stdout.jsonl'
+    $streamErr=Join-Path $temp 'stream-stderr.log'
+    $streamAudit=Join-Path $temp 'stream-audit.jsonl'
+    $gatePath=Join-Path $opsRoot 'gate.ps1'
+    $streamJob=Start-Job -ScriptBlock {
+        param($gate,$exe,$script,$work,$out,$err,$auditPath)
+        . $gate
+        Invoke-SeshatStreamingNativeCommand -FilePath $exe -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$script,'stream') -WorkingDirectory $work -Label 'mock-stream-nonzero' -StandardOutputPath $out -StandardErrorPath $err -MaximumStandardOutputBytes 65536 -MaximumStandardErrorBytes 65536 -AuditPath $auditPath -JobId 'synthetic-stream'
+    } -ArgumentList $gatePath,$engine,$childScript,$temp,$streamOut,$streamErr,$streamAudit
+    try{
+        $deadline=[DateTime]::UtcNow.AddSeconds(20)
+        $observedBeforeExit=$false
+        while([DateTime]::UtcNow -lt $deadline){
+            if($streamJob.State -eq 'Running' -and (Test-Path -LiteralPath $streamOut)){
+                $visible=[System.IO.File]::ReadAllText($streamOut,[System.Text.Encoding]::UTF8)
+                if($visible -match 'first line русский'){$observedBeforeExit=$true;break}
+            }
+            if($streamJob.State -in @('Completed','Failed','Stopped')){break}
+            Start-Sleep -Milliseconds 50
+        }
+        if(-not $observedBeforeExit){throw 'STREAM_NOT_DURABLE_BEFORE_CHILD_EXIT'}
+        Wait-Job -Job $streamJob -Timeout 20|Out-Null
+        if($streamJob.State -ne 'Completed'){throw 'STREAM_TEST_JOB_DID_NOT_COMPLETE'}
+        $streamResult=Receive-Job -Job $streamJob
+    }finally{
+        if($streamJob.State -eq 'Running'){Stop-Job -Job $streamJob}
+        Remove-Job -Job $streamJob -Force
+    }
+    if([int]$streamResult.exit_code -ne 7 -or [string]$streamResult.status -cne 'NONZERO_EXIT' -or [bool]$streamResult.limit_exceeded){throw 'STREAM_NONZERO_STATUS_INCORRECT'}
+    $streamOutText=[System.IO.File]::ReadAllText($streamOut,[System.Text.Encoding]::UTF8)
+    $streamErrText=[System.IO.File]::ReadAllText($streamErr,[System.Text.Encoding]::UTF8)
+    if($streamOutText -notmatch 'first line русский' -or $streamOutText -notmatch 'partial before nonzero'){throw 'STREAM_STDOUT_PARTIAL_LOG_MISSING'}
+    if($streamErrText -notmatch 'separate stderr русский' -or $streamOutText -match 'separate stderr'){throw 'STREAM_STDERR_NOT_SEPARATE'}
+    $streamEvents=@(Get-Content -LiteralPath $streamAudit -Encoding UTF8|ForEach-Object{$_|ConvertFrom-Json})
+    if($streamEvents.Count -ne 2 -or [string]$streamEvents[0].status -cne 'STARTING' -or [bool]$streamEvents[0].terminal){throw 'STREAM_START_EVENT_INCORRECT'}
+    if([string]$streamEvents[1].status -cne 'NONZERO_EXIT' -or -not [bool]$streamEvents[1].terminal -or [int]$streamEvents[1].exit_code -ne 7){throw 'STREAM_TERMINAL_EVENT_INCORRECT'}
+    if($streamEvents[0].PSObject.Properties['stdout'] -or $streamEvents[1].PSObject.Properties['stderr']){throw 'RAW_STREAM_CONTENT_LEAKED_TO_AUDIT'}
+
+    $limitedOut=Join-Path $temp 'limited-stdout.log'
+    $limitedErr=Join-Path $temp 'limited-stderr.log'
+    $limitAudit=Join-Path $temp 'limit-audit.jsonl'
+    $limited=Invoke-SeshatStreamingNativeCommand -FilePath $engine -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$childScript,'flood') -WorkingDirectory $temp -Label 'mock-stream-limit' -StandardOutputPath $limitedOut -StandardErrorPath $limitedErr -MaximumStandardOutputBytes 128 -MaximumStandardErrorBytes 128 -AuditPath $limitAudit -JobId 'synthetic-limit'
+    if(-not [bool]$limited.limit_exceeded -or [string]$limited.status -cne 'OUTPUT_LIMIT_EXCEEDED' -or [string]$limited.limit_stream -cne 'stdout'){throw 'STREAM_LIMIT_DID_NOT_FAIL_CLOSED'}
+    if((Get-Item -LiteralPath $limitedOut).Length -ne 128 -or [long]$limited.stdout_bytes -ne 128){throw 'STREAM_LIMIT_NOT_ENFORCED_EXACTLY'}
+    $limitTerminal=(Get-Content -LiteralPath $limitAudit -Encoding UTF8|Select-Object -Last 1)|ConvertFrom-Json
+    if([string]$limitTerminal.status -cne 'OUTPUT_LIMIT_EXCEEDED' -or -not [bool]$limitTerminal.terminal){throw 'STREAM_LIMIT_EVENT_INCORRECT'}
+
+    $stderrLimitedOut=Join-Path $temp 'stderr-limited-stdout.log'
+    $stderrLimitedErr=Join-Path $temp 'stderr-limited-stderr.log'
+    $stderrLimited=Invoke-SeshatStreamingNativeCommand -FilePath $engine -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$childScript,'floodstderr') -WorkingDirectory $temp -Label 'mock-stderr-stream-limit' -StandardOutputPath $stderrLimitedOut -StandardErrorPath $stderrLimitedErr -MaximumStandardOutputBytes 128 -MaximumStandardErrorBytes 64 -JobId 'synthetic-stderr-limit'
+    if(-not [bool]$stderrLimited.limit_exceeded -or [string]$stderrLimited.status -cne 'OUTPUT_LIMIT_EXCEEDED' -or [string]$stderrLimited.limit_stream -cne 'stderr'){throw 'STDERR_STREAM_LIMIT_DID_NOT_FAIL_CLOSED'}
+    if((Get-Item -LiteralPath $stderrLimitedErr).Length -ne 64 -or [long]$stderrLimited.stderr_bytes -ne 64){throw 'STDERR_STREAM_LIMIT_NOT_ENFORCED_EXACTLY'}
 
     # Temp local Git only: exercises argument handling and separated native IO.
     $gitRepo=Join-Path $temp 'repo'
@@ -82,7 +186,7 @@ try{
     if($publishSource -notmatch 'Write-SeshatJsonCreateNew -Value \$result -Path \$receiptPath'){throw 'PUBLICATION_RECEIPT_NOT_CREATE_NEW'}
     if($reconcileSource -match "(?m)ArgumentList.*'(add|commit|push|create|edit|close|merge)'"){throw 'RECONCILE_CONTAINS_MUTATING_COMMAND'}
     if($reconcileSource -notmatch "automatic_retry='DENIED'" -or $reconcileSource -notmatch "automatic_mutation='NONE'"){throw 'RECONCILE_DENIAL_MARKERS_MISSING'}
-    Write-Output 'PASS: synthetic publisher native IO, fail-closed paths, immutable receipts, stage recovery, and no-retry checks'
+    Write-Output 'PASS: synthetic buffered/streaming native IO, bounded durable partial logs, quoting, immutable receipts, stage recovery, and no-retry checks'
 }finally{
     Remove-Item -LiteralPath $temp -Recurse -Force
 }

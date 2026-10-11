@@ -27,10 +27,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - shell: pwsh
+      - name: PowerShell 7 gate
+        shell: pwsh
         run: ./ops/codex_watch/tests/test-gate.ps1
-      - shell: pwsh
+      - name: PowerShell 7 publisher and streaming recovery
+        shell: pwsh
         run: ./ops/codex_watch/tests/test-publisher-recovery.ps1
+      - name: Windows PowerShell 5.1 gate
+        shell: cmd
+        run: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ops\codex_watch\tests\test-gate.ps1
+      - name: Windows PowerShell 5.1 publisher and streaming recovery
+        shell: cmd
+        run: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ops\codex_watch\tests\test-publisher-recovery.ps1
 
   test:
     runs-on: ubuntu-latest

@@ -2,6 +2,7 @@
 Set-StrictMode -Version Latest
 function ConvertTo-SeshatNativeArgument {
     param([Parameter(Mandatory=$true)][AllowEmptyString()][string]$Value)
+    if($Value.Length -eq 0){return '""'}
     if($Value -notmatch '[\s"]'){return $Value}
     # Windows PowerShell 5 lacks ProcessStartInfo.ArgumentList. This is the
     # CommandLineToArgvW-compatible quoting used only on that fallback path.
@@ -56,6 +57,10 @@ function Invoke-SeshatNativeCommand {
     $start.RedirectStandardError=$true
     $hasStandardInput=$PSBoundParameters.ContainsKey('StandardInputText')
     $start.RedirectStandardInput=$hasStandardInput
+    $utf8NoBom=[System.Text.UTF8Encoding]::new($false)
+    if($start.PSObject.Properties['StandardInputEncoding']){$start.StandardInputEncoding=$utf8NoBom}
+    if($start.PSObject.Properties['StandardOutputEncoding']){$start.StandardOutputEncoding=$utf8NoBom}
+    if($start.PSObject.Properties['StandardErrorEncoding']){$start.StandardErrorEncoding=$utf8NoBom}
     if($start.PSObject.Properties['ArgumentList']){
         foreach($argument in $ArgumentList){[void]$start.ArgumentList.Add([string]$argument)}
     }else{
@@ -91,6 +96,144 @@ function Invoke-SeshatNativeCommand {
         }
         return $result
     }finally{$process.Dispose()}
+}
+function Invoke-SeshatStreamingNativeCommand {
+    param(
+        [Parameter(Mandatory=$true)][string]$FilePath,
+        [Parameter(Mandatory=$true)][AllowEmptyCollection()][string[]]$ArgumentList,
+        [Parameter(Mandatory=$true)][string]$WorkingDirectory,
+        [Parameter(Mandatory=$true)][string]$Label,
+        [Parameter(Mandatory=$true)][string]$StandardOutputPath,
+        [Parameter(Mandatory=$true)][string]$StandardErrorPath,
+        [Parameter(Mandatory=$true)][long]$MaximumStandardOutputBytes,
+        [Parameter(Mandatory=$true)][long]$MaximumStandardErrorBytes,
+        [string]$AuditPath,
+        [string]$JobId='unknown',
+        [AllowEmptyString()][string]$StandardInputText
+    )
+    if($Label -cnotmatch '^[a-z0-9][a-z0-9-]{1,63}$'){throw 'INVALID_NATIVE_COMMAND_LABEL'}
+    if($MaximumStandardOutputBytes -le 0 -or $MaximumStandardErrorBytes -le 0){throw 'INVALID_STREAM_LIMIT'}
+    $stdoutFull=[System.IO.Path]::GetFullPath($StandardOutputPath)
+    $stderrFull=[System.IO.Path]::GetFullPath($StandardErrorPath)
+    if($stdoutFull -ieq $stderrFull){throw 'STREAM_PATH_COLLISION'}
+    foreach($path in @($stdoutFull,$stderrFull)){
+        $parent=Split-Path -Parent $path
+        [void][System.IO.Directory]::CreateDirectory($parent)
+    }
+    $start=[System.Diagnostics.ProcessStartInfo]::new()
+    $start.FileName=$FilePath
+    $start.WorkingDirectory=$WorkingDirectory
+    $start.UseShellExecute=$false
+    $start.CreateNoWindow=$true
+    $start.RedirectStandardOutput=$true
+    $start.RedirectStandardError=$true
+    $hasStandardInput=$PSBoundParameters.ContainsKey('StandardInputText')
+    $start.RedirectStandardInput=$hasStandardInput
+    $utf8NoBom=[System.Text.UTF8Encoding]::new($false)
+    if($start.PSObject.Properties['StandardInputEncoding']){$start.StandardInputEncoding=$utf8NoBom}
+    if($start.PSObject.Properties['StandardOutputEncoding']){$start.StandardOutputEncoding=$utf8NoBom}
+    if($start.PSObject.Properties['StandardErrorEncoding']){$start.StandardErrorEncoding=$utf8NoBom}
+    if($start.PSObject.Properties['ArgumentList']){
+        foreach($argument in $ArgumentList){[void]$start.ArgumentList.Add([string]$argument)}
+    }else{
+        $start.Arguments=(@($ArgumentList|ForEach-Object{ConvertTo-SeshatNativeArgument -Value ([string]$_)}) -join ' ')
+    }
+    $process=[System.Diagnostics.Process]::new()
+    $process.StartInfo=$start
+    $stdoutFile=$null
+    $stderrFile=$null
+    $started=$false
+    $terminalWritten=$false
+    $stdoutBytes=[long]0
+    $stderrBytes=[long]0
+    $limitStream=$null
+    try{
+        $stdoutFile=[System.IO.File]::Open($stdoutFull,[System.IO.FileMode]::Create,[System.IO.FileAccess]::Write,[System.IO.FileShare]::Read)
+        $stderrFile=[System.IO.File]::Open($stderrFull,[System.IO.FileMode]::Create,[System.IO.FileAccess]::Write,[System.IO.FileShare]::Read)
+        if($AuditPath){
+            Write-SeshatAppendJsonLine -Value ([ordered]@{
+                schema='seshat.streaming-native-command.v1';recorded_at_utc=(Get-Date).ToUniversalTime().ToString('o')
+                job_id=$JobId;command=$Label;status='STARTING';terminal=$false
+                stdout_path=$stdoutFull;stderr_path=$stderrFull
+                stdout_limit_bytes=$MaximumStandardOutputBytes;stderr_limit_bytes=$MaximumStandardErrorBytes
+            }) -Path $AuditPath
+        }
+        if(-not $process.Start()){throw 'NATIVE_PROCESS_START_FAILED'}
+        $started=$true
+        if($hasStandardInput){
+            $process.StandardInput.Write($StandardInputText)
+            $process.StandardInput.Close()
+        }
+        $stdoutBuffer=New-Object byte[] 4096
+        $stderrBuffer=New-Object byte[] 4096
+        $stdoutTask=$process.StandardOutput.BaseStream.ReadAsync($stdoutBuffer,0,$stdoutBuffer.Length)
+        $stderrTask=$process.StandardError.BaseStream.ReadAsync($stderrBuffer,0,$stderrBuffer.Length)
+        $stdoutDone=$false
+        $stderrDone=$false
+        while(-not($stdoutDone -and $stderrDone)){
+            $madeProgress=$false
+            if(-not $stdoutDone -and $stdoutTask.IsCompleted){
+                $count=[int]$stdoutTask.GetAwaiter().GetResult()
+                if($count -eq 0){$stdoutDone=$true}else{
+                    $remaining=$MaximumStandardOutputBytes-$stdoutBytes
+                    $writeCount=[int][Math]::Min([long]$count,[Math]::Max([long]0,$remaining))
+                    if($writeCount -gt 0){$stdoutFile.Write($stdoutBuffer,0,$writeCount);$stdoutFile.Flush();$stdoutBytes+=$writeCount}
+                    if($writeCount -lt $count){$limitStream='stdout'}else{$stdoutTask=$process.StandardOutput.BaseStream.ReadAsync($stdoutBuffer,0,$stdoutBuffer.Length)}
+                }
+                $madeProgress=$true
+            }
+            if(-not $stderrDone -and $stderrTask.IsCompleted){
+                $count=[int]$stderrTask.GetAwaiter().GetResult()
+                if($count -eq 0){$stderrDone=$true}else{
+                    $remaining=$MaximumStandardErrorBytes-$stderrBytes
+                    $writeCount=[int][Math]::Min([long]$count,[Math]::Max([long]0,$remaining))
+                    if($writeCount -gt 0){$stderrFile.Write($stderrBuffer,0,$writeCount);$stderrFile.Flush();$stderrBytes+=$writeCount}
+                    if($writeCount -lt $count){$limitStream='stderr'}else{$stderrTask=$process.StandardError.BaseStream.ReadAsync($stderrBuffer,0,$stderrBuffer.Length)}
+                }
+                $madeProgress=$true
+            }
+            if($limitStream){
+                if(-not $process.HasExited){$process.Kill()}
+                $process.WaitForExit()
+                $stdoutDone=$true
+                $stderrDone=$true
+            }elseif(-not $madeProgress){
+                [System.Threading.Thread]::Sleep(20)
+            }
+        }
+        $process.WaitForExit()
+        $exitCode=[int]$process.ExitCode
+        $status=if($limitStream){'OUTPUT_LIMIT_EXCEEDED'}elseif($exitCode -ne 0){'NONZERO_EXIT'}else{'COMPLETED'}
+        if($AuditPath){
+            Write-SeshatAppendJsonLine -Value ([ordered]@{
+                schema='seshat.streaming-native-command.v1';recorded_at_utc=(Get-Date).ToUniversalTime().ToString('o')
+                job_id=$JobId;command=$Label;status=$status;terminal=$true;exit_code=$exitCode
+                stdout_bytes=$stdoutBytes;stderr_bytes=$stderrBytes;limit_stream=$limitStream
+            }) -Path $AuditPath
+            $terminalWritten=$true
+        }
+        return [pscustomobject]@{
+            label=$Label;exit_code=$exitCode;status=$status;limit_exceeded=[bool]$limitStream
+            limit_stream=$limitStream;stdout_path=$stdoutFull;stderr_path=$stderrFull
+            stdout_bytes=$stdoutBytes;stderr_bytes=$stderrBytes
+        }
+    }catch{
+        $streamError=$_
+        if($started -and -not $process.HasExited){try{$process.Kill()}catch{}}
+        if($AuditPath -and -not $terminalWritten){
+            Write-SeshatAppendJsonLine -Value ([ordered]@{
+                schema='seshat.streaming-native-command.v1';recorded_at_utc=(Get-Date).ToUniversalTime().ToString('o')
+                job_id=$JobId;command=$Label;status='FAILED';terminal=$true
+                exit_code=if($started -and $process.HasExited){[int]$process.ExitCode}else{$null}
+                stdout_bytes=$stdoutBytes;stderr_bytes=$stderrBytes;error_class=(Get-SeshatSafeErrorClass -ErrorRecord $streamError)
+            }) -Path $AuditPath
+        }
+        throw $streamError
+    }finally{
+        if($stdoutFile){$stdoutFile.Dispose()}
+        if($stderrFile){$stderrFile.Dispose()}
+        $process.Dispose()
+    }
 }
 function Assert-SeshatNativeSuccess {
     param([Parameter(Mandatory=$true)][object]$Result,[Parameter(Mandatory=$true)][string]$FailureClass)

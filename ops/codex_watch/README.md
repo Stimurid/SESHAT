@@ -128,6 +128,21 @@ PowerShell error. Any nonzero native exit remains fail-closed. Audit records con
 only command labels, exit status, stderr presence/count/hash and classification;
 they do not contain command arguments, diff bodies, tokens, or raw native output.
 
+Long-running Codex output uses a separate bounded streaming path. While the child
+is running, stdout is flushed directly to the private local `stdout.jsonl` and
+stderr to `stderr.log`; neither stream is accumulated in PowerShell memory. The
+files therefore retain a readable partial prefix after a child failure or host
+interruption and their modification times remain useful to the watchdog. The
+current hard limits are 64 MiB for stdout and 8 MiB for stderr. Reaching either
+limit terminates the child fail-closed, retains the bounded prefix, records
+`OUTPUT_LIMIT_EXCEEDED`, and cannot proceed to publication. Short Git/GH and
+publisher-child commands continue to use the small buffered helper.
+
+The private streaming audit records `STARTING` and exactly one terminal status
+(`COMPLETED`, `NONZERO_EXIT`, `OUTPUT_LIMIT_EXCEEDED`, or `FAILED`) with exit code
+when available, byte counts and paths, but never raw agent output. These local
+agent logs must not be uploaded as GitHub artifacts or copied into issues/PRs.
+
 The first failed publisher run for issue #28 returned an opaque `RemoteException`
 and an empty publisher log. Its original exception stack was **not captured**.
 An isolated synthetic probe reproduced the relevant Windows PowerShell 5 behavior;
@@ -164,9 +179,10 @@ scanner, human acceptance, or disabled scheduler.
 Windows Task Scheduler task SESHAT-Codex-Dispatch is a five-minute task distinct from the existing SESHAT-Codex-Watch task and from hourly ChatGPT notifications. It is temporarily **DISABLED for PR #18 review**. If it is later re-enabled after all security gates are satisfied, the machine must be awake/logged in for the local scheduled process to run.
 
 Verification:
-- powershell.exe -NoProfile -ExecutionPolicy Bypass -File ops\codex_watch\tests\test-gate.ps1
+- powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ops\codex_watch\tests\test-gate.ps1
+- powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ops\codex_watch\tests\test-publisher-recovery.ps1 (Windows PowerShell 5.1 quoting, UTF-8 and bounded streaming; isolated CI only)
 - pwsh -File ops/codex_watch/tests/test-gate.ps1 (isolated GitHub Actions job; checkout uses `persist-credentials: false` and `contents: read`)
-- pwsh -File ops/codex_watch/tests/test-publisher-recovery.ps1 (synthetic native stderr + temporary local Git, isolated Windows GitHub Actions only; no live GitHub calls)
+- pwsh -File ops/codex_watch/tests/test-publisher-recovery.ps1 (same synthetic publisher/streaming coverage under PowerShell 7; isolated Windows GitHub Actions only; no live GitHub calls)
 - powershell -NoProfile -File C:\Users\Homee\AppData\Local\SESHAT\watch\dispatch.ps1 (safe dry-run)
 - schtasks /query /tn SESHAT-Codex-Dispatch /fo LIST /v (must report disabled during PR #18 review)
 - Inspect local dispatch_state.json and GitHub current HEAD/PR/CI.
@@ -175,5 +191,9 @@ Verification:
 Implementation limitations: this first version handles ONE queued transition and ONE active job per Windows checkout; it is not a general self-programming scheduler. It preserves old job logs, never resets a dirty repository, never auto-merges, never self-certifies acceptance, and cannot work while the host is unavailable.
 
 Security boundary: the trusted host publisher MUST NOT execute Codex-produced Python or tests while GitHub credentials are accessible. After an allowed-files/secret-pattern/diff check it opens a draft PR; isolated GitHub Actions CI runs both pytest and Ruff on the proposed branch. PR reviewers examine code and CI before manual engineering acceptance. The scanner detects common secret formats but cannot prove arbitrary content contains no sensitive data; review remains mandatory.
+
+Review state for S-OPS-PUBLISH-RECOVERY #28 / PR #39 after this source change:
+`CI_PENDING`. No local PowerShell or agent-authored test was executed on the
+credential-bearing host; only isolated GitHub PR CI may supply test evidence.
 
 The offline PowerShell gate test is pure simulation: it uses synthetic GitHub-shaped objects, performs no network calls, and asserts that the current branch, local branch refs, and worktree status are unchanged. Its negative cases include issue-body drift, a stale/wrong reviewed SHA, a wrong acceptance actor, a missing acceptance comment, unmerged PR #18, wrong-workflow success at the matching SHA, arbitrary job/marker binding, `tests/unrelated.py`, wrong PR head SHA, and byte-for-byte preservation of a pre-existing exit sentinel.
