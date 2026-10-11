@@ -58,7 +58,7 @@ function Invoke-SeshatNativeCommand {
     $hasStandardInput=$PSBoundParameters.ContainsKey('StandardInputText')
     $start.RedirectStandardInput=$hasStandardInput
     $utf8NoBom=[System.Text.UTF8Encoding]::new($false)
-    if($start.PSObject.Properties['StandardInputEncoding']){$start.StandardInputEncoding=$utf8NoBom}
+    if($hasStandardInput -and $start.PSObject.Properties['StandardInputEncoding']){$start.StandardInputEncoding=$utf8NoBom}
     if($start.PSObject.Properties['StandardOutputEncoding']){$start.StandardOutputEncoding=$utf8NoBom}
     if($start.PSObject.Properties['StandardErrorEncoding']){$start.StandardErrorEncoding=$utf8NoBom}
     if($start.PSObject.Properties['ArgumentList']){
@@ -130,7 +130,7 @@ function Invoke-SeshatStreamingNativeCommand {
     $hasStandardInput=$PSBoundParameters.ContainsKey('StandardInputText')
     $start.RedirectStandardInput=$hasStandardInput
     $utf8NoBom=[System.Text.UTF8Encoding]::new($false)
-    if($start.PSObject.Properties['StandardInputEncoding']){$start.StandardInputEncoding=$utf8NoBom}
+    if($hasStandardInput -and $start.PSObject.Properties['StandardInputEncoding']){$start.StandardInputEncoding=$utf8NoBom}
     if($start.PSObject.Properties['StandardOutputEncoding']){$start.StandardOutputEncoding=$utf8NoBom}
     if($start.PSObject.Properties['StandardErrorEncoding']){$start.StandardErrorEncoding=$utf8NoBom}
     if($start.PSObject.Properties['ArgumentList']){
