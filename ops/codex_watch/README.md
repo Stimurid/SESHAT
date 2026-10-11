@@ -112,6 +112,21 @@ The queue also carries a finite S2B `approved_paths` set. After Codex exits, the
 
 The installed runtime bundle (`dispatch.ps1`, `gate.ps1`, `execute-task.ps1`, `publish.ps1`, and `task_queue.json`) must byte-match the repository files, remain unchanged between the merged PR #18 SHA and the dispatched main SHA, and carry its SHA-256 manifest inside the marker-bound job. Both execution entrypoints recheck this provenance. After push, publication succeeds only when GitHub reports the PR `OPEN`, draft, based on `main`, headed by the registered branch, and pointing to the just-pushed commit SHA. Existing `exit.json` is never overwritten; duplicate execution is rejected before the operational `try/finally`, and final creation uses create-new semantics.
 
+Codex launch additionally requires a separately reviewed, host-owned
+`C:\ProgramData\SESHAT\codex-launch-policy.json`. The repository deliberately
+contains no release pin and cannot nominate a trusted binary. The v1 policy names
+canonical absolute `node.exe`, Codex `bin\codex.js`, and `package.json` paths;
+their allowed parent roots; SHA-256 values; exact `@openai/codex` version; and the
+Authenticode signer thumbprint for Node. Dispatch fails closed if it is missing,
+malformed, unsigned, outside its roots, or traverses a reparse point. Its complete
+binding and policy hash are included in the job authorization digest. Execution
+revalidates it, opens all three identity files without write/delete sharing,
+rehashes them after locking, and retains the locks through process execution. PATH
+shims, adjacent packages, direct executable fallbacks, and drifted pins are never
+considered. A trusted operator must create/review this policy from independently
+verified installation evidence; the sandbox and CI fixture must not be used as a
+source of production pins.
+
 The two labels are different independent permissions. Engineering acceptance does NOT mean scientific-method approval. Codex must never invent another task, import a donor wholesale, or modify the research ontology on its own.
 
 Task S-IMPL-002B (#17) is prepared; current predecessor PR #16 remains draft/unmerged. Automatic dispatch is therefore BLOCKED until explicit review and merge. Do not apply the PR acceptance label merely because tests pass.
@@ -148,11 +163,25 @@ and an empty publisher log. Its original exception stack was **not captured**.
 An isolated synthetic probe reproduced the relevant Windows PowerShell 5 behavior;
 that probe is evidence for the fix, not a reconstruction of the missing stack.
 
-Each publication attempt has an append-only per-job stage stream under
-`publication-events`: `BEFORE_COMMIT`, `STAGED_ONLY`, `COMMITTED_ONLY`,
-`PUSHED_WITHOUT_PR`, and `DRAFT_PUBLISHED`. A prior stage stream or publication
-receipt blocks another automatic attempt. `exit.json` and `publish_receipt.json`
-use create-new semantics and are never overwritten.
+Each publication attempt has an append-only per-job stream under
+`publication-events`. Before every `git add`, `git commit`, create-only push, and
+`gh pr create`, it durably appends a v2 `INTENT` with job, attempt nonce, phase and
+before-witness; native return is recorded as `RETURNED`; verified after-witness is
+then recorded as `COMPLETE`. Any exception after the first intent records
+`RECONCILIATION_REQUIRED`. A prior stream or receipt blocks automatic retry.
+`exit.json` and `publish_receipt.json` use create-new semantics and are never
+overwritten. Reconciliation reads the index, HEAD, remote ref and PR state and
+reports an incomplete intent/return without mutating any of them.
+
+Before staging, every owned regular file is constrained to 2 MiB and the total to
+5 MiB, with repository containment and reparse-point denial. After staging, Git
+blob sizes and regular-file modes are checked independently. Binary numstat is
+denied. The staged patch is streamed to a private file with an 8 MiB ceiling and
+scanned incrementally as strict UTF-8; added-line secret matching survives chunk
+boundaries and neither shapes nor patch bodies enter public logs. Remote branch
+and PR absence are checked before staging and again before publication. Push is
+atomic and create-only using an empty-expected-OID force-with-lease; it cannot
+overwrite a ref created before or during the attempt.
 
 After this change is reviewed and deliberately installed, an authorized operator
 handles an interrupted attempt by performing readback first:
@@ -165,11 +194,13 @@ powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
 
 Recovery is deliberately manual and stage-specific:
 
+- `PRECHECK`: no mutation was recorded; inspect the failed admission check before any new authorized attempt.
 - `BEFORE_COMMIT`: inspect worktree and authorization evidence; do not rerun.
 - `STAGED_ONLY`: inspect the index and exact allowed paths; do not commit blindly.
 - `COMMITTED_ONLY`: verify the remote branch before any push decision.
 - `PUSHED_WITHOUT_PR`: verify GitHub for an existing PR before any create decision.
 - `DRAFT_PUBLISHED`: verify the existing draft and receipt; never create a duplicate.
+- `RECONCILIATION_REQUIRED`: compare the last `INTENT`/`RETURNED` record with index, HEAD, remote ref and PR readback; never infer that the interrupted mutation did or did not happen.
 
 Missing, malformed, mismatched, or stale publication receipts always fail the
 executor. Reconciliation does not repair receipts, modify Git, call `gh pr create`,

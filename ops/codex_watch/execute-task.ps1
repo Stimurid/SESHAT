@@ -22,6 +22,7 @@ $CodexLimitStream=$null
 $PowerShellExe=(Get-Process -Id $PID).Path
 $ErrorType=$null
 $PublishStatus='NOT_STARTED'
+$CodexLaunchProvenance=$null
 $Started=(Get-Date).ToUniversalTime().ToString('o')
 $job=$null
 function AtomicJson([object]$value,[string]$path) {
@@ -72,13 +73,16 @@ try {
     $prompt=Get-Content -LiteralPath (Join-Path $Root 'task_prompt.txt') -Raw -Encoding UTF8
     # Sandbox intentionally cannot modify .git and cannot use GitHub credentials.
     # Publishing occurs in the trusted host process, not by broadening Codex privileges.
-    $codexLaunch=Resolve-SeshatCodexLaunch
+    $codexLaunch=Resolve-SeshatCodexLaunch -ExpectedBinding $job.codex_launch_policy
+    $CodexLaunchProvenance=$codexLaunch.provenance
     $CodexStreamStatus='STARTING'
     try{
         $codexResult=Invoke-SeshatStreamingNativeCommand -FilePath $codexLaunch.file_path -ArgumentList (@($codexLaunch.argv_prefix)+@('exec','--json','--sandbox','workspace-write','-C',$Repo,'-o',$LastMessage,'-')) -WorkingDirectory $Repo -Label 'codex-exec' -StandardOutputPath $Stdout -StandardErrorPath $Stderr -MaximumStandardOutputBytes 67108864 -MaximumStandardErrorBytes 8388608 -AuditPath $executorAudit -JobId ([string]$job.job_id) -StandardInputText $prompt
     }catch{
         $CodexStreamStatus='FAILED'
         throw
+    }finally{
+        Close-SeshatCodexLaunch -Launch $codexLaunch
     }
     $ExitCode=[int]$codexResult.exit_code
     $CodexStreamStatus=[string]$codexResult.status
@@ -114,6 +118,8 @@ try {
     $ErrorType=$_.Exception.GetType().Name
     if($_.Exception.Message -in @('JOB_REPOSITORY_MISMATCH','ORIGIN_QUERY_FAILED','ORIGIN_MISMATCH','BRANCH_QUERY_FAILED','BRANCH_MISMATCH','HEAD_QUERY_FAILED','BASE_MISMATCH','DIRTY_BEFORE_START','CODEX_OUTPUT_LIMIT_EXCEEDED','CODEX_NONZERO','STATUS_FAILED','BLOCK_APPROVED_PATH_SET_MISMATCH','BLOCK_EMPTY_JOB_OWNED_MANIFEST','BLOCK_UNAPPROVED_JOB_PATH','BLOCK_DIRTY_PATH_SET_MISMATCH','MISSING_REQUIRED_RESULT_RECEIPT','PUBLISH_PROCESS_NONZERO','PUBLISH_RECEIPT_MISSING','PUBLISH_RECEIPT_INVALID','BLOCK_PUBLISH_STATUS','BLOCK_PUBLISH_JOB_MISMATCH','BLOCK_PUBLISH_HEAD_MISMATCH','BLOCK_PUBLISH_PR_STATE','BLOCK_PUBLISH_PR_REFS','BLOCK_MALFORMED_PUBLICATION_RECEIPT')){
         $ErrorType=$_.Exception.Message
+    }elseif($_.Exception.Message -cmatch '^(CODEX|TRUSTED)_[A-Z0-9_]+$'){
+        $ErrorType=$_.Exception.Message
     }
     if($ExitCode -eq 0){$ExitCode=92}
 } finally {
@@ -128,6 +134,7 @@ try {
         publisher_exit_code=$PublisherExitCode;publisher_error_class=$PublisherErrorClass
         codex_stream_status=$CodexStreamStatus;codex_stdout_bytes=$CodexStdoutBytes
         codex_stderr_bytes=$CodexStderrBytes;codex_limit_stream=$CodexLimitStream
+        codex_launch_provenance=$CodexLaunchProvenance
         publisher_stdout_path=$ResultLog;publisher_stderr_path=$PublisherStderr
         branch=$branch; head_sha=$head; dirty_file_count=$dirty.Count
         log_path=$Stdout; final_message_path=$LastMessage

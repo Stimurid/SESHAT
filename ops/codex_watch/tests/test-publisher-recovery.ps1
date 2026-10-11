@@ -131,26 +131,55 @@ exit 99
     if(-not [bool]$stderrLimited.limit_exceeded -or [string]$stderrLimited.status -cne 'OUTPUT_LIMIT_EXCEEDED' -or [string]$stderrLimited.limit_stream -cne 'stderr'){throw 'STDERR_STREAM_LIMIT_DID_NOT_FAIL_CLOSED'}
     if((Get-Item -LiteralPath $stderrLimitedErr).Length -ne 64 -or [long]$stderrLimited.stderr_bytes -ne 64){throw 'STDERR_STREAM_LIMIT_NOT_ENFORCED_EXACTLY'}
 
-    # The actual Aorustim Codex CLI is an npm codex.cmd shim, not a native
-    # executable. Exercise the approved shim-to-node resolution offline.
-    $npmMockRoot=Join-Path $temp 'npm shim with spaces'
-    $npmMockBin=Join-Path $npmMockRoot 'node_modules\@openai\codex\bin'
+    # Synthetic pins are created only inside this isolated CI fixture. Production
+    # pins live in the separately reviewed host policy and are never in the repo.
+    $node=(Get-Command node.exe -CommandType Application|Select-Object -First 1).Source
+    $nodeSignature=Get-AuthenticodeSignature -LiteralPath $node
+    if([string]$nodeSignature.Status -cne 'Valid' -or -not $nodeSignature.SignerCertificate){throw 'CI_NODE_NOT_AUTHENTICODE_SIGNED'}
+    $npmMockRoot=Join-Path $temp 'pinned npm package with spaces'
+    $npmMockBin=Join-Path $npmMockRoot 'bin'
     [void][System.IO.Directory]::CreateDirectory($npmMockBin)
-    $mockShim=Join-Path $npmMockRoot 'codex.cmd'
-    [System.IO.File]::WriteAllText($mockShim,'@echo off',[System.Text.UTF8Encoding]::new($false))
     $mockJs=Join-Path $npmMockBin 'codex.js'
     [System.IO.File]::WriteAllText($mockJs,'process.stdout.write("SESHAT_MOCK_NODE_CLI_READY\\n");',[System.Text.UTF8Encoding]::new($false))
-    $npmLaunch=Resolve-SeshatCodexLaunch -CommandName $mockShim
-    if([string]$npmLaunch.launch_mode -cne 'NPM_NODE_ENTRYPOINT' -or @($npmLaunch.argv_prefix).Count -ne 1 -or [string]$npmLaunch.argv_prefix[0] -cne $mockJs){throw 'NPM_CODEX_LAUNCH_WRONG_ENTRYPOINT'}
+    $packageJson=Join-Path $npmMockRoot 'package.json'
+    [System.IO.File]::WriteAllText($packageJson,'{"name":"@openai/codex","version":"9.9.9"}',[System.Text.UTF8Encoding]::new($false))
+    $policyPath=Join-Path $temp 'codex-launch-policy.json'
+    $policy=[ordered]@{schema='seshat.codex-launch-policy.v1';policy_id='isolated-ci-fixture';node_path=$node;node_root=(Split-Path -Parent $node);node_sha256=(Get-SeshatFileSha256 -Path $node);node_signer_thumbprint=[string]$nodeSignature.SignerCertificate.Thumbprint;node_version=[string]([System.Diagnostics.FileVersionInfo]::GetVersionInfo($node).ProductVersion);codex_root=$npmMockRoot;codex_js_path=$mockJs;codex_js_sha256=(Get-SeshatFileSha256 -Path $mockJs);package_json_path=$packageJson;package_json_sha256=(Get-SeshatFileSha256 -Path $packageJson);package_name='@openai/codex';package_version='9.9.9'}
+    [System.IO.File]::WriteAllText($policyPath,($policy|ConvertTo-Json -Compress),[System.Text.UTF8Encoding]::new($false))
+    $binding=Get-SeshatCodexLaunchPolicyBinding -PolicyPath $policyPath
+    $oldPath=$env:PATH
+    $shadow=Join-Path $temp 'shadow-path'
+    [void][System.IO.Directory]::CreateDirectory($shadow)
+    [System.IO.File]::WriteAllText((Join-Path $shadow 'codex.cmd'),'@exit 99',[System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllBytes((Join-Path $shadow 'node.exe'),[byte[]](1,2,3,4))
+    $env:PATH=$shadow+';'+$oldPath
+    $npmLaunch=Resolve-SeshatCodexLaunch -ExpectedBinding $binding
+    if([string]$npmLaunch.launch_mode -cne 'PINNED_NPM_NODE_ENTRYPOINT' -or [string]$npmLaunch.file_path -cne $node -or [string]$npmLaunch.argv_prefix[0] -cne $mockJs){throw 'PINNED_CODEX_LAUNCH_WRONG_ENTRYPOINT'}
     $cliOut=Join-Path $temp 'cli-mock-stdout.jsonl'
     $cliErr=Join-Path $temp 'cli-mock-stderr.log'
-    $cliResult=Invoke-SeshatStreamingNativeCommand -FilePath ([string]$npmLaunch.file_path) -ArgumentList (@($npmLaunch.argv_prefix)+@('exec')) -WorkingDirectory $temp -Label 'mock-npm-codex' -StandardOutputPath $cliOut -StandardErrorPath $cliErr -MaximumStandardOutputBytes 8192 -MaximumStandardErrorBytes 8192 -JobId 'synthetic-cli'
+    try{$cliResult=Invoke-SeshatStreamingNativeCommand -FilePath ([string]$npmLaunch.file_path) -ArgumentList (@($npmLaunch.argv_prefix)+@('exec')) -WorkingDirectory $temp -Label 'mock-npm-codex' -StandardOutputPath $cliOut -StandardErrorPath $cliErr -MaximumStandardOutputBytes 8192 -MaximumStandardErrorBytes 8192 -JobId 'synthetic-cli'}finally{Close-SeshatCodexLaunch -Launch $npmLaunch;$env:PATH=$oldPath}
     if($cliResult.exit_code -ne 0 -or [string]$cliResult.status -cne 'COMPLETED' -or (Get-Content -LiteralPath $cliOut -Raw -Encoding UTF8) -notmatch 'SESHAT_MOCK_NODE_CLI_READY'){throw 'NPM_CODEX_LAUNCH_FAILED'}
-    $missingMock=Join-Path $temp 'missing-cli.cmd'
-    [System.IO.File]::WriteAllText($missingMock,'@echo off',[System.Text.UTF8Encoding]::new($false))
+    $admitted=Get-SeshatCodexLaunchPolicyBinding -PolicyPath $policyPath
+    [System.IO.File]::AppendAllText($mockJs,'// drift',[System.Text.UTF8Encoding]::new($false))
+    $blockedDrift=$false
+    try{[void](Resolve-SeshatCodexLaunch -ExpectedBinding $admitted)}catch{$blockedDrift=([string]$_.Exception.Message -in @('CODEX_TRUSTED_FILE_HASH_DRIFT','CODEX_TRUST_POLICY_BINDING_DRIFT'))}
+    if(-not $blockedDrift){throw 'POST_ADMISSION_CODEX_DRIFT_ACCEPTED'}
+    $policy.package_json_path=Join-Path $npmMockRoot 'missing-package.json'
+    [System.IO.File]::WriteAllText($policyPath,($policy|ConvertTo-Json -Compress),[System.Text.UTF8Encoding]::new($false))
     $blockedMissing=$false
-    try{[void](Resolve-SeshatCodexLaunch -CommandName $missingMock)}catch{$blockedMissing=([string]$_.Exception.Message -ceq 'CODEX_NPM_JS_ENTRYPOINT_MISSING')}
-    if(-not $blockedMissing){throw 'MISSING_NPM_ENTRYPOINT_WAS_ACCEPTED'}
+    try{[void](Get-SeshatCodexLaunchPolicyBinding -PolicyPath $policyPath)}catch{$blockedMissing=([string]$_.Exception.Message -ceq 'TRUSTED_LAUNCH_FILE_MISSING')}
+    if(-not $blockedMissing){throw 'MISSING_PINNED_PACKAGE_WAS_ACCEPTED'}
+    $junction=Join-Path $temp 'rerouted-codex-root'
+    New-Item -ItemType Junction -Path $junction -Target $npmMockRoot|Out-Null
+    $policy.codex_root=$junction
+    $policy.codex_js_path=Join-Path $junction 'bin\codex.js'
+    $policy.codex_js_sha256=Get-SeshatFileSha256 -Path $mockJs
+    $policy.package_json_path=Join-Path $junction 'package.json'
+    $policy.package_json_sha256=Get-SeshatFileSha256 -Path $packageJson
+    [System.IO.File]::WriteAllText($policyPath,($policy|ConvertTo-Json -Compress),[System.Text.UTF8Encoding]::new($false))
+    $blockedReroute=$false
+    try{[void](Get-SeshatCodexLaunchPolicyBinding -PolicyPath $policyPath)}catch{$blockedReroute=([string]$_.Exception.Message -ceq 'TRUSTED_LAUNCH_REPARSE_POINT')}
+    if(-not $blockedReroute){throw 'REPARSE_REROUTED_CODEX_ROOT_ACCEPTED'}
 
     # Temp local Git only: exercises argument handling and separated native IO.
     $gitRepo=Join-Path $temp 'repo'
@@ -162,6 +191,51 @@ exit 99
     Assert-SeshatNativeSuccess -Result $gitStatus -FailureClass 'TEMP_GIT_STATUS_FAILED'
     $statusPaths=@(Get-SeshatStatusPaths -StatusLines @(Get-SeshatOutputLines -Text $gitStatus.stdout))
     if(-not(Test-SeshatExactStringSet -Left $statusPaths -Right @('approved.txt'))){throw 'TEMP_GIT_STATUS_PATH_MISMATCH'}
+
+    $hugePath=Join-Path $gitRepo 'huge-approved.txt'
+    [System.IO.File]::WriteAllBytes($hugePath,(New-Object byte[] 2097153))
+    $hugeBlocked=$false
+    try{[void](Assert-SeshatChangedFileLimits -Repo $gitRepo -Paths @('huge-approved.txt'))}catch{$hugeBlocked=([string]$_.Exception.Message -ceq 'CHANGED_FILE_SIZE_LIMIT_EXCEEDED')}
+    if(-not $hugeBlocked){throw 'HUGE_APPROVED_FILE_ACCEPTED'}
+    $cachedAfterHuge=& git -C $gitRepo diff --cached --name-only
+    if($LASTEXITCODE -ne 0 -or @($cachedAfterHuge).Count -ne 0){throw 'HUGE_FILE_WAS_STAGED_BEFORE_REJECTION'}
+
+    $boundaryPatch=Join-Path $temp 'boundary.patch'
+    [System.IO.File]::WriteAllText($boundaryPatch,('+'+('x'*4093)+'ghp_'+('A'*20)+"`n"),[System.Text.UTF8Encoding]::new($false))
+    if((Test-SeshatAddedDiffFile -Path $boundaryPatch) -cne 'POSSIBLE_CREDENTIAL_IN_DIFF'){throw 'CHUNK_BOUNDARY_SECRET_NOT_DETECTED'}
+    $largePatch=Join-Path $temp 'large.patch'
+    [System.IO.File]::WriteAllBytes($largePatch,(New-Object byte[] 257))
+    if((Test-SeshatAddedDiffFile -Path $largePatch -MaximumBytes 256) -cne 'DIFF_SCAN_SIZE_LIMIT_EXCEEDED'){throw 'LARGE_PATCH_NOT_REJECTED'}
+    $invalidPatch=Join-Path $temp 'invalid.patch'
+    [System.IO.File]::WriteAllBytes($invalidPatch,[byte[]](43,255,10))
+    if((Test-SeshatAddedDiffFile -Path $invalidPatch) -cne 'DIFF_NOT_VALID_UTF8'){throw 'UNSCANNABLE_DIFF_NOT_REJECTED'}
+    if((Test-SeshatNumstatTextOnly -Lines @("-`t-`tbinary.bin")) -cne 'BINARY_STAGED_CONTENT_DENIED'){throw 'BINARY_NUMSTAT_NOT_REJECTED'}
+
+    # Hermetic local bare-remote proof of the empty-expected-OID lease. Neither
+    # collision path can alter the existing remote object.
+    $bare=Join-Path $temp 'remote.git'
+    $source=Join-Path $temp 'source'
+    & git init --bare $bare|Out-Null; if($LASTEXITCODE -ne 0){throw 'BARE_INIT_FAILED'}
+    & git init $source|Out-Null; if($LASTEXITCODE -ne 0){throw 'SOURCE_INIT_FAILED'}
+    & git -C $source config user.email 'ci@example.invalid'; & git -C $source config user.name 'SESHAT CI'
+    [System.IO.File]::WriteAllText((Join-Path $source 'file.txt'),'base',[System.Text.UTF8Encoding]::new($false))
+    & git -C $source add file.txt; & git -C $source commit -m base|Out-Null; if($LASTEXITCODE -ne 0){throw 'SOURCE_COMMIT_FAILED'}
+    & git -C $source remote add origin $bare
+    & git -C $source push origin ('HEAD:refs/heads/codex/existing')|Out-Null; if($LASTEXITCODE -ne 0){throw 'SEED_REMOTE_FAILED'}
+    $existingBefore=[string](& git --git-dir=$bare rev-parse refs/heads/codex/existing)
+    [System.IO.File]::AppendAllText((Join-Path $source 'file.txt'),'next',[System.Text.UTF8Encoding]::new($false)); & git -C $source add file.txt; & git -C $source commit -m next|Out-Null
+    & git -C $source push --atomic origin 'HEAD:refs/heads/codex/existing' '--force-with-lease=refs/heads/codex/existing:' 2>$null
+    if($LASTEXITCODE -eq 0){throw 'CREATE_ONLY_PUSH_OVERWROTE_EXISTING_REF'}
+    $existingAfter=[string](& git --git-dir=$bare rev-parse refs/heads/codex/existing)
+    if($existingAfter -cne $existingBefore){throw 'EXISTING_REMOTE_REF_CHANGED'}
+    & git -C $source ls-remote --exit-code --heads origin refs/heads/codex/interim 2>$null
+    if($LASTEXITCODE -ne 2){throw 'INTERIM_PREFLIGHT_NOT_ABSENT'}
+    & git -C $source push origin ($existingBefore+':refs/heads/codex/interim')|Out-Null; if($LASTEXITCODE -ne 0){throw 'INTERIM_WRITER_FAILED'}
+    $interimBefore=[string](& git --git-dir=$bare rev-parse refs/heads/codex/interim)
+    & git -C $source push --atomic origin 'HEAD:refs/heads/codex/interim' '--force-with-lease=refs/heads/codex/interim:' 2>$null
+    if($LASTEXITCODE -eq 0){throw 'INTERIM_REMOTE_WRITER_WAS_OVERWRITTEN'}
+    $interimAfter=[string](& git --git-dir=$bare rev-parse refs/heads/codex/interim)
+    if($interimAfter -cne $interimBefore){throw 'INTERIM_REMOTE_REF_CHANGED'}
 
     $approved=@(Get-SeshatApprovedS2BPaths)
     $owned=@('src/seshat/reconciliation.py','tests/test_reconciliation.py','docs/S_IMPL_002B_RESULT.md')
@@ -175,14 +249,27 @@ exit 99
     try{Assert-SeshatPublicationAttemptAbsent -EventPath $eventPath -ReceiptPath $receiptPath}catch{$retryBlocked=($_.Exception.Message -eq 'PUBLICATION_ATTEMPT_ALREADY_RECORDED')}
     if(-not $retryBlocked){throw 'UNSAFE_PUBLICATION_RETRY_ACCEPTED'}
     $expectedRecovery=@{
+        PRECHECK='NO_MUTATION_RECORDED_INSPECT_BEFORE_RETRY'
         BEFORE_COMMIT='MANUAL_INSPECT_WORKTREE_DO_NOT_RETRY'
         STAGED_ONLY='MANUAL_INSPECT_INDEX_DO_NOT_RETRY'
         COMMITTED_ONLY='MANUAL_VERIFY_REMOTE_BEFORE_ANY_PUSH'
         PUSHED_WITHOUT_PR='MANUAL_VERIFY_GITHUB_BEFORE_ANY_PR_CREATE'
         DRAFT_PUBLISHED='READBACK_VERIFY_EXISTING_DRAFT_NO_RETRY'
+        RECONCILIATION_REQUIRED='READBACK_ALL_WITNESSES_MANUAL_DECISION_NO_RETRY'
     }
     foreach($phase in $expectedRecovery.Keys){
         if((Get-SeshatPublicationRecoveryDecision -Phase $phase) -cne $expectedRecovery[$phase]){throw ('BAD_RECOVERY_DECISION_'+$phase)}
+    }
+    foreach($action in @('git-add','git-commit','git-push-create-only','gh-pr-create')){
+        $faultEvents=Join-Path $temp ('fault-'+$action+'.jsonl')
+        $nonce=[guid]::NewGuid().ToString('N')
+        $before=[ordered]@{head=('a'*40);index_present=($action -ne 'git-add');remote_head=if($action -in @('git-push-create-only','gh-pr-create')){('b'*40)}else{$null};pr_present=($action -eq 'gh-pr-create')}
+        Write-SeshatMutationEvent -Path $faultEvents -JobId 'synthetic-job' -AttemptNonce $nonce -Action $action -Status 'INTENT' -Phase 'FAULT_BEFORE' -BeforeWitness $before
+        $intent=(Get-Content -LiteralPath $faultEvents -Tail 1|ConvertFrom-Json)
+        if((Get-SeshatMutationRecoveryState -LatestMutation $intent) -cne 'RECONCILIATION_REQUIRED_INTENT_WITHOUT_RETURN'){throw ('FAULT_BEFORE_NOT_RECONCILED_'+$action)}
+        Write-SeshatMutationEvent -Path $faultEvents -JobId 'synthetic-job' -AttemptNonce $nonce -Action $action -Status 'RETURNED' -Phase 'FAULT_AFTER' -BeforeWitness $before -ExitCode 0
+        $returned=(Get-Content -LiteralPath $faultEvents -Tail 1|ConvertFrom-Json)
+        if((Get-SeshatMutationRecoveryState -LatestMutation $returned) -cne 'RECONCILIATION_REQUIRED_RETURN_WITHOUT_WITNESS'){throw ('FAULT_AFTER_NOT_RECONCILED_'+$action)}
     }
     $receiptJob=[pscustomobject]@{job_id='synthetic-job';issue_number=17;branch='codex/synthetic'}
     $receipt=[pscustomobject]@{status='PUBLISHED_DRAFT_PR';job_id='synthetic-job';issue=17;branch='codex/synthetic';head_sha=('b'*40);pr_number=28;pr_state='OPEN';pr_is_draft=$true;pr_base='main';pr_head='codex/synthetic'}
@@ -206,11 +293,15 @@ exit 99
     $reconcileSource=Get-Content -LiteralPath (Join-Path $opsRoot 'reconcile-publish.ps1') -Raw -Encoding UTF8
     if($publishSource -match '\*>|2>&1|2>\$null'){throw 'PUBLISHER_UNSAFE_NATIVE_REDIRECTION_PRESENT'}
     if($executeSource -match '\*>|2>&1'){throw 'EXECUTOR_WILDCARD_NATIVE_REDIRECTION_PRESENT'}
-    foreach($required in @('git-add','git-diff-check','git-diff-scan','git-commit','git-push','gh-pr-list','gh-pr-create','gh-pr-view')){
+    foreach($required in @('git-add','git-diff-check','git-diff-scan','git-commit','git-push-create-only','gh-pr-list-preflight','gh-pr-create','gh-pr-view')){
         if($publishSource -notmatch [regex]::Escape($required)){throw ('NATIVE_CHECKPOINT_MISSING_'+$required)}
     }
     if($publishSource -match '(?im)^\s*[&.]?\s*(python|pytest|ruff|pwsh|powershell)\s+.*(pytest|ruff|test-gate\.ps1)'){throw 'TRUSTED_PUBLISHER_EXECUTES_UNREVIEWED_TESTS'}
-    if($publishSource.IndexOf("'gh-pr-list'") -gt $publishSource.IndexOf("'gh-pr-create'")){throw 'PR_EXISTENCE_CHECK_AFTER_CREATE'}
+    if($publishSource.IndexOf("'gh-pr-list-preflight'") -lt 0 -or $publishSource.IndexOf("'gh-pr-list-preflight'") -gt $publishSource.IndexOf("'git-add'")){throw 'PR_EXISTENCE_CHECK_AFTER_STAGING'}
+    if($publishSource.IndexOf("'gh-pr-create'") -lt $publishSource.IndexOf("'git-push-create-only'")){throw 'PR_CREATE_PRECEDES_CREATE_ONLY_PUSH'}
+    if($publishSource -notmatch '--force-with-lease=refs/heads/' -or $publishSource -notmatch "expected_remote_oid='EMPTY'"){throw 'CREATE_ONLY_REMOTE_LEASE_MISSING'}
+    if($publishSource -notmatch 'Write-SeshatMutationEvent' -or $publishSource -notmatch "'INTENT'" -or $publishSource -notmatch "'RETURNED'" -or $publishSource -notmatch "'COMPLETE'"){throw 'MUTATION_JOURNAL_MISSING'}
+    if($publishSource -notmatch "phase='RECONCILIATION_REQUIRED'"){throw 'AMBIGUOUS_MUTATION_NOT_RECONCILED'}
     if($publishSource -notmatch 'Write-SeshatJsonCreateNew -Value \$result -Path \$receiptPath'){throw 'PUBLICATION_RECEIPT_NOT_CREATE_NEW'}
     if($reconcileSource -match "(?m)ArgumentList.*'(add|commit|push|create|edit|close|merge)'"){throw 'RECONCILE_CONTAINS_MUTATING_COMMAND'}
     if($reconcileSource -notmatch "automatic_retry='DENIED'" -or $reconcileSource -notmatch "automatic_mutation='NONE'"){throw 'RECONCILE_DENIAL_MARKERS_MISSING'}

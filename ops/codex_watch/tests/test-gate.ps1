@@ -60,6 +60,7 @@ if(-not(Test-SeshatExactStringSet -Left @($queue.transitions[0].approved_paths) 
 $opsRoot=Split-Path -Parent $PSScriptRoot
 $executeSource=Get-Content -LiteralPath (Join-Path $opsRoot 'execute-task.ps1') -Raw -Encoding UTF8
 $publishSource=Get-Content -LiteralPath (Join-Path $opsRoot 'publish.ps1') -Raw -Encoding UTF8
+$dispatchSource=Get-Content -LiteralPath (Join-Path $opsRoot 'dispatch.ps1') -Raw -Encoding UTF8
 if($executeSource -notmatch 'Test-SeshatCanonicalJobPath' -or $executeSource -notmatch 'Test-SeshatJobAuthorization'){throw 'EXECUTOR_ENTRYPOINT_BINDING_MISSING'}
 if($executeSource -notmatch 'Invoke-SeshatStreamingNativeCommand' -or $executeSource -match '\$codexResult=Invoke-SeshatNativeCommand'){throw 'EXECUTOR_CODEX_STREAMING_MODE_MISSING'}
 if($executeSource -notmatch 'MaximumStandardOutputBytes 67108864' -or $executeSource -notmatch 'MaximumStandardErrorBytes 8388608'){throw 'EXECUTOR_STREAM_LIMITS_MISSING'}
@@ -69,6 +70,8 @@ $exitPrecheck=$executeSource.IndexOf('Assert-SeshatExitReceiptAbsent -Path $Exit
 $exitWriter=$executeSource.IndexOf('Write-SeshatJsonCreateNew -Value $receipt -Path $ExitPath')
 if($exitPrecheck -lt 0 -or $exitWriter -lt 0 -or $exitPrecheck -ge $exitWriter){throw 'EXECUTOR_EXIT_CREATE_ONCE_ORDER_MISSING'}
 if($publishSource -match "\^src/seshat/\[A-Za-z0-9_" -or $publishSource -notmatch 'Test-SeshatOwnedPathSet'){throw 'PUBLISHER_EXACT_MANIFEST_ENFORCEMENT_MISSING'}
+if($dispatchSource -notmatch 'ls-remote --exit-code --heads origin' -or $dispatchSource -notmatch 'BLOCK_REMOTE_BRANCH_EXISTS' -or $dispatchSource -notmatch 'BLOCK_REMOTE_PR_EXISTS'){throw 'DISPATCH_REMOTE_COLLISION_PREFLIGHT_MISSING'}
+if($dispatchSource -notmatch 'Get-SeshatCodexLaunchPolicyBinding'){throw 'DISPATCH_TRUST_POLICY_BINDING_MISSING'}
 
 $bundle=@(Get-SeshatBundlePaths|ForEach-Object{[pscustomobject]@{path=$_;sha256=('1'*64)}})
 $job=[pscustomobject]@{
@@ -77,6 +80,7 @@ $job=[pscustomobject]@{
     ops_merge_sha=('e'*40);issue_body_utf8_sha256='541bf6271d9a0c8f7c0ade9bc710d5fdc5d5ae3083ed6e898be04f5c8c0780b8'
     dispatch_key=('pr16-'+('f'*40)+'-issue17');approved_paths=@(Get-SeshatApprovedS2BPaths)
     ops_bundle=$bundle;repo='C:\projects\seshat';authorization_digest=''
+    codex_launch_policy=[pscustomobject]@{policy_path='C:\ProgramData\SESHAT\codex-launch-policy.json';policy_sha256=('2'*64);policy_id='synthetic-policy';node_path='C:\trusted\node.exe';node_root='C:\trusted';node_sha256=('3'*64);node_signer_thumbprint=('4'*40);node_version='22.0.0';codex_root='C:\trusted\codex';codex_js_path='C:\trusted\codex\bin\codex.js';codex_js_sha256=('5'*64);package_json_path='C:\trusted\codex\package.json';package_json_sha256=('6'*64);package_name='@openai/codex';package_version='1.2.3'}
 }
 # Regression: runner fields are added to strict-mode JSON objects (issue #25).
 $bootstrapJob=('{"job_id":"fixture","runner_pid":0}'|ConvertFrom-Json)
@@ -88,6 +92,9 @@ $roundtrip=($bootstrapJob|ConvertTo-Json -Compress|ConvertFrom-Json)
 if([int]$roundtrip.runner_pid -ne 32146 -or ([datetime]$roundtrip.started_at_utc).ToUniversalTime() -ne ([datetime]'2026-10-10T00:01:03Z').ToUniversalTime()){throw 'RUNNER_START_METADATA_NOT_IDEMPOTENT'}
 if($executeSource -notmatch 'Set-SeshatRunnerStart -Job \$job -RunnerPid \$PID -StartedUtc \$Started'){throw 'EXECUTOR_BOOTSTRAP_HELPER_NOT_CALLED'}
 if($executeSource -notmatch '\$codexLaunch=Resolve-SeshatCodexLaunch' -or $executeSource -match "-FilePath 'codex'"){throw 'CODEX_NPM_LAUNCH_RESOLUTION_MISSING'}
+if($executeSource -notmatch '-ExpectedBinding \$job.codex_launch_policy' -or $executeSource -notmatch 'Close-SeshatCodexLaunch'){throw 'CODEX_PINNED_LAUNCH_BINDING_MISSING'}
+$gateSource=Get-Content -LiteralPath (Join-Path $opsRoot 'gate.ps1') -Raw -Encoding UTF8
+if($gateSource -match 'Get-Command -Name (\$candidate|\$CommandName|node.exe)' -or $gateSource -match "launch_mode='DIRECT_EXECUTABLE'"){throw 'PATH_OR_DIRECT_CODEX_FALLBACK_PRESENT'}
 $job.authorization_digest=Get-SeshatJobAuthorizationDigest -Job $job
 $marker=[pscustomobject]@{key=$job.dispatch_key;job_id=$job.job_id;state='AUTHORIZED';authorization_digest=$job.authorization_digest}
 if((Test-SeshatJobAuthorization -Job $job -Marker $marker) -ne 'ADMIT'){throw 'VALID_JOB_AUTHORIZATION_REJECTED'}

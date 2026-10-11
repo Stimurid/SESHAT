@@ -19,9 +19,12 @@ if(Test-Path -LiteralPath $eventPath){
         try{$events+=($line|ConvertFrom-Json)}catch{$eventsInvalid=$true}
     }
 }
-$latest=if($events.Count -gt 0){$events[-1]}else{$null}
+$stageEvents=@($events|Where-Object{[string]$_.schema -ceq 'seshat.publication-stage.v1'})
+$mutationEvents=@($events|Where-Object{[string]$_.schema -ceq 'seshat.publication-mutation.v2'})
+$latest=if($stageEvents.Count -gt 0){$stageEvents[-1]}else{$null}
+$latestMutation=if($mutationEvents.Count -gt 0){$mutationEvents[-1]}else{$null}
 $phase=if($latest -and $latest.PSObject.Properties['phase']){[string]$latest.phase}else{$null}
-$validPhases=@('BEFORE_COMMIT','STAGED_ONLY','COMMITTED_ONLY','PUSHED_WITHOUT_PR','DRAFT_PUBLISHED')
+$validPhases=@('PRECHECK','BEFORE_COMMIT','STAGED_ONLY','COMMITTED_ONLY','PUSHED_WITHOUT_PR','DRAFT_PUBLISHED','RECONCILIATION_REQUIRED')
 $eventValid=(-not $eventsInvalid)
 if($latest){
     try{$eventValid=$eventValid -and (
@@ -32,13 +35,18 @@ if($latest){
 $headResult=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'rev-parse','HEAD') -WorkingDirectory $Repo -Label 'reconcile-git-head'
 $branchResult=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'branch','--show-current') -WorkingDirectory $Repo -Label 'reconcile-git-branch'
 $statusResult=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'status','--porcelain=v1','-uall') -WorkingDirectory $Repo -Label 'reconcile-git-status'
+$indexResult=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'diff','--cached','--name-only') -WorkingDirectory $Repo -Label 'reconcile-git-index'
+$remoteResult=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'ls-remote','--heads','origin',('refs/heads/'+[string]$job.branch)) -WorkingDirectory $Repo -Label 'reconcile-git-remote-ref'
 $localHead=if($headResult.exit_code -eq 0){$headResult.stdout.Trim()}else{$null}
 $localBranch=if($branchResult.exit_code -eq 0){$branchResult.stdout.Trim()}else{$null}
 $dirtyCount=if($statusResult.exit_code -eq 0){@(Get-SeshatOutputLines -Text $statusResult.stdout).Count}else{$null}
+$indexPaths=if($indexResult.exit_code -eq 0){@(Get-SeshatOutputLines -Text $indexResult.stdout)}else{@()}
+$remoteLines=if($remoteResult.exit_code -eq 0){@(Get-SeshatOutputLines -Text $remoteResult.stdout)}else{@()}
+$remoteHead=if($remoteLines.Count -eq 1 -and $remoteLines[0] -cmatch '^([0-9a-f]{40})\s'){[string]$Matches[1]}else{$null}
 
 $githubState=if($SkipGithub){'SKIPPED'}else{'NOT_NEEDED_BEFORE_PUSH'}
 $githubPrNumber=$null
-if(-not $SkipGithub -and $phase -in @('PUSHED_WITHOUT_PR','DRAFT_PUBLISHED')){
+if(-not $SkipGithub){
     $query=Invoke-SeshatNativeCommand -FilePath 'gh' -ArgumentList @('pr','list','--repo','Stimurid/SESHAT','--head',([string]$job.branch),'--state','all','--limit','2','--json','number,state,isDraft,baseRefName,headRefName,headRefOid') -WorkingDirectory $Repo -Label 'reconcile-gh-pr-list'
     if($query.exit_code -ne 0){
         $githubState='UNKNOWN_GITHUB_QUERY_FAILED'
@@ -69,6 +77,11 @@ $result=[ordered]@{
     recovery_action=if(-not $eventValid){'MANUAL_INSPECT_INVALID_EVENT_DO_NOT_RETRY'}elseif($phase){Get-SeshatPublicationRecoveryDecision -Phase $phase}else{'NO_PUBLICATION_ATTEMPT_TO_RECOVER'}
     branch=[string]$job.branch;base_sha=[string]$job.base_sha;local_branch=$localBranch;local_head=$localHead
     dirty_file_count=$dirtyCount;github_state=$githubState;github_pr_number=$githubPrNumber
+    staged_paths=$indexPaths;remote_head=$remoteHead
+    latest_mutation_action=if($latestMutation){[string]$latestMutation.action}else{$null}
+    latest_mutation_status=if($latestMutation){[string]$latestMutation.status}else{$null}
+    mutation_recovery_state=Get-SeshatMutationRecoveryState -LatestMutation $latestMutation
+    attempt_nonce=if($latestMutation){[string]$latestMutation.attempt_nonce}else{$null}
     publication_receipt=$receiptState;automatic_retry='DENIED';automatic_mutation='NONE'
 }
 Write-Output ($result|ConvertTo-Json -Depth 8)
