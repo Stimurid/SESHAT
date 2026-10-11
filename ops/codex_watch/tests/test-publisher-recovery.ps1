@@ -85,7 +85,14 @@ exit 99
         $observedBeforeExit=$false
         while([DateTime]::UtcNow -lt $deadline){
             if($streamJob.State -eq 'Running' -and (Test-Path -LiteralPath $streamOut)){
-                $visible=[System.IO.File]::ReadAllText($streamOut,[System.Text.Encoding]::UTF8)
+                # Writer holds the file with FileShare.Read. A concurrent reader
+                # must grant Write sharing too, otherwise Windows rejects it
+                # while the child is still running (the actual assertion target).
+                $readStream=[System.IO.File]::Open($streamOut,[System.IO.FileMode]::Open,[System.IO.FileAccess]::Read,[System.IO.FileShare]::ReadWrite)
+                try{
+                    $reader=New-Object System.IO.StreamReader($readStream,[System.Text.Encoding]::UTF8)
+                    try{$visible=$reader.ReadToEnd()}finally{$reader.Dispose()}
+                }finally{$readStream.Dispose()}
                 if($visible -match 'first line русский'){$observedBeforeExit=$true;break}
             }
             if($streamJob.State -in @('Completed','Failed','Stopped')){break}
