@@ -208,8 +208,9 @@ exit 99
     $hugeBlocked=$false
     try{[void](Assert-SeshatChangedFileLimits -Repo $gitRepo -Paths @('huge-approved.txt'))}catch{$hugeBlocked=([string]$_.Exception.Message -ceq 'CHANGED_FILE_SIZE_LIMIT_EXCEEDED')}
     if(-not $hugeBlocked){throw 'HUGE_APPROVED_FILE_ACCEPTED'}
-    $cachedAfterHuge=& git -C $gitRepo diff --cached --name-only
-    if($LASTEXITCODE -ne 0 -or @($cachedAfterHuge).Count -ne 0){throw 'HUGE_FILE_WAS_STAGED_BEFORE_REJECTION'}
+    $cachedAfterHuge=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$gitRepo,'diff','--cached','--name-only') -WorkingDirectory $temp -Label 'temp-git-cached-after-huge'
+    Assert-SeshatNativeSuccess -Result $cachedAfterHuge -FailureClass 'TEMP_GIT_CACHED_DIFF_FAILED'
+    if(@(Get-SeshatOutputLines -Text $cachedAfterHuge.stdout).Count -ne 0){throw 'HUGE_FILE_WAS_STAGED_BEFORE_REJECTION'}
 
     $boundaryPatch=Join-Path $temp 'boundary.patch'
     [System.IO.File]::WriteAllText($boundaryPatch,('+'+('x'*4093)+'ghp_'+('A'*20)+"`n"),[System.Text.UTF8Encoding]::new($false))
@@ -226,26 +227,52 @@ exit 99
     # collision path can alter the existing remote object.
     $bare=Join-Path $temp 'remote.git'
     $source=Join-Path $temp 'source'
-    & git init --bare $bare|Out-Null; if($LASTEXITCODE -ne 0){throw 'BARE_INIT_FAILED'}
-    & git init $source|Out-Null; if($LASTEXITCODE -ne 0){throw 'SOURCE_INIT_FAILED'}
-    & git -C $source config user.email 'ci@example.invalid'; & git -C $source config user.name 'SESHAT CI'
+    $bareInit=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('init','--bare',$bare) -WorkingDirectory $temp -Label 'collision-bare-init'
+    Assert-SeshatNativeSuccess -Result $bareInit -FailureClass 'BARE_INIT_FAILED'
+    $sourceInit=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('init',$source) -WorkingDirectory $temp -Label 'collision-source-init'
+    Assert-SeshatNativeSuccess -Result $sourceInit -FailureClass 'SOURCE_INIT_FAILED'
+    $configEmail=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$source,'config','user.email','ci@example.invalid') -WorkingDirectory $temp -Label 'collision-config-email'
+    Assert-SeshatNativeSuccess -Result $configEmail -FailureClass 'SOURCE_CONFIG_EMAIL_FAILED'
+    $configName=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$source,'config','user.name','SESHAT CI') -WorkingDirectory $temp -Label 'collision-config-name'
+    Assert-SeshatNativeSuccess -Result $configName -FailureClass 'SOURCE_CONFIG_NAME_FAILED'
     [System.IO.File]::WriteAllText((Join-Path $source 'file.txt'),'base',[System.Text.UTF8Encoding]::new($false))
-    & git -C $source add file.txt; & git -C $source commit -m base|Out-Null; if($LASTEXITCODE -ne 0){throw 'SOURCE_COMMIT_FAILED'}
-    & git -C $source remote add origin $bare
-    & git -C $source push origin ('HEAD:refs/heads/codex/existing')|Out-Null; if($LASTEXITCODE -ne 0){throw 'SEED_REMOTE_FAILED'}
-    $existingBefore=[string](& git --git-dir=$bare rev-parse refs/heads/codex/existing)
-    [System.IO.File]::AppendAllText((Join-Path $source 'file.txt'),'next',[System.Text.UTF8Encoding]::new($false)); & git -C $source add file.txt; & git -C $source commit -m next|Out-Null
-    & git -C $source push --atomic origin 'HEAD:refs/heads/codex/existing' '--force-with-lease=refs/heads/codex/existing:' 2>$null
-    if($LASTEXITCODE -eq 0){throw 'CREATE_ONLY_PUSH_OVERWROTE_EXISTING_REF'}
-    $existingAfter=[string](& git --git-dir=$bare rev-parse refs/heads/codex/existing)
+    $baseAdd=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$source,'add','file.txt') -WorkingDirectory $temp -Label 'collision-base-add'
+    Assert-SeshatNativeSuccess -Result $baseAdd -FailureClass 'SOURCE_ADD_FAILED'
+    $baseCommit=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$source,'commit','-m','base') -WorkingDirectory $temp -Label 'collision-base-commit'
+    Assert-SeshatNativeSuccess -Result $baseCommit -FailureClass 'SOURCE_COMMIT_FAILED'
+    $remoteAdd=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$source,'remote','add','origin',$bare) -WorkingDirectory $temp -Label 'collision-remote-add'
+    Assert-SeshatNativeSuccess -Result $remoteAdd -FailureClass 'SOURCE_REMOTE_ADD_FAILED'
+    $seedPush=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$source,'push','origin','HEAD:refs/heads/codex/existing') -WorkingDirectory $temp -Label 'collision-seed-push'
+    Assert-SeshatNativeSuccess -Result $seedPush -FailureClass 'SEED_REMOTE_FAILED'
+    $existingBeforeResult=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @(('--git-dir='+$bare),'rev-parse','refs/heads/codex/existing') -WorkingDirectory $temp -Label 'collision-existing-before'
+    Assert-SeshatNativeSuccess -Result $existingBeforeResult -FailureClass 'EXISTING_REMOTE_READ_FAILED'
+    $existingBefore=([string]$existingBeforeResult.stdout).Trim()
+    [System.IO.File]::AppendAllText((Join-Path $source 'file.txt'),'next',[System.Text.UTF8Encoding]::new($false))
+    $nextAdd=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$source,'add','file.txt') -WorkingDirectory $temp -Label 'collision-next-add'
+    Assert-SeshatNativeSuccess -Result $nextAdd -FailureClass 'SOURCE_NEXT_ADD_FAILED'
+    $nextCommit=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$source,'commit','-m','next') -WorkingDirectory $temp -Label 'collision-next-commit'
+    Assert-SeshatNativeSuccess -Result $nextCommit -FailureClass 'SOURCE_NEXT_COMMIT_FAILED'
+    $existingCollision=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$source,'push','--atomic','origin','HEAD:refs/heads/codex/existing','--force-with-lease=refs/heads/codex/existing:') -WorkingDirectory $temp -Label 'collision-existing-create-only'
+    if($existingCollision.exit_code -eq 0){throw 'CREATE_ONLY_PUSH_OVERWROTE_EXISTING_REF'}
+    $existingAfterResult=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @(('--git-dir='+$bare),'rev-parse','refs/heads/codex/existing') -WorkingDirectory $temp -Label 'collision-existing-after'
+    Assert-SeshatNativeSuccess -Result $existingAfterResult -FailureClass 'EXISTING_REMOTE_READ_AFTER_FAILED'
+    $existingAfter=([string]$existingAfterResult.stdout).Trim()
     if($existingAfter -cne $existingBefore){throw 'EXISTING_REMOTE_REF_CHANGED'}
-    & git -C $source ls-remote --exit-code --heads origin refs/heads/codex/interim 2>$null
-    if($LASTEXITCODE -ne 2){throw 'INTERIM_PREFLIGHT_NOT_ABSENT'}
-    & git -C $source push origin ($existingBefore+':refs/heads/codex/interim')|Out-Null; if($LASTEXITCODE -ne 0){throw 'INTERIM_WRITER_FAILED'}
-    $interimBefore=[string](& git --git-dir=$bare rev-parse refs/heads/codex/interim)
-    & git -C $source push --atomic origin 'HEAD:refs/heads/codex/interim' '--force-with-lease=refs/heads/codex/interim:' 2>$null
-    if($LASTEXITCODE -eq 0){throw 'INTERIM_REMOTE_WRITER_WAS_OVERWRITTEN'}
-    $interimAfter=[string](& git --git-dir=$bare rev-parse refs/heads/codex/interim)
+    $interimPreflight=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$source,'ls-remote','--exit-code','--heads','origin','refs/heads/codex/interim') -WorkingDirectory $temp -Label 'collision-interim-preflight'
+    if($interimPreflight.exit_code -ne 2){throw 'INTERIM_PREFLIGHT_NOT_ABSENT'}
+    $nonzeroGitBlocked=$false
+    try{Assert-SeshatNativeSuccess -Result $interimPreflight -FailureClass 'EXPECTED_NONZERO_GIT'}catch{$nonzeroGitBlocked=($_.Exception.Message -ceq 'EXPECTED_NONZERO_GIT')}
+    if(-not $nonzeroGitBlocked){throw 'EXPECTED_NONZERO_GIT_WRAPPER_DID_NOT_FAIL_CLOSED'}
+    $interimWriter=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$source,'push','origin',($existingBefore+':refs/heads/codex/interim')) -WorkingDirectory $temp -Label 'collision-interim-writer'
+    Assert-SeshatNativeSuccess -Result $interimWriter -FailureClass 'INTERIM_WRITER_FAILED'
+    $interimBeforeResult=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @(('--git-dir='+$bare),'rev-parse','refs/heads/codex/interim') -WorkingDirectory $temp -Label 'collision-interim-before'
+    Assert-SeshatNativeSuccess -Result $interimBeforeResult -FailureClass 'INTERIM_REMOTE_READ_FAILED'
+    $interimBefore=([string]$interimBeforeResult.stdout).Trim()
+    $interimCollision=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$source,'push','--atomic','origin','HEAD:refs/heads/codex/interim','--force-with-lease=refs/heads/codex/interim:') -WorkingDirectory $temp -Label 'collision-interim-create-only'
+    if($interimCollision.exit_code -eq 0){throw 'INTERIM_REMOTE_WRITER_WAS_OVERWRITTEN'}
+    $interimAfterResult=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @(('--git-dir='+$bare),'rev-parse','refs/heads/codex/interim') -WorkingDirectory $temp -Label 'collision-interim-after'
+    Assert-SeshatNativeSuccess -Result $interimAfterResult -FailureClass 'INTERIM_REMOTE_READ_AFTER_FAILED'
+    $interimAfter=([string]$interimAfterResult.stdout).Trim()
     if($interimAfter -cne $interimBefore){throw 'INTERIM_REMOTE_REF_CHANGED'}
 
     $approved=@(Get-SeshatApprovedS2BPaths)
