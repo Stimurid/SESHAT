@@ -131,6 +131,27 @@ exit 99
     if(-not [bool]$stderrLimited.limit_exceeded -or [string]$stderrLimited.status -cne 'OUTPUT_LIMIT_EXCEEDED' -or [string]$stderrLimited.limit_stream -cne 'stderr'){throw 'STDERR_STREAM_LIMIT_DID_NOT_FAIL_CLOSED'}
     if((Get-Item -LiteralPath $stderrLimitedErr).Length -ne 64 -or [long]$stderrLimited.stderr_bytes -ne 64){throw 'STDERR_STREAM_LIMIT_NOT_ENFORCED_EXACTLY'}
 
+    # The actual Aorustim Codex CLI is an npm codex.cmd shim, not a native
+    # executable. Exercise the approved shim-to-node resolution offline.
+    $npmMockRoot=Join-Path $temp 'npm shim with spaces'
+    $npmMockBin=Join-Path $npmMockRoot 'node_modules\@openai\codex\bin'
+    [void][System.IO.Directory]::CreateDirectory($npmMockBin)
+    $mockShim=Join-Path $npmMockRoot 'codex.cmd'
+    [System.IO.File]::WriteAllText($mockShim,'@echo off',[System.Text.UTF8Encoding]::new($false))
+    $mockJs=Join-Path $npmMockBin 'codex.js'
+    [System.IO.File]::WriteAllText($mockJs,'process.stdout.write("SESHAT_MOCK_NODE_CLI_READY\\n");',[System.Text.UTF8Encoding]::new($false))
+    $npmLaunch=Resolve-SeshatCodexLaunch -CommandName $mockShim
+    if([string]$npmLaunch.launch_mode -cne 'NPM_NODE_ENTRYPOINT' -or @($npmLaunch.argv_prefix).Count -ne 1 -or [string]$npmLaunch.argv_prefix[0] -cne $mockJs){throw 'NPM_CODEX_LAUNCH_WRONG_ENTRYPOINT'}
+    $cliOut=Join-Path $temp 'cli-mock-stdout.jsonl'
+    $cliErr=Join-Path $temp 'cli-mock-stderr.log'
+    $cliResult=Invoke-SeshatStreamingNativeCommand -FilePath ([string]$npmLaunch.file_path) -ArgumentList (@($npmLaunch.argv_prefix)+@('exec')) -WorkingDirectory $temp -Label 'mock-npm-codex' -StandardOutputPath $cliOut -StandardErrorPath $cliErr -MaximumStandardOutputBytes 8192 -MaximumStandardErrorBytes 8192 -JobId 'synthetic-cli'
+    if($cliResult.exit_code -ne 0 -or [string]$cliResult.status -cne 'COMPLETED' -or (Get-Content -LiteralPath $cliOut -Raw -Encoding UTF8) -notmatch 'SESHAT_MOCK_NODE_CLI_READY'){throw 'NPM_CODEX_LAUNCH_FAILED'}
+    $missingMock=Join-Path $temp 'missing-cli.cmd'
+    [System.IO.File]::WriteAllText($missingMock,'@echo off',[System.Text.UTF8Encoding]::new($false))
+    $blockedMissing=$false
+    try{[void](Resolve-SeshatCodexLaunch -CommandName $missingMock)}catch{$blockedMissing=([string]$_.Exception.Message -ceq 'CODEX_NPM_JS_ENTRYPOINT_MISSING')}
+    if(-not $blockedMissing){throw 'MISSING_NPM_ENTRYPOINT_WAS_ACCEPTED'}
+
     # Temp local Git only: exercises argument handling and separated native IO.
     $gitRepo=Join-Path $temp 'repo'
     New-Item -ItemType Directory -Path $gitRepo|Out-Null

@@ -64,8 +64,7 @@ try {
     if($headBefore.stdout.Trim() -cne [string]$job.base_sha){throw 'BASE_MISMATCH'}
     $clean=InvokeExecutorNative 'git' @('-C',$Repo,'status','--porcelain=v1') 'executor-git-status-before' 'STATUS_FAILED'
     if(@(Get-SeshatOutputLines -Text $clean.stdout).Count -ne 0){throw 'DIRTY_BEFORE_START'}
-    $job.runner_pid=$PID
-    $job.started_at_utc=$Started
+    Set-SeshatRunnerStart -Job $job -RunnerPid $PID -StartedUtc $Started
     AtomicJson $job $JobPath
     Set-Location -LiteralPath $Repo
     $env:PYTHONIOENCODING='utf-8'
@@ -73,9 +72,10 @@ try {
     $prompt=Get-Content -LiteralPath (Join-Path $Root 'task_prompt.txt') -Raw -Encoding UTF8
     # Sandbox intentionally cannot modify .git and cannot use GitHub credentials.
     # Publishing occurs in the trusted host process, not by broadening Codex privileges.
+    $codexLaunch=Resolve-SeshatCodexLaunch
     $CodexStreamStatus='STARTING'
     try{
-        $codexResult=Invoke-SeshatStreamingNativeCommand -FilePath 'codex' -ArgumentList @('exec','--json','--sandbox','workspace-write','-C',$Repo,'-o',$LastMessage,'-') -WorkingDirectory $Repo -Label 'codex-exec' -StandardOutputPath $Stdout -StandardErrorPath $Stderr -MaximumStandardOutputBytes 67108864 -MaximumStandardErrorBytes 8388608 -AuditPath $executorAudit -JobId ([string]$job.job_id) -StandardInputText $prompt
+        $codexResult=Invoke-SeshatStreamingNativeCommand -FilePath $codexLaunch.file_path -ArgumentList (@($codexLaunch.argv_prefix)+@('exec','--json','--sandbox','workspace-write','-C',$Repo,'-o',$LastMessage,'-')) -WorkingDirectory $Repo -Label 'codex-exec' -StandardOutputPath $Stdout -StandardErrorPath $Stderr -MaximumStandardOutputBytes 67108864 -MaximumStandardErrorBytes 8388608 -AuditPath $executorAudit -JobId ([string]$job.job_id) -StandardInputText $prompt
     }catch{
         $CodexStreamStatus='FAILED'
         throw

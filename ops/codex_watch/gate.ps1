@@ -372,6 +372,48 @@ function Get-SeshatStatusPaths {
     }
     return $paths
 }
+# The Windows host normally installs Codex as an npm .cmd shim; .cmd is
+# not a native CreateProcess executable under UseShellExecute=false.
+# Resolve the installed *trusted* npm package's JS entrypoint and execute
+# node.exe directly, preserving the streaming stdin/stdout/stderr contract.
+function Resolve-SeshatCodexLaunch {
+    param([string]$CommandName='codex')
+    $application=$null
+    if($CommandName -ceq 'codex'){
+        foreach($candidate in @('codex.exe','codex.cmd')){
+            $application=Get-Command -Name $candidate -CommandType Application -ErrorAction SilentlyContinue|Select-Object -First 1
+            if($application){break}
+        }
+    }else{
+        $application=Get-Command -Name $CommandName -CommandType Application -ErrorAction SilentlyContinue|Select-Object -First 1
+    }
+    if(-not $application){throw 'CODEX_APPLICATION_UNAVAILABLE'}
+    $resolved=[System.IO.Path]::GetFullPath([string]$application.Source)
+    if(-not(Test-Path -LiteralPath $resolved -PathType Leaf)){throw 'CODEX_APPLICATION_MISSING'}
+    $extension=[System.IO.Path]::GetExtension($resolved).ToLowerInvariant()
+    if($extension -ceq '.exe'){
+        return [pscustomobject]@{file_path=$resolved;argv_prefix=@();launch_mode='DIRECT_EXECUTABLE'}
+    }
+    if($extension -ceq '.cmd'){
+        $npmEntry=Join-Path (Split-Path -Parent $resolved) 'node_modules\@openai\codex\bin\codex.js'
+        if(-not(Test-Path -LiteralPath $npmEntry -PathType Leaf)){throw 'CODEX_NPM_JS_ENTRYPOINT_MISSING'}
+        $nodeCommand=Get-Command -Name node.exe -CommandType Application -ErrorAction SilentlyContinue|Select-Object -First 1
+        if(-not $nodeCommand){throw 'CODEX_NODE_RUNTIME_MISSING'}
+        return [pscustomobject]@{file_path=[string]$nodeCommand.Source;argv_prefix=@($npmEntry);launch_mode='NPM_NODE_ENTRYPOINT'}
+    }
+    throw 'CODEX_APPLICATION_KIND_UNSUPPORTED'
+}
+function Set-SeshatRunnerStart {
+    param(
+        [Parameter(Mandatory=$true)][object]$Job,
+        [Parameter(Mandatory=$true)][int]$RunnerPid,
+        [Parameter(Mandatory=$true)][string]$StartedUtc
+    )
+    # A deserialized PSCustomObject may lack the runtime-generated property.
+    # Direct assignment under Set-StrictMode Latest failed before Codex ran.
+    $Job|Add-Member -NotePropertyName runner_pid -NotePropertyValue $RunnerPid -Force
+    $Job|Add-Member -NotePropertyName started_at_utc -NotePropertyValue $StartedUtc -Force
+}
 function Get-SeshatJobAuthorizationDigest {
     param([Parameter(Mandatory=$true)][object] $Job)
     $approved=(@($Job.approved_paths|ForEach-Object{[string]$_}|Sort-Object)-join ',')
