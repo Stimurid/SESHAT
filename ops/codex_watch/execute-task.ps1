@@ -63,8 +63,9 @@ try {
     if($branchBefore.stdout.Trim() -cne [string]$job.branch){throw 'BRANCH_MISMATCH'}
     $headBefore=InvokeExecutorNative 'git' @('-C',$Repo,'rev-parse','HEAD') 'executor-git-head' 'HEAD_QUERY_FAILED'
     if($headBefore.stdout.Trim() -cne [string]$job.base_sha){throw 'BASE_MISMATCH'}
-    $clean=InvokeExecutorNative 'git' @('-C',$Repo,'status','--porcelain=v1') 'executor-git-status-before' 'STATUS_FAILED'
-    if(@(Get-SeshatOutputLines -Text $clean.stdout).Count -ne 0){throw 'DIRTY_BEFORE_START'}
+    # Include residue from a previous untrusted worker; cap bytes and lines BEFORE parsing.
+    $clean=Invoke-SeshatBoundedNativeText -FilePath 'git' -ArgumentList @('-C',$Repo,'-c','core.quotePath=false','status','--porcelain=v1','-uall') -WorkingDirectory $Repo -Label 'executor-git-status-before' -MaximumStandardOutputBytes 262144 -MaximumStandardErrorBytes 32768 -MaximumLines 64
+    if(@($clean.lines).Count -ne 0){throw 'DIRTY_BEFORE_START'}
     Set-SeshatRunnerStart -Job $job -RunnerPid $PID -StartedUtc $Started
     AtomicJson $job $JobPath
     Set-Location -LiteralPath $Repo
@@ -116,7 +117,7 @@ try {
     $ExitCode=0
 } catch {
     $ErrorType=$_.Exception.GetType().Name
-    if($_.Exception.Message -in @('JOB_REPOSITORY_MISMATCH','ORIGIN_QUERY_FAILED','ORIGIN_MISMATCH','BRANCH_QUERY_FAILED','BRANCH_MISMATCH','HEAD_QUERY_FAILED','BASE_MISMATCH','DIRTY_BEFORE_START','CODEX_OUTPUT_LIMIT_EXCEEDED','CODEX_NONZERO','STATUS_FAILED','BLOCK_APPROVED_PATH_SET_MISMATCH','BLOCK_EMPTY_JOB_OWNED_MANIFEST','BLOCK_UNAPPROVED_JOB_PATH','BLOCK_DIRTY_PATH_SET_MISMATCH','MISSING_REQUIRED_RESULT_RECEIPT','PUBLISH_PROCESS_NONZERO','PUBLISH_RECEIPT_MISSING','PUBLISH_RECEIPT_INVALID','BLOCK_PUBLISH_STATUS','BLOCK_PUBLISH_JOB_MISMATCH','BLOCK_PUBLISH_HEAD_MISMATCH','BLOCK_PUBLISH_PR_STATE','BLOCK_PUBLISH_PR_REFS','BLOCK_MALFORMED_PUBLICATION_RECEIPT')){
+    if($_.Exception.Message -in @('JOB_REPOSITORY_MISMATCH','ORIGIN_QUERY_FAILED','ORIGIN_MISMATCH','BRANCH_QUERY_FAILED','BRANCH_MISMATCH','HEAD_QUERY_FAILED','BASE_MISMATCH','DIRTY_BEFORE_START','CODEX_OUTPUT_LIMIT_EXCEEDED','CODEX_NONZERO','STATUS_FAILED','NATIVE_COMMAND_FAILED','NATIVE_OUTPUT_LIMIT_EXCEEDED','NATIVE_LINE_LIMIT_EXCEEDED','BLOCK_APPROVED_PATH_SET_MISMATCH','BLOCK_EMPTY_JOB_OWNED_MANIFEST','BLOCK_UNAPPROVED_JOB_PATH','BLOCK_DIRTY_PATH_SET_MISMATCH','MISSING_REQUIRED_RESULT_RECEIPT','PUBLISH_PROCESS_NONZERO','PUBLISH_RECEIPT_MISSING','PUBLISH_RECEIPT_INVALID','BLOCK_PUBLISH_STATUS','BLOCK_PUBLISH_JOB_MISMATCH','BLOCK_PUBLISH_HEAD_MISMATCH','BLOCK_PUBLISH_PR_STATE','BLOCK_PUBLISH_PR_REFS','BLOCK_MALFORMED_PUBLICATION_RECEIPT')){
         $ErrorType=$_.Exception.Message
     }elseif($_.Exception.Message -cmatch '^(CODEX|TRUSTED)_[A-Z0-9_]+$'){
         $ErrorType=$_.Exception.Message

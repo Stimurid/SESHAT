@@ -179,8 +179,10 @@ Worker-amplifiable `git status --porcelain -uall` reads use separate byte-stream
 stdout and stderr caps (256 KiB and 32 KiB) and a 64-line ceiling. Output above
 either ceiling or invalid UTF-8 fails closed; status is never accepted from a
 truncated prefix. The reader retains at most 64 decoded records and preserves the
-leading status-column whitespace. This applies in executor, publisher and
-reconciliation paths.
+leading status-column whitespace. This applies to the executor's pre-worker
+cleanliness check, post-worker check and final read, as well as publisher and
+reconciliation status paths. Native byte/line overflows retain typed error classes
+in the executor receipt, rather than collapsing to a generic exception.
 
 Before staging, every owned regular file is constrained to 2 MiB and the total to
 5 MiB, with repository containment and reparse-point denial. After staging, Git
