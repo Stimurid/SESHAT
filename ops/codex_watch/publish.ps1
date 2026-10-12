@@ -5,6 +5,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $Repo='C:\projects\seshat'
 $Root='C:\Users\Homee\AppData\Local\SESHAT\watch'
+$gitGhLaunch=$null
 . (Join-Path $PSScriptRoot 'gate.ps1')
 function Need($condition,$reason){if(-not $condition){throw $reason}}
 
@@ -15,7 +16,9 @@ $markerPath=Join-Path (Join-Path $Root 'dispatches') (([string]$job.dispatch_key
 Need (Test-Path -LiteralPath $markerPath) 'DISPATCH_MARKER_MISSING'
 $marker=Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8|ConvertFrom-Json
 Need ((Test-SeshatJobAuthorization -Job $job -Marker $marker) -eq 'ADMIT') 'JOB_NOT_AUTHORIZED'
-Assert-SeshatBundleProvenance -Job $job -Repo $Repo -ScriptRoot $PSScriptRoot
+$gitGhLaunch=Resolve-SeshatGitGhLaunch -ExpectedBinding $job.git_gh_launch_policy
+Assert-SeshatPrivilegedRepositorySurface -Repo $Repo
+Assert-SeshatBundleProvenance -Job $job -Repo $Repo -ScriptRoot $PSScriptRoot -GitGhLaunch $gitGhLaunch
 
 $jobId=[string]$job.job_id
 $branch=[string]$job.branch
@@ -32,7 +35,8 @@ Need ($branch -match '^codex/[a-z0-9][a-z0-9-]{4,79}$') 'UNSAFE_BRANCH_NAME'
 Need ($issue -ge 1 -and $issue -le 1000000) 'UNSAFE_ISSUE'
 Start-SeshatPublicationAttempt -EventPath $eventPath -ReceiptPath $receiptPath -JobId $jobId -Branch $branch -BaseSha $baseSha
 
-function InvokePublisherNative([string]$file,[string[]]$arguments,[string]$label,[string]$failureClass){
+function InvokePublisherNative([ValidateSet('git','gh')][string]$tool,[string[]]$arguments,[string]$label,[string]$failureClass){
+    $file=Get-SeshatPrivilegedNativeExecutablePath -Tool $tool -Launch $gitGhLaunch
     $result=Invoke-SeshatNativeCommand -FilePath $file -ArgumentList $arguments -WorkingDirectory $Repo -Label $label -AuditPath $nativeAuditPath -JobId $jobId
     Assert-SeshatNativeSuccess -Result $result -FailureClass $failureClass
     return $result
@@ -47,15 +51,16 @@ function RecordMutationReturn([string]$action,[object]$before,[object]$result){
 function CompleteMutation([string]$action,[object]$before,[object]$after,[int]$exitCode){
     Write-SeshatMutationEvent -Path $eventPath -JobId $jobId -AttemptNonce $attemptNonce -Action $action -Status 'COMPLETE' -Phase $phase -BeforeWitness $before -AfterWitness $after -ExitCode $exitCode
 }
-function InvokeMutation([string]$file,[string[]]$arguments,[string]$label,[string]$failureClass,[string]$action,[object]$before){
+function InvokeMutation([ValidateSet('git','gh')][string]$tool,[string[]]$arguments,[string]$label,[string]$failureClass,[string]$action,[object]$before){
     StartMutation $action $before
+    $file=Get-SeshatPrivilegedNativeExecutablePath -Tool $tool -Launch $gitGhLaunch
     $result=Invoke-SeshatNativeCommand -FilePath $file -ArgumentList $arguments -WorkingDirectory $Repo -Label $label -AuditPath $nativeAuditPath -JobId $jobId
     RecordMutationReturn $action $before $result
     Assert-SeshatNativeSuccess -Result $result -FailureClass $failureClass
     return $result
 }
 function AssertRemoteBranchAbsent([string]$label){
-    $result=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'ls-remote','--exit-code','--heads','origin',('refs/heads/'+$branch)) -WorkingDirectory $Repo -Label $label -AuditPath $nativeAuditPath -JobId $jobId
+    $result=Invoke-SeshatNativeCommand -FilePath (Get-SeshatPrivilegedNativeExecutablePath -Tool 'git' -Launch $gitGhLaunch) -ArgumentList @('-C',$Repo,'ls-remote','--exit-code','--heads','origin',('refs/heads/'+$branch)) -WorkingDirectory $Repo -Label $label -AuditPath $nativeAuditPath -JobId $jobId
     if([int]$result.exit_code -eq 0){throw 'REMOTE_BRANCH_ALREADY_EXISTS'}
     if([int]$result.exit_code -ne 2){throw 'REMOTE_BRANCH_QUERY_FAILED'}
 }
@@ -75,9 +80,9 @@ try{
     AssertRemoteBranchAbsent 'git-remote-branch-preflight'
     AssertNoPullRequest 'gh-pr-list-preflight'
 
-    $cachedBefore=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'diff','--cached','--quiet') -WorkingDirectory $Repo -Label 'git-index-clean-preflight' -AuditPath $nativeAuditPath -JobId $jobId
+    $cachedBefore=Invoke-SeshatNativeCommand -FilePath (Get-SeshatPrivilegedNativeExecutablePath -Tool 'git' -Launch $gitGhLaunch) -ArgumentList @('-C',$Repo,'diff','--cached','--quiet') -WorkingDirectory $Repo -Label 'git-index-clean-preflight' -AuditPath $nativeAuditPath -JobId $jobId
     Need ([int]$cachedBefore.exit_code -eq 0) 'PREEXISTING_STAGED_CHANGES'
-    $status=Invoke-SeshatBoundedNativeText -FilePath 'git' -ArgumentList @('-C',$Repo,'-c','core.quotePath=false','status','--porcelain=v1','-uall') -WorkingDirectory $Repo -Label 'git-status' -MaximumStandardOutputBytes 262144 -MaximumStandardErrorBytes 32768 -MaximumLines 64
+    $status=Invoke-SeshatBoundedNativeText -FilePath (Get-SeshatPrivilegedNativeExecutablePath -Tool 'git' -Launch $gitGhLaunch) -ArgumentList @('-C',$Repo,'-c','core.quotePath=false','status','--porcelain=v1','-uall') -WorkingDirectory $Repo -Label 'git-status' -MaximumStandardOutputBytes 262144 -MaximumStandardErrorBytes 32768 -MaximumLines 64
     $statusLines=@($status.lines)
     Need ($statusLines.Count -gt 0) 'NO_CODE_CHANGES'
     $paths=@(Get-SeshatStatusPaths -StatusLines $statusLines)
@@ -114,7 +119,7 @@ try{
     $diffErrorPath=Join-Path $artifactDir ('staged-diff-'+$attemptNonce+'.stderr')
     $diffSha=$null
     try{
-        $diffResult=Invoke-SeshatStreamingNativeCommand -FilePath 'git' -ArgumentList (@('-C',$Repo,'diff','--cached','--no-ext-diff','--unified=0','--')+$paths) -WorkingDirectory $Repo -Label 'git-diff-scan' -StandardOutputPath $diffPath -StandardErrorPath $diffErrorPath -MaximumStandardOutputBytes 8388608 -MaximumStandardErrorBytes 65536 -AuditPath $nativeAuditPath -JobId $jobId
+        $diffResult=Invoke-SeshatStreamingNativeCommand -FilePath (Get-SeshatPrivilegedNativeExecutablePath -Tool 'git' -Launch $gitGhLaunch) -ArgumentList (@('-C',$Repo,'diff','--cached','--no-ext-diff','--unified=0','--')+$paths) -WorkingDirectory $Repo -Label 'git-diff-scan' -StandardOutputPath $diffPath -StandardErrorPath $diffErrorPath -MaximumStandardOutputBytes 8388608 -MaximumStandardErrorBytes 65536 -AuditPath $nativeAuditPath -JobId $jobId
         Need (-not [bool]$diffResult.limit_exceeded -and [int]$diffResult.exit_code -eq 0) 'DIFF_STREAM_FAILED_OR_TOO_LARGE'
         $scanDecision=Test-SeshatAddedDiffFile -Path $diffPath -MaximumBytes 8388608
         Need ($scanDecision -eq 'ADMIT') $scanDecision
@@ -187,4 +192,6 @@ Coordination: https://github.com/Stimurid/SESHAT/issues/6
     Write-SeshatPublicationEvent -Path $eventPath -JobId $jobId -Phase $phase -Branch $branch -BaseSha $baseSha -HeadSha $headSha -ErrorClass $errorClass
     [Console]::Error.WriteLine(('PUBLISH_FAILED error_class={0} phase={1}' -f $errorClass,$phase))
     exit 94
+}finally{
+    Close-SeshatGitGhLaunch -Launch $gitGhLaunch
 }
