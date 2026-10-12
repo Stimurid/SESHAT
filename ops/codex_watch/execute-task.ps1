@@ -19,6 +19,11 @@ $CodexStreamStatus='NOT_STARTED'
 $CodexStdoutBytes=$null
 $CodexStderrBytes=$null
 $CodexLimitStream=$null
+$DescendantsContained=$null
+$DescendantQuiescence=$null
+$ResidualActiveProcesses=$null
+$ContainmentImpl=$null
+$ContainmentSourceSha256=$null
 $PowerShellExe=(Get-Process -Id $PID).Path
 $ErrorType=$null
 $PublishStatus='NOT_STARTED'
@@ -78,7 +83,7 @@ try {
     $CodexLaunchProvenance=$codexLaunch.provenance
     $CodexStreamStatus='STARTING'
     try{
-        $codexResult=Invoke-SeshatStreamingNativeCommand -FilePath $codexLaunch.file_path -ArgumentList (@($codexLaunch.argv_prefix)+@('exec','--json','--sandbox','workspace-write','-C',$Repo,'-o',$LastMessage,'-')) -WorkingDirectory $Repo -Label 'codex-exec' -StandardOutputPath $Stdout -StandardErrorPath $Stderr -MaximumStandardOutputBytes 67108864 -MaximumStandardErrorBytes 8388608 -AuditPath $executorAudit -JobId ([string]$job.job_id) -StandardInputText $prompt
+        $codexResult=Invoke-SeshatStreamingNativeCommand -FilePath $codexLaunch.file_path -ArgumentList (@($codexLaunch.argv_prefix)+@('exec','--json','--sandbox','workspace-write','-C',$Repo,'-o',$LastMessage,'-')) -WorkingDirectory $Repo -Label 'codex-exec' -StandardOutputPath $Stdout -StandardErrorPath $Stderr -MaximumStandardOutputBytes 67108864 -MaximumStandardErrorBytes 8388608 -AuditPath $executorAudit -JobId ([string]$job.job_id) -StandardInputText $prompt -WallClockTimeoutMilliseconds 7200000 -NoOutputTimeoutMilliseconds 7200000
     }catch{
         $CodexStreamStatus='FAILED'
         throw
@@ -90,6 +95,11 @@ try {
     $CodexStdoutBytes=[long]$codexResult.stdout_bytes
     $CodexStderrBytes=[long]$codexResult.stderr_bytes
     $CodexLimitStream=$codexResult.limit_stream
+    if($codexResult.PSObject.Properties['descendants_contained']){$DescendantsContained=[bool]$codexResult.descendants_contained}
+    if($codexResult.PSObject.Properties['descendant_quiescence']){$DescendantQuiescence=[string]$codexResult.descendant_quiescence}
+    if($codexResult.PSObject.Properties['residual_active_processes']){$ResidualActiveProcesses=[int]$codexResult.residual_active_processes}
+    if($codexResult.PSObject.Properties['containment_impl']){$ContainmentImpl=[string]$codexResult.containment_impl}
+    if($codexResult.PSObject.Properties['containment_source_sha256']){$ContainmentSourceSha256=[string]$codexResult.containment_source_sha256}
     if($codexResult.limit_exceeded){throw 'CODEX_OUTPUT_LIMIT_EXCEEDED'}
     if($ExitCode -ne 0){throw 'CODEX_NONZERO'}
     $statusResult=Invoke-SeshatBoundedNativeText -FilePath 'git' -ArgumentList @('-C',$Repo,'-c','core.quotePath=false','status','--porcelain=v1','-uall') -WorkingDirectory $Repo -Label 'executor-git-status-after' -MaximumStandardOutputBytes 262144 -MaximumStandardErrorBytes 32768 -MaximumLines 64
@@ -117,7 +127,7 @@ try {
     $ExitCode=0
 } catch {
     $ErrorType=$_.Exception.GetType().Name
-    if($_.Exception.Message -in @('JOB_REPOSITORY_MISMATCH','ORIGIN_QUERY_FAILED','ORIGIN_MISMATCH','BRANCH_QUERY_FAILED','BRANCH_MISMATCH','HEAD_QUERY_FAILED','BASE_MISMATCH','DIRTY_BEFORE_START','CODEX_OUTPUT_LIMIT_EXCEEDED','CODEX_NONZERO','STATUS_FAILED','NATIVE_COMMAND_FAILED','NATIVE_OUTPUT_LIMIT_EXCEEDED','NATIVE_LINE_LIMIT_EXCEEDED','BLOCK_APPROVED_PATH_SET_MISMATCH','BLOCK_EMPTY_JOB_OWNED_MANIFEST','BLOCK_UNAPPROVED_JOB_PATH','BLOCK_DIRTY_PATH_SET_MISMATCH','MISSING_REQUIRED_RESULT_RECEIPT','PUBLISH_PROCESS_NONZERO','PUBLISH_RECEIPT_MISSING','PUBLISH_RECEIPT_INVALID','BLOCK_PUBLISH_STATUS','BLOCK_PUBLISH_JOB_MISMATCH','BLOCK_PUBLISH_HEAD_MISMATCH','BLOCK_PUBLISH_PR_STATE','BLOCK_PUBLISH_PR_REFS','BLOCK_MALFORMED_PUBLICATION_RECEIPT')){
+    if($_.Exception.Message -in @('JOB_REPOSITORY_MISMATCH','ORIGIN_QUERY_FAILED','ORIGIN_MISMATCH','BRANCH_QUERY_FAILED','BRANCH_MISMATCH','HEAD_QUERY_FAILED','BASE_MISMATCH','DIRTY_BEFORE_START','CODEX_OUTPUT_LIMIT_EXCEEDED','CODEX_NONZERO','STATUS_FAILED','NATIVE_COMMAND_FAILED','NATIVE_OUTPUT_LIMIT_EXCEEDED','NATIVE_LINE_LIMIT_EXCEEDED','BLOCK_APPROVED_PATH_SET_MISMATCH','BLOCK_EMPTY_JOB_OWNED_MANIFEST','BLOCK_UNAPPROVED_JOB_PATH','BLOCK_DIRTY_PATH_SET_MISMATCH','MISSING_REQUIRED_RESULT_RECEIPT','PUBLISH_PROCESS_NONZERO','PUBLISH_RECEIPT_MISSING','PUBLISH_RECEIPT_INVALID','BLOCK_PUBLISH_STATUS','BLOCK_PUBLISH_JOB_MISMATCH','BLOCK_PUBLISH_HEAD_MISMATCH','BLOCK_PUBLISH_PR_STATE','BLOCK_PUBLISH_PR_REFS','BLOCK_MALFORMED_PUBLICATION_RECEIPT','DESCENDANT_RESIDUE_TERMINATED','DESCENDANT_QUIESCENCE_TIMEOUT','JOB_CONTAINMENT_UNAVAILABLE','JOB_ASSIGNMENT_NOT_VERIFIED','NO_OUTPUT_TIMEOUT','WALL_CLOCK_TIMEOUT','PIPE_CREATE_FAILED','PROCESS_CREATE_FAILED')){
         $ErrorType=$_.Exception.Message
     }elseif($_.Exception.Message -cmatch '^(CODEX|TRUSTED)_[A-Z0-9_]+$'){
         $ErrorType=$_.Exception.Message
@@ -136,6 +146,9 @@ try {
         codex_stream_status=$CodexStreamStatus;codex_stdout_bytes=$CodexStdoutBytes
         codex_stderr_bytes=$CodexStderrBytes;codex_limit_stream=$CodexLimitStream
         codex_launch_provenance=$CodexLaunchProvenance
+        descendants_contained=$DescendantsContained;descendant_quiescence=$DescendantQuiescence
+        residual_active_processes=$ResidualActiveProcesses;containment_impl=$ContainmentImpl
+        containment_source_sha256=$ContainmentSourceSha256;wmi_escape='UNSUPPORTED_BY_JOB_OBJECT'
         publisher_stdout_path=$ResultLog;publisher_stderr_path=$PublisherStderr
         branch=$branch; head_sha=$head; dirty_file_count=$dirty.Count
         log_path=$Stdout; final_message_path=$LastMessage
