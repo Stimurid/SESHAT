@@ -9,6 +9,14 @@
 
 **Security review hold:** the separate Windows task `SESHAT-Codex-Dispatch` is temporarily **DISABLED** while PR #18 is under review. Do not enable it from this worktree. It may be considered for manual re-enablement only after PR #18 is manually merged, the canonical `.github/workflows/ci.yml` push run succeeds on the then-current `main` SHA, and the installed bundle matches the reviewed PR #18 source hashes.
 
+**Release provenance hold (S-OPS-PUBLISH-RECOVERY / #28):** branch
+`fix/ops-publisher-recovery-20261011` is review source only and is **not deployed** to
+the trusted-host runtime. The installed, reviewed PR #18 five-file bundle remains
+untouched, and `SESHAT-Codex-Dispatch` stays Disabled. PR #26 is the separate
+strict-mode bootstrap fix for issue #25; the generic next-release decision remains
+separately held in issue #34. None of #28, #25/PR #26, or #34 authorizes a job
+launch, installation, merge, semantic acceptance, or scheduler enablement.
+
 **Do not confuse these:** the five-minute task detects local changes and saves durable local evidence; outbound ChatGPT notifications are at most hourly, not five-minute push notifications. A powered-off/sleeping Aorustim cannot run its local task; remote connectivity is a separate prerequisite. This is bounded supervision, not an always-on service guarantee.
 
 ## Installed local paths
@@ -79,6 +87,9 @@ The normal Codex workspace-write sandbox refuses writes to .git even when the .g
 - dispatch.ps1: dry run by default; -Apply is for the Windows scheduled task.
 - execute-task.ps1: starts a bounded Codex CLI run with workspace-write, local JSON logging, no Git credentials and no Git writes. It rejects a noncanonical `JobPath`, missing/mismatched dispatch marker, altered job binding or installed-bundle drift before code execution.
 - publish.ps1: the trusted host revalidates the same job/marker/bundle, requires the exact executor-owned dirty path set, scans the staged diff, commits/pushes, and creates or verifies a draft PR. It does not execute agent-produced tests; isolated GitHub PR CI runs pytest and Ruff. No automatic merge.
+- reconcile-publish.ps1: read-only partial-publication readback. It reports the
+  recorded stage, local branch/HEAD/dirty count, optional GitHub PR readback and a
+  manual recovery instruction. It never resumes or retries publication.
 - monitor.ps1: detects the new execute-task.ps1 runner as well as the legacy resume runner.
 
 Admission requires ALL of: previous PR manually reviewed and labeled seshat:engineering-accepted; an exact-line comment `SESHAT_ENGINEERING_ACCEPTED_SHA=<40-hex reviewed PR head SHA>` authored by GitHub actor `Stimurid`; previous PR MANUALLY merged to main; PR #18 MANUALLY merged to main; successful GitHub workflow at exact path `.github/workflows/ci.yml`, repository `Stimurid/SESHAT`, event `push`, branch `main`, and exact current main SHA; preapproved next issue still open, labeled seshat:codex-ready, and byte-for-byte equal to its approved UTF-8 SHA-256 pin; one explicit mapping in task_queue.json; clean worktree; matching previous exit receipt; no duplicate branch or prior dispatch marker.
@@ -101,17 +112,119 @@ The queue also carries a finite S2B `approved_paths` set. After Codex exits, the
 
 The installed runtime bundle (`dispatch.ps1`, `gate.ps1`, `execute-task.ps1`, `publish.ps1`, and `task_queue.json`) must byte-match the repository files, remain unchanged between the merged PR #18 SHA and the dispatched main SHA, and carry its SHA-256 manifest inside the marker-bound job. Both execution entrypoints recheck this provenance. After push, publication succeeds only when GitHub reports the PR `OPEN`, draft, based on `main`, headed by the registered branch, and pointing to the just-pushed commit SHA. Existing `exit.json` is never overwritten; duplicate execution is rejected before the operational `try/finally`, and final creation uses create-new semantics.
 
+Codex launch additionally requires a separately reviewed, host-owned
+`C:\ProgramData\SESHAT\codex-launch-policy.json`. The repository deliberately
+contains no release pin and cannot nominate a trusted binary. The v1 policy names
+canonical absolute `node.exe`, Codex `bin\codex.js`, and `package.json` paths;
+their allowed parent roots; SHA-256 values; exact `@openai/codex` version; and the
+Authenticode signer thumbprint for Node. Dispatch fails closed if it is missing,
+malformed, unsigned, outside its roots, or traverses a reparse point. Its complete
+binding and policy hash are included in the job authorization digest. Execution
+revalidates it, opens all three identity files without write/delete sharing,
+rehashes them after locking, and retains the locks through process execution. PATH
+shims, adjacent packages, direct executable fallbacks, and drifted pins are never
+considered. A trusted operator must create/review this policy from independently
+verified installation evidence; the sandbox and CI fixture must not be used as a
+source of production pins.
+
 The two labels are different independent permissions. Engineering acceptance does NOT mean scientific-method approval. Codex must never invent another task, import a donor wholesale, or modify the research ontology on its own.
 
 Task S-IMPL-002B (#17) is prepared; current predecessor PR #16 remains draft/unmerged. Automatic dispatch is therefore BLOCKED until explicit review and merge. Do not apply the PR acceptance label merely because tests pass.
 
 Operational state is stored locally in %LOCALAPPDATA%\SESHAT\watch: dispatch_state.json, dispatch_events.jsonl, job.json, exit.json, publish_receipt.json and per-run archived logs. The dispatcher creates a one-time gate marker under dispatches BEFORE spawning the worker to guarantee fail-closed recovery. A stale marker requires investigation; never delete it automatically.
 
+### Publisher native-process and partial-stage recovery
+
+The publisher and its parent invoke native Git/GitHub processes with stdout and
+stderr captured separately and classify the explicit native exit code. Stderr on
+an exit-zero command (for example a Git CRLF warning) is recorded as
+`EXIT_ZERO_STDERR` in the per-job native audit and does not become a terminating
+PowerShell error. Any nonzero native exit remains fail-closed. Audit records contain
+only command labels, exit status, stderr presence/count/hash and classification;
+they do not contain command arguments, diff bodies, tokens, or raw native output.
+
+Long-running Codex output uses a separate bounded streaming path. While the child
+is running, stdout is flushed directly to the private local `stdout.jsonl` and
+stderr to `stderr.log`; neither stream is accumulated in PowerShell memory. The
+files therefore retain a readable partial prefix after a child failure or host
+interruption and their modification times remain useful to the watchdog. The
+current hard limits are 64 MiB for stdout and 8 MiB for stderr. Reaching either
+limit terminates the child fail-closed, retains the bounded prefix, records
+`OUTPUT_LIMIT_EXCEEDED`, and cannot proceed to publication. Short Git/GH and
+publisher-child commands continue to use the small buffered helper.
+
+The private streaming audit records `STARTING` and exactly one terminal status
+(`COMPLETED`, `NONZERO_EXIT`, `OUTPUT_LIMIT_EXCEEDED`, or `FAILED`) with exit code
+when available, byte counts and paths, but never raw agent output. These local
+agent logs must not be uploaded as GitHub artifacts or copied into issues/PRs.
+
+The first failed publisher run for issue #28 returned an opaque `RemoteException`
+and an empty publisher log. Its original exception stack was **not captured**.
+An isolated synthetic probe reproduced the relevant Windows PowerShell 5 behavior;
+that probe is evidence for the fix, not a reconstruction of the missing stack.
+
+Each publication attempt has an append-only per-job stream under
+`publication-events`. Journal and attempt writes call `FileStream.Flush(true)`
+before returning, so an I/O or durable-flush failure stops the publisher before
+the associated mutation. Before every `git add`, `git commit`, create-only push, and
+`gh pr create`, it durably appends a v2 `INTENT` with job, attempt nonce, phase and
+before-witness; native return is recorded as `RETURNED`; verified after-witness is
+then recorded as `COMPLETE`. Any exception after the first intent records
+`RECONCILIATION_REQUIRED`. A prior stream or receipt blocks automatic retry.
+`exit.json` and `publish_receipt.json` use create-new semantics and are never
+overwritten. Reconciliation reads the index, HEAD, remote ref and PR state and
+reports an incomplete intent/return without mutating any of them.
+
+Worker-amplifiable `git status --porcelain -uall` reads use separate byte-streamed
+stdout and stderr caps (256 KiB and 32 KiB) and a 64-line ceiling. Output above
+either ceiling or invalid UTF-8 fails closed; status is never accepted from a
+truncated prefix. The reader retains at most 64 decoded records and preserves the
+leading status-column whitespace. This applies to the executor's pre-worker
+cleanliness check, post-worker check and final read, as well as publisher and
+reconciliation status paths. Native byte/line overflows retain typed error classes
+in the executor receipt, rather than collapsing to a generic exception.
+
+Before staging, every owned regular file is constrained to 2 MiB and the total to
+5 MiB, with repository containment and reparse-point denial. After staging, Git
+blob sizes and regular-file modes are checked independently. Binary numstat is
+denied. The staged patch is streamed to a private file with an 8 MiB ceiling and
+scanned incrementally as strict UTF-8; added-line secret matching survives chunk
+boundaries and neither shapes nor patch bodies enter public logs. Remote branch
+and PR absence are checked before staging and again before publication. Push is
+atomic and create-only using an empty-expected-OID force-with-lease; it cannot
+overwrite a ref created before or during the attempt.
+
+After this change is reviewed and deliberately installed, an authorized operator
+handles an interrupted attempt by performing readback first:
+
+```powershell
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File C:\Users\Homee\AppData\Local\SESHAT\watch\reconcile-publish.ps1 `
+  -JobPath C:\Users\Homee\AppData\Local\SESHAT\watch\job.json
+```
+
+Recovery is deliberately manual and stage-specific:
+
+- `PRECHECK`: no mutation was recorded; inspect the failed admission check before any new authorized attempt.
+- `BEFORE_COMMIT`: inspect worktree and authorization evidence; do not rerun.
+- `STAGED_ONLY`: inspect the index and exact allowed paths; do not commit blindly.
+- `COMMITTED_ONLY`: verify the remote branch before any push decision.
+- `PUSHED_WITHOUT_PR`: verify GitHub for an existing PR before any create decision.
+- `DRAFT_PUBLISHED`: verify the existing draft and receipt; never create a duplicate.
+- `RECONCILIATION_REQUIRED`: compare the last `INTENT`/`RETURNED` record with index, HEAD, remote ref and PR readback; never infer that the interrupted mutation did or did not happen.
+
+Missing, malformed, mismatched, or stale publication receipts always fail the
+executor. Reconciliation does not repair receipts, modify Git, call `gh pr create`,
+or bypass the pinned SHA, bundle provenance, exact path manifest, credential diff
+scanner, human acceptance, or disabled scheduler.
+
 Windows Task Scheduler task SESHAT-Codex-Dispatch is a five-minute task distinct from the existing SESHAT-Codex-Watch task and from hourly ChatGPT notifications. It is temporarily **DISABLED for PR #18 review**. If it is later re-enabled after all security gates are satisfied, the machine must be awake/logged in for the local scheduled process to run.
 
 Verification:
-- powershell.exe -NoProfile -ExecutionPolicy Bypass -File ops\codex_watch\tests\test-gate.ps1
+- powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ops\codex_watch\tests\test-gate.ps1
+- powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ops\codex_watch\tests\test-publisher-recovery.ps1 (Windows PowerShell 5.1 quoting, UTF-8 and bounded streaming; isolated CI only)
 - pwsh -File ops/codex_watch/tests/test-gate.ps1 (isolated GitHub Actions job; checkout uses `persist-credentials: false` and `contents: read`)
+- pwsh -File ops/codex_watch/tests/test-publisher-recovery.ps1 (same synthetic publisher/streaming coverage under PowerShell 7; isolated Windows GitHub Actions only; no live GitHub calls)
 - powershell -NoProfile -File C:\Users\Homee\AppData\Local\SESHAT\watch\dispatch.ps1 (safe dry-run)
 - schtasks /query /tn SESHAT-Codex-Dispatch /fo LIST /v (must report disabled during PR #18 review)
 - Inspect local dispatch_state.json and GitHub current HEAD/PR/CI.
@@ -120,5 +233,9 @@ Verification:
 Implementation limitations: this first version handles ONE queued transition and ONE active job per Windows checkout; it is not a general self-programming scheduler. It preserves old job logs, never resets a dirty repository, never auto-merges, never self-certifies acceptance, and cannot work while the host is unavailable.
 
 Security boundary: the trusted host publisher MUST NOT execute Codex-produced Python or tests while GitHub credentials are accessible. After an allowed-files/secret-pattern/diff check it opens a draft PR; isolated GitHub Actions CI runs both pytest and Ruff on the proposed branch. PR reviewers examine code and CI before manual engineering acceptance. The scanner detects common secret formats but cannot prove arbitrary content contains no sensitive data; review remains mandatory.
+
+Review state for S-OPS-PUBLISH-RECOVERY #28 / PR #39 after this source change:
+`CI_PENDING`. No local PowerShell or agent-authored test was executed on the
+credential-bearing host; only isolated GitHub PR CI may supply test evidence.
 
 The offline PowerShell gate test is pure simulation: it uses synthetic GitHub-shaped objects, performs no network calls, and asserts that the current branch, local branch refs, and worktree status are unchanged. Its negative cases include issue-body drift, a stale/wrong reviewed SHA, a wrong acceptance actor, a missing acceptance comment, unmerged PR #18, wrong-workflow success at the matching SHA, arbitrary job/marker binding, `tests/unrelated.py`, wrong PR head SHA, and byte-for-byte preservation of a pre-existing exit sentinel.

@@ -68,6 +68,15 @@ try {
     Need ($branch -match '^codex/[a-z0-9][a-z0-9-]{4,79}$') 'UNSAFE_BRANCH'
     & git -C $Repo show-ref --verify --quiet ('refs/heads/'+$branch)
     if($LASTEXITCODE -eq 0){State 'BLOCK_BRANCH_EXISTS';exit 0}
+    & git -C $Repo ls-remote --exit-code --heads origin ('refs/heads/'+$branch) *> $null
+    if($LASTEXITCODE -eq 0){State 'BLOCK_REMOTE_BRANCH_EXISTS';exit 0}
+    Need ($LASTEXITCODE -eq 2) 'REMOTE_BRANCH_PREFLIGHT_FAILED'
+    $encodedHead=[uri]::EscapeDataString('Stimurid:'+$branch)
+    $existingPulls=@(FromGh ("repos/Stimurid/SESHAT/pulls?state=all&head="+$encodedHead+"&per_page=2"))
+    if($existingPulls.Count -gt 0){State 'BLOCK_REMOTE_PR_EXISTS';exit 0}
+    # The pins are supplied by a separately reviewed, host-owned policy. They are
+    # copied into the authorization digest; this repository never chooses them.
+    $codexLaunchPolicy=Get-SeshatCodexLaunchPolicyBinding
     if(Test-Path $oldJob){
         $j=Get-Content $oldJob -Raw|ConvertFrom-Json
         $safe=([string]$j.job_id -replace '[^A-Za-z0-9_-]','_')
@@ -106,6 +115,7 @@ try {
         ops_pr=[int]$t.ops_pr;ops_merge_sha=[string]$opsPr.merge_commit_sha
         issue_body_utf8_sha256=[string]$t.next_issue_body_utf8_sha256
         dispatch_key=$key;approved_paths=@($t.approved_paths);ops_bundle=$opsBundle
+        codex_launch_policy=$codexLaunchPolicy
         repo=$Repo;branch=$branch;base_branch='main';base_sha=$sha;runner_pid=0
         created_at_utc=(Get-Date).ToUniversalTime().ToString('o')
     }
