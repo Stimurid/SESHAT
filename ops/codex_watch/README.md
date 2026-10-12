@@ -126,9 +126,11 @@ writable, reparse, drifted, forged, or CI-only synthetic policies fail closed
 before the first privileged `git status` or credential-bearing `gh` call. The
 repository cannot generate production pins; an operator must install the policy
 from independently verified installation evidence. **Operator-host gate (B01):**
-`dispatch.ps1` is outside this PR slice; until the trusted host copies
-`Get-SeshatGitGhLaunchPolicyBinding` into dispatched jobs, automatic dispatch
-remains blocked even after merge.
+`dispatch.ps1` loads `Get-SeshatGitGhLaunchPolicyBinding` before the first
+pinned `git`/`gh` call, copies the complete binding into `job.git_gh_launch_policy`,
+and passes `GitExePath` into `New-SeshatBundleManifest`. Automatic dispatch still
+requires a separately installed production policy and protected `gh.exe`; the
+repository patch alone does not authorize release.
 
 Codex launch additionally requires a separately reviewed, host-owned
 `C:\ProgramData\SESHAT\codex-launch-policy.json`. The repository deliberately
