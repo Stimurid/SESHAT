@@ -1,5 +1,573 @@
 # Pure governance gate. Source facts come from GitHub, not from Codex statements.
 Set-StrictMode -Version Latest
+
+$script:SeshatJobContainmentSource = @'
+
+using System;
+using System.Collections;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+namespace Seshat.Interop
+{
+    public sealed class StructSizeReport
+    {
+        public int StartupInfoW;
+        public int StartupInfoEx;
+        public int JobObjectExtendedLimitInformation;
+        public int JobObjectBasicAccountingInformation;
+    }
+
+    public sealed class AccountingInfo
+    {
+        public uint ActiveProcesses;
+        public uint TotalProcesses;
+        public uint TotalTerminatedProcesses;
+    }
+
+    public sealed class ContainedStartResult
+    {
+        public SafeWaitHandle JobHandle;
+        public SafeWaitHandle ProcessHandle;
+        public int ProcessId;
+        public FileStream StdinWrite;
+        public FileStream StdoutRead;
+        public FileStream StderrRead;
+    }
+
+    public static class JobContainmentV1
+    {
+        private const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
+        private const uint CREATE_NO_WINDOW = 0x08000000;
+        private const uint EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
+        private const uint STARTF_USESTDHANDLES = 0x00000100;
+        private const uint HANDLE_FLAG_INHERIT = 0x00000001;
+        private const uint JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 0x00000008;
+        private const uint JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION = 0x00000400;
+        private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
+        private const int JobObjectBasicAccountingInformation = 1;
+        private const int JobObjectExtendedLimitInformation = 9;
+        private const int PROC_THREAD_ATTRIBUTE_JOB_LIST = 0x0002000D;
+        private const int PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002;
+        private const uint STILL_ACTIVE = 259;
+        private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+        private const uint PROCESS_TERMINATE = 0x0001;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct STARTUPINFOW
+        {
+            public int cb;
+            public IntPtr lpReserved;
+            public IntPtr lpDesktop;
+            public IntPtr lpTitle;
+            public int dwX;
+            public int dwY;
+            public int dwXSize;
+            public int dwYSize;
+            public int dwXCountChars;
+            public int dwYCountChars;
+            public int dwFillAttribute;
+            public int dwFlags;
+            public short wShowWindow;
+            public short cbReserved2;
+            public IntPtr lpReserved2;
+            public IntPtr hStdInput;
+            public IntPtr hStdOutput;
+            public IntPtr hStdError;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct STARTUPINFOEX
+        {
+            public STARTUPINFOW StartupInfo;
+            public IntPtr lpAttributeList;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct PROCESS_INFORMATION
+        {
+            public IntPtr hProcess;
+            public IntPtr hThread;
+            public int dwProcessId;
+            public int dwThreadId;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SECURITY_ATTRIBUTES
+        {
+            public int nLength;
+            public IntPtr lpSecurityDescriptor;
+            public int bInheritHandle;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct JOBOBJECT_BASIC_LIMIT_INFORMATION
+        {
+            public long PerProcessUserTimeLimit;
+            public long PerJobUserTimeLimit;
+            public uint LimitFlags;
+            public UIntPtr MinimumWorkingSetSize;
+            public UIntPtr MaximumWorkingSetSize;
+            public uint ActiveProcessLimit;
+            public UIntPtr Affinity;
+            public uint PriorityClass;
+            public uint SchedulingClass;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct IO_COUNTERS
+        {
+            public ulong ReadOperationCount;
+            public ulong WriteOperationCount;
+            public ulong OtherOperationCount;
+            public ulong ReadTransferCount;
+            public ulong WriteTransferCount;
+            public ulong OtherTransferCount;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+        {
+            public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+            public IO_COUNTERS IoInfo;
+            public UIntPtr ProcessMemoryLimit;
+            public UIntPtr JobMemoryLimit;
+            public UIntPtr PeakProcessMemoryUsed;
+            public UIntPtr PeakJobMemoryUsed;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct JOBOBJECT_BASIC_ACCOUNTING_INFORMATION
+        {
+            public long TotalUserTime;
+            public long TotalKernelTime;
+            public long ThisPeriodTotalUserTime;
+            public long ThisPeriodTotalKernelTime;
+            public uint TotalPageFaultCount;
+            public uint TotalProcesses;
+            public uint ActiveProcesses;
+            public uint TotalTerminatedProcesses;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool CreateProcessW(
+            string lpApplicationName,
+            StringBuilder lpCommandLine,
+            IntPtr lpProcessAttributes,
+            IntPtr lpThreadAttributes,
+            bool bInheritHandles,
+            uint dwCreationFlags,
+            IntPtr lpEnvironment,
+            string lpCurrentDirectory,
+            ref STARTUPINFOEX lpStartupInfo,
+            out PROCESS_INFORMATION lpProcessInformation);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CreatePipe(out IntPtr hReadPipe, out IntPtr hWritePipe, ref SECURITY_ATTRIBUTES lpPipeAttributes, uint nSize);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetHandleInformation(IntPtr hObject, uint dwMask, uint dwFlags);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool InitializeProcThreadAttributeList(IntPtr lpAttributeList, int dwAttributeCount, int dwFlags, ref IntPtr lpSize);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool UpdateProcThreadAttribute(IntPtr lpAttributeList, uint dwFlags, IntPtr Attribute, IntPtr lpValue, IntPtr cbSize, IntPtr lpPreviousValue, IntPtr lpReturnSize);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern void DeleteProcThreadAttributeList(IntPtr lpAttributeList);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern SafeWaitHandle CreateJobObjectW(IntPtr lpJobAttributes, string lpName);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetInformationJobObject(SafeWaitHandle hJob, int JobObjectInfoClass, ref JOBOBJECT_EXTENDED_LIMIT_INFORMATION lpJobObjectInfo, int cbJobObjectInfoLength);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool QueryInformationJobObject(SafeWaitHandle hJob, int JobObjectInfoClass, out JOBOBJECT_BASIC_ACCOUNTING_INFORMATION lpJobObjectInfo, int cbJobObjectInfoLength, out int lpReturnLength);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool TerminateJobObject(SafeWaitHandle hJob, uint uExitCode);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool IsProcessInJob(IntPtr ProcessHandle, SafeWaitHandle JobHandle, out bool Result);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern uint WaitForSingleObject(SafeWaitHandle hHandle, uint dwMilliseconds);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetExitCodeProcess(SafeWaitHandle hProcess, out uint lpExitCode);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(IntPtr hObject);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern SafeWaitHandle OpenProcess(uint dwDesiredAccess, bool bInheritHandle, int dwProcessId);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool TerminateProcess(SafeWaitHandle hProcess, uint uExitCode);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool PeekNamedPipe(IntPtr hNamedPipe, IntPtr lpBuffer, int nBufferSize, IntPtr lpBytesRead, out int lpTotalBytesAvail, IntPtr lpBytesLeftThisMessage);
+
+        private static void Fail(string code)
+        {
+            throw new ApplicationException(code);
+        }
+
+        private static string BuildSanitizedEnvironmentBlock()
+        {
+            var blocked = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            blocked.Add("GH_TOKEN");
+            blocked.Add("GITHUB_TOKEN");
+            blocked.Add("GH_ENTERPRISE_TOKEN");
+            blocked.Add("GIT_ASKPASS");
+            blocked.Add("SSH_AUTH_SOCK");
+            blocked.Add("SSH_ASKPASS");
+            var pairs = new System.Collections.Generic.List<string>();
+            foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
+            {
+                var name = (string)entry.Key;
+                if (blocked.Contains(name)) continue;
+                pairs.Add(name + "=" + (string)entry.Value);
+            }
+            if (!pairs.Exists(s => s.StartsWith("GIT_TERMINAL_PROMPT=", StringComparison.OrdinalIgnoreCase)))
+                pairs.Add("GIT_TERMINAL_PROMPT=0");
+            pairs.Sort(StringComparer.OrdinalIgnoreCase);
+            var sb = new StringBuilder();
+            for (int i = 0; i < pairs.Count; i++)
+            {
+                sb.Append(pairs[i]);
+                sb.Append('\0');
+            }
+            sb.Append('\0');
+            return sb.ToString();
+        }
+
+        public static StructSizeReport GetStructSizes()
+        {
+            return new StructSizeReport
+            {
+                StartupInfoW = Marshal.SizeOf(typeof(STARTUPINFOW)),
+                StartupInfoEx = Marshal.SizeOf(typeof(STARTUPINFOEX)),
+                JobObjectExtendedLimitInformation = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)),
+                JobObjectBasicAccountingInformation = Marshal.SizeOf(typeof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION))
+            };
+        }
+
+        public static ContainedStartResult Start(string applicationName, string commandLine, string workingDirectory, bool redirectStdin)
+        {
+            SafeWaitHandle job = null;
+            IntPtr attrList = IntPtr.Zero;
+            IntPtr jobPtr = IntPtr.Zero;
+            IntPtr handleListPtr = IntPtr.Zero;
+            IntPtr hStdinRead = IntPtr.Zero;
+            IntPtr hStdinWrite = IntPtr.Zero;
+            IntPtr hStdoutRead = IntPtr.Zero;
+            IntPtr hStdoutWrite = IntPtr.Zero;
+            IntPtr hStderrRead = IntPtr.Zero;
+            IntPtr hStderrWrite = IntPtr.Zero;
+            IntPtr envBlock = IntPtr.Zero;
+            try
+            {
+                job = CreateJobObjectW(IntPtr.Zero, null);
+                if (job == null || job.IsInvalid) Fail("JOB_CONTAINMENT_UNAVAILABLE");
+                var ext = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+                ext.BasicLimitInformation.LimitFlags =
+                    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE |
+                    JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION |
+                    JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+                ext.BasicLimitInformation.ActiveProcessLimit = 256;
+                if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, ref ext, Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION))))
+                    Fail("JOB_CONTAINMENT_UNAVAILABLE");
+
+                var sa = new SECURITY_ATTRIBUTES();
+                sa.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES));
+                sa.bInheritHandle = 1;
+                if (!CreatePipe(out hStdoutRead, out hStdoutWrite, ref sa, 0)) Fail("PIPE_CREATE_FAILED");
+                if (!SetHandleInformation(hStdoutRead, HANDLE_FLAG_INHERIT, 0)) Fail("PIPE_CREATE_FAILED");
+                if (!CreatePipe(out hStderrRead, out hStderrWrite, ref sa, 0)) Fail("PIPE_CREATE_FAILED");
+                if (!SetHandleInformation(hStderrRead, HANDLE_FLAG_INHERIT, 0)) Fail("PIPE_CREATE_FAILED");
+                if (!CreatePipe(out hStdinRead, out hStdinWrite, ref sa, 0)) Fail("PIPE_CREATE_FAILED");
+                if (!SetHandleInformation(hStdinWrite, HANDLE_FLAG_INHERIT, 0)) Fail("PIPE_CREATE_FAILED");
+
+                IntPtr size = IntPtr.Zero;
+                InitializeProcThreadAttributeList(IntPtr.Zero, 2, 0, ref size);
+                attrList = Marshal.AllocHGlobal(size.ToInt32());
+                if (!InitializeProcThreadAttributeList(attrList, 2, 0, ref size)) Fail("JOB_CONTAINMENT_UNAVAILABLE");
+                jobPtr = Marshal.AllocHGlobal(IntPtr.Size);
+                Marshal.WriteIntPtr(jobPtr, job.DangerousGetHandle());
+                if (!UpdateProcThreadAttribute(attrList, 0, (IntPtr)PROC_THREAD_ATTRIBUTE_JOB_LIST, jobPtr, (IntPtr)IntPtr.Size, IntPtr.Zero, IntPtr.Zero))
+                    Fail("JOB_CONTAINMENT_UNAVAILABLE");
+
+                handleListPtr = Marshal.AllocHGlobal(IntPtr.Size * 3);
+                Marshal.WriteIntPtr(handleListPtr, 0, hStdinRead);
+                Marshal.WriteIntPtr(handleListPtr, IntPtr.Size, hStdoutWrite);
+                Marshal.WriteIntPtr(handleListPtr, IntPtr.Size * 2, hStderrWrite);
+                if (!UpdateProcThreadAttribute(attrList, 0, (IntPtr)PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handleListPtr, (IntPtr)(IntPtr.Size * 3), IntPtr.Zero, IntPtr.Zero))
+                    Fail("JOB_CONTAINMENT_UNAVAILABLE");
+
+                var siex = new STARTUPINFOEX();
+                siex.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
+                siex.lpAttributeList = attrList;
+                siex.StartupInfo.dwFlags = (int)STARTF_USESTDHANDLES;
+                siex.StartupInfo.hStdInput = hStdinRead;
+                siex.StartupInfo.hStdOutput = hStdoutWrite;
+                siex.StartupInfo.hStdError = hStderrWrite;
+
+                var envString = BuildSanitizedEnvironmentBlock();
+                envBlock = Marshal.StringToHGlobalUni(envString);
+                var cmd = new StringBuilder(commandLine);
+                PROCESS_INFORMATION pi;
+                if (!CreateProcessW(applicationName, cmd, IntPtr.Zero, IntPtr.Zero, true, CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, envBlock, workingDirectory, ref siex, out pi))
+                    Fail("PROCESS_CREATE_FAILED");
+
+                CloseHandle(pi.hThread);
+                CloseHandle(hStdinRead);
+                CloseHandle(hStdoutWrite);
+                CloseHandle(hStderrWrite);
+
+                var procHandle = new SafeWaitHandle(pi.hProcess, true);
+                bool inJob;
+                if (!IsProcessInJob(pi.hProcess, job, out inJob) || !inJob)
+                {
+                    TerminateProcess(procHandle, 1);
+                    Fail("JOB_ASSIGNMENT_NOT_VERIFIED");
+                }
+
+                var stdinStream = new FileStream(new SafeFileHandle(hStdinWrite, true), FileAccess.Write);
+                var stdoutStream = new FileStream(new SafeFileHandle(hStdoutRead, true), FileAccess.Read);
+                var stderrStream = new FileStream(new SafeFileHandle(hStderrRead, true), FileAccess.Read);
+
+                return new ContainedStartResult
+                {
+                    JobHandle = job,
+                    ProcessHandle = procHandle,
+                    ProcessId = pi.dwProcessId,
+                    StdinWrite = stdinStream,
+                    StdoutRead = stdoutStream,
+                    StderrRead = stderrStream
+                };
+            }
+            catch (ApplicationException)
+            {
+                throw;
+            }
+            catch
+            {
+                Fail("JOB_CONTAINMENT_UNAVAILABLE");
+            }
+            finally
+            {
+                if (attrList != IntPtr.Zero)
+                {
+                    DeleteProcThreadAttributeList(attrList);
+                    Marshal.FreeHGlobal(attrList);
+                }
+                if (jobPtr != IntPtr.Zero) Marshal.FreeHGlobal(jobPtr);
+                if (handleListPtr != IntPtr.Zero) Marshal.FreeHGlobal(handleListPtr);
+                if (envBlock != IntPtr.Zero) Marshal.FreeHGlobal(envBlock);
+            }
+            return null;
+        }
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetStdHandle(int nStdHandle);
+
+        public static AccountingInfo QueryAccounting(SafeWaitHandle job)
+        {
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION info;
+            int returned;
+            if (!QueryInformationJobObject(job, JobObjectBasicAccountingInformation, out info, Marshal.SizeOf(typeof(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION)), out returned))
+                Fail("JOB_CONTAINMENT_UNAVAILABLE");
+            return new AccountingInfo
+            {
+                ActiveProcesses = info.ActiveProcesses,
+                TotalProcesses = info.TotalProcesses,
+                TotalTerminatedProcesses = info.TotalTerminatedProcesses
+            };
+        }
+
+        public static void TerminateJob(SafeWaitHandle job, uint exitCode)
+        {
+            if (job == null || job.IsInvalid) return;
+            TerminateJobObject(job, exitCode);
+        }
+
+        public static void WaitForProcess(SafeWaitHandle process, uint timeoutMs)
+        {
+            var result = WaitForSingleObject(process, timeoutMs);
+            if (result == 0x00000102) Fail("WALL_CLOCK_TIMEOUT");
+            if (result != 0) Fail("JOB_CONTAINMENT_UNAVAILABLE");
+        }
+
+        public static int GetProcessExitCode(SafeWaitHandle process)
+        {
+            uint code;
+            if (!GetExitCodeProcess(process, out code)) Fail("JOB_CONTAINMENT_UNAVAILABLE");
+            return (int)code;
+        }
+
+        public static bool IsProcessInJobByPid(int pid, IntPtr jobHandleRaw)
+        {
+            using (var proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid))
+            {
+                if (proc == null || proc.IsInvalid) return false;
+                using (var job = new SafeWaitHandle(jobHandleRaw, false))
+                {
+                    bool result;
+                    if (!IsProcessInJob(proc.DangerousGetHandle(), job, out result)) return false;
+                    return result;
+                }
+            }
+        }
+
+        public static int GetProcessExitCodeIfAvailable(int pid)
+        {
+            using (var proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid))
+            {
+                if (proc == null || proc.IsInvalid) return -1;
+                uint code;
+                if (!GetExitCodeProcess(proc, out code)) return -1;
+                return (int)code;
+            }
+        }
+
+        public static bool TerminateProcessByPid(int pid)
+        {
+            using (var proc = OpenProcess(PROCESS_TERMINATE, false, pid))
+            {
+                if (proc == null || proc.IsInvalid) return false;
+                return TerminateProcess(proc, 1);
+            }
+        }
+
+        public static System.Threading.Tasks.Task<string> ReadStreamToEndAsync(FileStream stream)
+        {
+            return System.Threading.Tasks.Task.Run(delegate()
+            {
+                using (var reader = new StreamReader(stream, Encoding.UTF8, false, 4096, true))
+                {
+                    return reader.ReadToEnd();
+                }
+            });
+        }
+
+        public static int GetPipeBytesAvailable(FileStream stream)
+        {
+            int avail;
+            if (!PeekNamedPipe(stream.SafeFileHandle.DangerousGetHandle(), IntPtr.Zero, 0, IntPtr.Zero, out avail, IntPtr.Zero))
+                return 0;
+            return avail;
+        }
+
+        public static bool WaitProcessHandle(SafeWaitHandle process, int timeoutMilliseconds)
+        {
+            if (process == null || process.IsInvalid) return true;
+            var result = WaitForSingleObject(process, (uint)timeoutMilliseconds);
+            return result == 0;
+        }
+    }
+}
+
+'@
+
+function Get-SeshatJobContainmentSourceSha256 {
+    Initialize-SeshatJobContainment | Out-Null
+    return Get-SeshatUtf8Sha256 -Text $script:SeshatJobContainmentSource
+}
+
+function Initialize-SeshatJobContainment {
+    if('Seshat.Interop.JobContainmentV1' -as [type]){ return $true }
+    try {
+        Add-Type -TypeDefinition $script:SeshatJobContainmentSource -Language CSharp -ErrorAction Stop
+        return $true
+    } catch {
+        throw 'JOB_CONTAINMENT_UNAVAILABLE'
+    }
+}
+
+function Resolve-SeshatNativeExecutablePath {
+    param([Parameter(Mandatory=$true)][string]$FilePath)
+    if($FilePath -match '[\\/]' -or [System.IO.Path]::IsPathRooted($FilePath)){return [System.IO.Path]::GetFullPath($FilePath)}
+    $resolved=Get-Command -Name $FilePath -CommandType Application -ErrorAction SilentlyContinue
+    if($resolved){return [string]$resolved.Source}
+    return [System.IO.Path]::GetFullPath($FilePath)
+}
+
+function New-SeshatContainedCommandLine {
+    param(
+        [Parameter(Mandatory=$true)][string]$FilePath,
+        [Parameter(Mandatory=$true)][AllowEmptyCollection()][string[]]$ArgumentList
+    )
+    $app=Resolve-SeshatNativeExecutablePath -FilePath $FilePath
+    $tokens=@($app)+@($ArgumentList|ForEach-Object{[string]$_})
+    $line=($tokens|ForEach-Object{ConvertTo-SeshatNativeArgument -Value $_}) -join ' '
+    return [pscustomobject]@{application_name=$app;command_line=$line}
+}
+
+function Wait-SeshatContainedQuiescence {
+    param(
+        [Parameter(Mandatory=$true)]$Session,
+        [int]$DescendantQuiesceMilliseconds=5000
+    )
+    $deadline=(Get-Date).AddMilliseconds($DescendantQuiesceMilliseconds)
+    $last=$null
+    while((Get-Date) -lt $deadline){
+        $last=[Seshat.Interop.JobContainmentV1]::QueryAccounting($Session.JobHandle)
+        if([uint32]$last.ActiveProcesses -eq 0){
+            return [pscustomobject]@{
+                descendants_contained=$true
+                descendant_quiescence='QUIET'
+                residual_active_processes=0
+                total_processes=[uint32]$last.TotalProcesses
+                total_terminated_processes=[uint32]$last.TotalTerminatedProcesses
+            }
+        }
+        [System.Threading.Thread]::Sleep(50)
+    }
+    $residual=[int]$last.ActiveProcesses
+    [Seshat.Interop.JobContainmentV1]::TerminateJob($Session.JobHandle,1)
+    $deadline2=(Get-Date).AddSeconds(2)
+    while((Get-Date) -lt $deadline2){
+        $last=[Seshat.Interop.JobContainmentV1]::QueryAccounting($Session.JobHandle)
+        if([uint32]$last.ActiveProcesses -eq 0){ throw 'DESCENDANT_RESIDUE_TERMINATED' }
+        [System.Threading.Thread]::Sleep(50)
+    }
+    throw 'DESCENDANT_QUIESCENCE_TIMEOUT'
+}
+
+function Get-SeshatContainmentAuditFields {
+    param([object]$Quiescence)
+    return [ordered]@{
+        descendants_contained=[bool]$Quiescence.descendants_contained
+        descendant_quiescence=[string]$Quiescence.descendant_quiescence
+        residual_active_processes=[int]$Quiescence.residual_active_processes
+        total_processes=[int]$Quiescence.total_processes
+        total_terminated_processes=[int]$Quiescence.total_terminated_processes
+        containment_impl='ADD_TYPE_INPROC_V1'
+        containment_source_sha256=(Get-SeshatJobContainmentSourceSha256)
+    }
+}
+
+function Test-SeshatContainedProcessExited {
+    param([Parameter(Mandatory=$true)]$ProcessHandle,[int]$TimeoutMilliseconds=0)
+    return [Seshat.Interop.JobContainmentV1]::WaitProcessHandle($ProcessHandle,$TimeoutMilliseconds)
+}
+
+function Dispose-SeshatContainedSession {
+    param($Session)
+    if(-not $Session){return}
+    foreach($name in @('StdinWrite','StdoutRead','StderrRead')){
+        if($Session.PSObject.Properties[$name] -and $Session.$name){ try{$Session.$name.Dispose()}catch{} }
+    }
+    if($Session.ProcessHandle){ try{$Session.ProcessHandle.Dispose()}catch{} }
+    if($Session.JobHandle){ try{$Session.JobHandle.Dispose()}catch{} }
+}
+
 function ConvertTo-SeshatNativeArgument {
     param([Parameter(Mandatory=$true)][AllowEmptyString()][string]$Value)
     if($Value.Length -eq 0){return '""'}
@@ -83,58 +651,63 @@ function Invoke-SeshatNativeCommand {
         [Parameter(Mandatory=$true)][string]$Label,
         [string]$AuditPath,
         [string]$JobId='unknown',
-        [AllowEmptyString()][string]$StandardInputText
+        [AllowEmptyString()][string]$StandardInputText,
+        [int]$DescendantQuiesceMilliseconds=5000,
+        [int]$WallClockTimeoutMilliseconds=0
     )
     if($Label -cnotmatch '^[a-z0-9][a-z0-9-]{1,63}$'){throw 'INVALID_NATIVE_COMMAND_LABEL'}
-    $start=[System.Diagnostics.ProcessStartInfo]::new()
-    $start.FileName=$FilePath
-    $start.WorkingDirectory=$WorkingDirectory
-    $start.UseShellExecute=$false
-    $start.CreateNoWindow=$true
-    $start.RedirectStandardOutput=$true
-    $start.RedirectStandardError=$true
+    Initialize-SeshatJobContainment | Out-Null
     $hasStandardInput=$PSBoundParameters.ContainsKey('StandardInputText')
-    $start.RedirectStandardInput=$hasStandardInput
-    $utf8NoBom=[System.Text.UTF8Encoding]::new($false)
-    if($hasStandardInput -and $start.PSObject.Properties['StandardInputEncoding']){$start.StandardInputEncoding=$utf8NoBom}
-    if($start.PSObject.Properties['StandardOutputEncoding']){$start.StandardOutputEncoding=$utf8NoBom}
-    if($start.PSObject.Properties['StandardErrorEncoding']){$start.StandardErrorEncoding=$utf8NoBom}
-    if($start.PSObject.Properties['ArgumentList']){
-        foreach($argument in $ArgumentList){[void]$start.ArgumentList.Add([string]$argument)}
-    }else{
-        $start.Arguments=(@($ArgumentList|ForEach-Object{ConvertTo-SeshatNativeArgument -Value ([string]$_)}) -join ' ')
-    }
-    $process=[System.Diagnostics.Process]::new()
-    $process.StartInfo=$start
+    $cmd=New-SeshatContainedCommandLine -FilePath $FilePath -ArgumentList $ArgumentList
+    $workDir=[System.IO.Path]::GetFullPath($WorkingDirectory)
+    $session=$null
+    $wmiEscape=$false
     try{
-        if(-not $process.Start()){throw 'NATIVE_PROCESS_START_FAILED'}
-        $stdoutTask=$process.StandardOutput.ReadToEndAsync()
-        $stderrTask=$process.StandardError.ReadToEndAsync()
-        if($hasStandardInput){
-            $stdinTask=$process.StandardInput.WriteAsync($StandardInputText)
-            [void]($stdinTask.GetAwaiter().GetResult())
-            [void]($process.StandardInput.Close())
+        $session=[Seshat.Interop.JobContainmentV1]::Start($cmd.application_name,$cmd.command_line,$workDir,$true)
+        if($hasStandardInput -and $session.StdinWrite){
+            $bytes=[System.Text.UTF8Encoding]::new($false).GetBytes($StandardInputText)
+            $session.StdinWrite.Write($bytes,0,$bytes.Length)
+            $session.StdinWrite.Flush()
+            $session.StdinWrite.Dispose()
+            $session.StdinWrite=$null
+        }elseif($session.StdinWrite){
+            $session.StdinWrite.Dispose()
+            $session.StdinWrite=$null
         }
-        [void]($process.WaitForExit())
-        $stdout=[string]$stdoutTask.GetAwaiter().GetResult()
-        $stderr=[string]$stderrTask.GetAwaiter().GetResult()
+        $timeout=if($WallClockTimeoutMilliseconds -gt 0){[uint32]$WallClockTimeoutMilliseconds}else{[uint32]4294967295}
+        [Seshat.Interop.JobContainmentV1]::WaitForProcess($session.ProcessHandle,$timeout)
+        $stdoutReader=New-Object System.IO.StreamReader($session.StdoutRead,[System.Text.UTF8Encoding]::new($false),$false,4096,$true)
+        $stderrReader=New-Object System.IO.StreamReader($session.StderrRead,[System.Text.UTF8Encoding]::new($false),$false,4096,$true)
+        $stdoutText=[string]$stdoutReader.ReadToEnd()
+        $stderrText=[string]$stderrReader.ReadToEnd()
+        $stdoutReader.Dispose();$stderrReader.Dispose()
+        $exitCode=[Seshat.Interop.JobContainmentV1]::GetProcessExitCode($session.ProcessHandle)
+        $quiescence=Wait-SeshatContainedQuiescence -Session $session -DescendantQuiesceMilliseconds $DescendantQuiesceMilliseconds
+        $auditFields=Get-SeshatContainmentAuditFields -Quiescence $quiescence
         $result=[pscustomobject]@{
-            label=$Label;exit_code=[int]$process.ExitCode;stdout=$stdout;stderr=$stderr
-            stderr_present=(-not [string]::IsNullOrWhiteSpace($stderr))
+            label=$Label;exit_code=$exitCode;stdout=$stdoutText;stderr=$stderrText
+            stderr_present=(-not [string]::IsNullOrWhiteSpace($stderrText))
         }
+        foreach($prop in $auditFields.Keys){$result|Add-Member -NotePropertyName $prop -NotePropertyValue $auditFields[$prop]}
         if($AuditPath){
             $event=[ordered]@{
-                schema='seshat.native-command.v1';recorded_at_utc=(Get-Date).ToUniversalTime().ToString('o')
+                schema='seshat.native-command.v2';recorded_at_utc=(Get-Date).ToUniversalTime().ToString('o')
                 job_id=$JobId;command=$Label;exit_code=$result.exit_code
                 stderr_present=$result.stderr_present
-                stderr_sha256=if($result.stderr_present){Get-SeshatTextSha256 -Text $stderr}else{$null}
-                stderr_line_count=if($result.stderr_present){@($stderr -split "\r?\n"|Where-Object{$_}).Count}else{0}
+                stderr_sha256=if($result.stderr_present){Get-SeshatTextSha256 -Text $result.stderr}else{$null}
+                stderr_line_count=if($result.stderr_present){@($result.stderr -split "\r?\n"|Where-Object{$_}).Count}else{0}
                 classification=if($result.exit_code -ne 0){'NONZERO_EXIT'}elseif($result.stderr_present){'EXIT_ZERO_STDERR'}else{'CLEAN_EXIT'}
             }
+            foreach($prop in $auditFields.Keys){$event[$prop]=$auditFields[$prop]}
             [void](Write-SeshatAppendJsonLine -Value $event -Path $AuditPath)
         }
         return $result
-    }finally{[void]($process.Dispose())}
+    }catch{
+        if($session){ try{[Seshat.Interop.JobContainmentV1]::TerminateJob($session.JobHandle,1)}catch{} }
+        throw
+    }finally{
+        Dispose-SeshatContainedSession -Session $session
+    }
 }
 function Invoke-SeshatStreamingNativeCommand {
     param(
@@ -148,10 +721,14 @@ function Invoke-SeshatStreamingNativeCommand {
         [Parameter(Mandatory=$true)][long]$MaximumStandardErrorBytes,
         [string]$AuditPath,
         [string]$JobId='unknown',
-        [AllowEmptyString()][string]$StandardInputText
+        [AllowEmptyString()][string]$StandardInputText,
+        [int]$NoOutputTimeoutMilliseconds=7200000,
+        [int]$WallClockTimeoutMilliseconds=0,
+        [int]$DescendantQuiesceMilliseconds=5000
     )
     if($Label -cnotmatch '^[a-z0-9][a-z0-9-]{1,63}$'){throw 'INVALID_NATIVE_COMMAND_LABEL'}
     if($MaximumStandardOutputBytes -le 0 -or $MaximumStandardErrorBytes -le 0){throw 'INVALID_STREAM_LIMIT'}
+    Initialize-SeshatJobContainment | Out-Null
     $stdoutFull=[System.IO.Path]::GetFullPath($StandardOutputPath)
     $stderrFull=[System.IO.Path]::GetFullPath($StandardErrorPath)
     if($stdoutFull -ieq $stderrFull){throw 'STREAM_PATH_COLLISION'}
@@ -159,115 +736,141 @@ function Invoke-SeshatStreamingNativeCommand {
         $parent=Split-Path -Parent $path
         [void][System.IO.Directory]::CreateDirectory($parent)
     }
-    $start=[System.Diagnostics.ProcessStartInfo]::new()
-    $start.FileName=$FilePath
-    $start.WorkingDirectory=$WorkingDirectory
-    $start.UseShellExecute=$false
-    $start.CreateNoWindow=$true
-    $start.RedirectStandardOutput=$true
-    $start.RedirectStandardError=$true
     $hasStandardInput=$PSBoundParameters.ContainsKey('StandardInputText')
-    $start.RedirectStandardInput=$hasStandardInput
-    $utf8NoBom=[System.Text.UTF8Encoding]::new($false)
-    if($hasStandardInput -and $start.PSObject.Properties['StandardInputEncoding']){$start.StandardInputEncoding=$utf8NoBom}
-    if($start.PSObject.Properties['StandardOutputEncoding']){$start.StandardOutputEncoding=$utf8NoBom}
-    if($start.PSObject.Properties['StandardErrorEncoding']){$start.StandardErrorEncoding=$utf8NoBom}
-    if($start.PSObject.Properties['ArgumentList']){
-        foreach($argument in $ArgumentList){[void]$start.ArgumentList.Add([string]$argument)}
-    }else{
-        $start.Arguments=(@($ArgumentList|ForEach-Object{ConvertTo-SeshatNativeArgument -Value ([string]$_)}) -join ' ')
-    }
-    $process=[System.Diagnostics.Process]::new()
-    $process.StartInfo=$start
+    $cmd=New-SeshatContainedCommandLine -FilePath $FilePath -ArgumentList $ArgumentList
+    $workDir=[System.IO.Path]::GetFullPath($WorkingDirectory)
+    $session=$null
     $stdoutFile=$null
     $stderrFile=$null
-    $started=$false
     $terminalWritten=$false
     $stdoutBytes=[long]0
     $stderrBytes=[long]0
     $limitStream=$null
+    $wmiEscapeDetected=$false
+    $containmentJobPtr=[IntPtr]::Zero
     try{
         $stdoutFile=[System.IO.File]::Open($stdoutFull,[System.IO.FileMode]::Create,[System.IO.FileAccess]::Write,[System.IO.FileShare]::Read)
         $stderrFile=[System.IO.File]::Open($stderrFull,[System.IO.FileMode]::Create,[System.IO.FileAccess]::Write,[System.IO.FileShare]::Read)
         if($AuditPath){
             Write-SeshatAppendJsonLine -Value ([ordered]@{
-                schema='seshat.streaming-native-command.v1';recorded_at_utc=(Get-Date).ToUniversalTime().ToString('o')
+                schema='seshat.streaming-native-command.v2';recorded_at_utc=(Get-Date).ToUniversalTime().ToString('o')
                 job_id=$JobId;command=$Label;status='STARTING';terminal=$false
                 stdout_path=$stdoutFull;stderr_path=$stderrFull
                 stdout_limit_bytes=$MaximumStandardOutputBytes;stderr_limit_bytes=$MaximumStandardErrorBytes
             }) -Path $AuditPath
         }
-        if(-not $process.Start()){throw 'NATIVE_PROCESS_START_FAILED'}
-        $started=$true
-        $stdinTask=if($hasStandardInput){$process.StandardInput.WriteAsync($StandardInputText)}else{$null}
-        $stdinClosed=(-not $hasStandardInput)
+        $session=[Seshat.Interop.JobContainmentV1]::Start($cmd.application_name,$cmd.command_line,$workDir,$true)
+        $containmentJobPtr=$session.JobHandle.DangerousGetHandle()
+        $stdinClosed=$false
+        if($hasStandardInput -and $session.StdinWrite){
+            $inBytes=[System.Text.UTF8Encoding]::new($false).GetBytes($StandardInputText)
+            $session.StdinWrite.Write($inBytes,0,$inBytes.Length)
+            $session.StdinWrite.Flush()
+            $session.StdinWrite.Dispose()
+            $session.StdinWrite=$null
+            $stdinClosed=$true
+        }elseif($session.StdinWrite){
+            $session.StdinWrite.Dispose()
+            $session.StdinWrite=$null
+            $stdinClosed=$true
+        }
         $stdoutBuffer=New-Object byte[] 4096
         $stderrBuffer=New-Object byte[] 4096
-        $stdoutTask=$process.StandardOutput.BaseStream.ReadAsync($stdoutBuffer,0,$stdoutBuffer.Length)
-        $stderrTask=$process.StandardError.BaseStream.ReadAsync($stderrBuffer,0,$stderrBuffer.Length)
         $stdoutDone=$false
         $stderrDone=$false
+        $lastOutputUtc=(Get-Date).ToUniversalTime()
+        $wallStart=(Get-Date).ToUniversalTime()
         while(-not($stdoutDone -and $stderrDone)){
             $madeProgress=$false
-            if(-not $stdinClosed -and $stdinTask.IsCompleted){
-                [void]($stdinTask.GetAwaiter().GetResult())
-                [void]($process.StandardInput.Close())
-                $stdinClosed=$true
-                $madeProgress=$true
+            if(-not $stdoutDone){
+                $stdoutAvail=[Seshat.Interop.JobContainmentV1]::GetPipeBytesAvailable($session.StdoutRead)
+                if($stdoutAvail -gt 0){
+                    $count=$session.StdoutRead.Read($stdoutBuffer,0,[int][Math]::Min($stdoutBuffer.Length,$stdoutAvail))
+                    if($count -gt 0){
+                        $lastOutputUtc=(Get-Date).ToUniversalTime()
+                        $remaining=$MaximumStandardOutputBytes-$stdoutBytes
+                        $writeCount=[int][Math]::Min([long]$count,[Math]::Max([long]0,$remaining))
+                        if($writeCount -gt 0){$stdoutFile.Write($stdoutBuffer,0,$writeCount);$stdoutFile.Flush();$stdoutBytes+=$writeCount}
+                        if($writeCount -lt $count){$limitStream='stdout'}
+                    }
+                    $madeProgress=$true
+                }elseif(Test-SeshatContainedProcessExited -ProcessHandle $session.ProcessHandle -TimeoutMilliseconds 0){$stdoutDone=$true}
             }
-            if(-not $stdoutDone -and $stdoutTask.IsCompleted){
-                $count=[int]$stdoutTask.GetAwaiter().GetResult()
-                if($count -eq 0){$stdoutDone=$true}else{
-                    $remaining=$MaximumStandardOutputBytes-$stdoutBytes
-                    $writeCount=[int][Math]::Min([long]$count,[Math]::Max([long]0,$remaining))
-                    if($writeCount -gt 0){$stdoutFile.Write($stdoutBuffer,0,$writeCount);$stdoutFile.Flush();$stdoutBytes+=$writeCount}
-                    if($writeCount -lt $count){$limitStream='stdout'}else{$stdoutTask=$process.StandardOutput.BaseStream.ReadAsync($stdoutBuffer,0,$stdoutBuffer.Length)}
-                }
-                $madeProgress=$true
-            }
-            if(-not $stderrDone -and $stderrTask.IsCompleted){
-                $count=[int]$stderrTask.GetAwaiter().GetResult()
-                if($count -eq 0){$stderrDone=$true}else{
-                    $remaining=$MaximumStandardErrorBytes-$stderrBytes
-                    $writeCount=[int][Math]::Min([long]$count,[Math]::Max([long]0,$remaining))
-                    if($writeCount -gt 0){$stderrFile.Write($stderrBuffer,0,$writeCount);$stderrFile.Flush();$stderrBytes+=$writeCount}
-                    if($writeCount -lt $count){$limitStream='stderr'}else{$stderrTask=$process.StandardError.BaseStream.ReadAsync($stderrBuffer,0,$stderrBuffer.Length)}
-                }
-                $madeProgress=$true
+            if(-not $stderrDone){
+                $stderrAvail=[Seshat.Interop.JobContainmentV1]::GetPipeBytesAvailable($session.StderrRead)
+                if($stderrAvail -gt 0){
+                    $count=$session.StderrRead.Read($stderrBuffer,0,[int][Math]::Min($stderrBuffer.Length,$stderrAvail))
+                    if($count -gt 0){
+                        $lastOutputUtc=(Get-Date).ToUniversalTime()
+                        $remaining=$MaximumStandardErrorBytes-$stderrBytes
+                        $writeCount=[int][Math]::Min([long]$count,[Math]::Max([long]0,$remaining))
+                        if($writeCount -gt 0){$stderrFile.Write($stderrBuffer,0,$writeCount);$stderrFile.Flush();$stderrBytes+=$writeCount}
+                        if($writeCount -lt $count){$limitStream='stderr'}
+                    }
+                    $madeProgress=$true
+                }elseif(Test-SeshatContainedProcessExited -ProcessHandle $session.ProcessHandle -TimeoutMilliseconds 0){$stderrDone=$true}
             }
             if($limitStream){
-                if(-not $process.HasExited){$process.Kill()}
-                $process.WaitForExit()
+                [Seshat.Interop.JobContainmentV1]::TerminateJob($session.JobHandle,1)
                 $stdoutDone=$true
                 $stderrDone=$true
             }elseif(-not $madeProgress){
-                [System.Threading.Thread]::Sleep(20)
+                $now=(Get-Date).ToUniversalTime()
+                if($NoOutputTimeoutMilliseconds -gt 0 -and ($now-$lastOutputUtc).TotalMilliseconds -gt $NoOutputTimeoutMilliseconds){
+                    [Seshat.Interop.JobContainmentV1]::TerminateJob($session.JobHandle,1)
+                    throw 'NO_OUTPUT_TIMEOUT'
+                }
+                if($WallClockTimeoutMilliseconds -gt 0 -and ($now-$wallStart).TotalMilliseconds -gt $WallClockTimeoutMilliseconds){
+                    [Seshat.Interop.JobContainmentV1]::TerminateJob($session.JobHandle,1)
+                    throw 'WALL_CLOCK_TIMEOUT'
+                }
+                if(-not (Test-SeshatContainedProcessExited -ProcessHandle $session.ProcessHandle -TimeoutMilliseconds 20)){}
             }
         }
-        $process.WaitForExit()
-        $exitCode=[int]$process.ExitCode
+        $procTimeout=if($WallClockTimeoutMilliseconds -gt 0){[uint32]$WallClockTimeoutMilliseconds}else{[uint32]4294967295}
+        [Seshat.Interop.JobContainmentV1]::WaitForProcess($session.ProcessHandle,$procTimeout)
+        $exitCode=[Seshat.Interop.JobContainmentV1]::GetProcessExitCode($session.ProcessHandle)
+        $quiescence=Wait-SeshatContainedQuiescence -Session $session -DescendantQuiesceMilliseconds $DescendantQuiesceMilliseconds
+        $auditFields=Get-SeshatContainmentAuditFields -Quiescence $quiescence
+        if($containmentJobPtr -ne [IntPtr]::Zero -and $stdoutBytes -gt 0 -and $stdoutBytes -lt 64){
+            $probe=[System.IO.File]::ReadAllText($stdoutFull,[System.Text.UTF8Encoding]::new($false)).Trim()
+            if($probe -match '^[0-9]+$'){
+                $wmiEscapeDetected= -not [Seshat.Interop.JobContainmentV1]::IsProcessInJobByPid([int]$probe,$containmentJobPtr)
+            }
+        }
         $status=if($limitStream){'OUTPUT_LIMIT_EXCEEDED'}elseif($exitCode -ne 0){'NONZERO_EXIT'}else{'COMPLETED'}
         if($AuditPath){
-            Write-SeshatAppendJsonLine -Value ([ordered]@{
-                schema='seshat.streaming-native-command.v1';recorded_at_utc=(Get-Date).ToUniversalTime().ToString('o')
+            $terminal=[ordered]@{
+                schema='seshat.streaming-native-command.v2';recorded_at_utc=(Get-Date).ToUniversalTime().ToString('o')
                 job_id=$JobId;command=$Label;status=$status;terminal=$true;exit_code=$exitCode
                 stdout_bytes=$stdoutBytes;stderr_bytes=$stderrBytes;limit_stream=$limitStream
-            }) -Path $AuditPath
+            }
+            foreach($prop in $auditFields.Keys){$terminal[$prop]=$auditFields[$prop]}
+            Write-SeshatAppendJsonLine -Value $terminal -Path $AuditPath
             $terminalWritten=$true
         }
         return [pscustomobject]@{
             label=$Label;exit_code=$exitCode;status=$status;limit_exceeded=[bool]$limitStream
             limit_stream=$limitStream;stdout_path=$stdoutFull;stderr_path=$stderrFull
             stdout_bytes=$stdoutBytes;stderr_bytes=$stderrBytes
+            descendants_contained=[bool]$quiescence.descendants_contained
+            descendant_quiescence=[string]$quiescence.descendant_quiescence
+            residual_active_processes=[int]$quiescence.residual_active_processes
+            total_processes=[int]$quiescence.total_processes
+            total_terminated_processes=[int]$quiescence.total_terminated_processes
+            containment_impl='ADD_TYPE_INPROC_V1'
+            containment_source_sha256=$auditFields.containment_source_sha256
+            containment_job_handle=$containmentJobPtr
+            wmi_escape_detected=$wmiEscapeDetected
         }
     }catch{
         $streamError=$_
-        if($started -and -not $process.HasExited){try{$process.Kill()}catch{}}
+        if($session){ try{[Seshat.Interop.JobContainmentV1]::TerminateJob($session.JobHandle,1)}catch{} }
         if($AuditPath -and -not $terminalWritten){
             Write-SeshatAppendJsonLine -Value ([ordered]@{
-                schema='seshat.streaming-native-command.v1';recorded_at_utc=(Get-Date).ToUniversalTime().ToString('o')
+                schema='seshat.streaming-native-command.v2';recorded_at_utc=(Get-Date).ToUniversalTime().ToString('o')
                 job_id=$JobId;command=$Label;status='FAILED';terminal=$true
-                exit_code=if($started -and $process.HasExited){[int]$process.ExitCode}else{$null}
+                exit_code=$null
                 stdout_bytes=$stdoutBytes;stderr_bytes=$stderrBytes;error_class=(Get-SeshatSafeErrorClass -ErrorRecord $streamError)
             }) -Path $AuditPath
         }
@@ -275,7 +878,7 @@ function Invoke-SeshatStreamingNativeCommand {
     }finally{
         if($stdoutFile){$stdoutFile.Dispose()}
         if($stderrFile){$stderrFile.Dispose()}
-        $process.Dispose()
+        Dispose-SeshatContainedSession -Session $session
     }
 }
 function Assert-SeshatNativeSuccess {
