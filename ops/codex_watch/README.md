@@ -112,6 +112,24 @@ The queue also carries a finite S2B `approved_paths` set. After Codex exits, the
 
 The installed runtime bundle (`dispatch.ps1`, `gate.ps1`, `execute-task.ps1`, `publish.ps1`, and `task_queue.json`) must byte-match the repository files, remain unchanged between the merged PR #18 SHA and the dispatched main SHA, and carry its SHA-256 manifest inside the marker-bound job. Both execution entrypoints recheck this provenance. After push, publication succeeds only when GitHub reports the PR `OPEN`, draft, based on `main`, headed by the registered branch, and pointing to the just-pushed commit SHA. Existing `exit.json` is never overwritten; duplicate execution is rejected before the operational `try/finally`, and final creation uses create-new semantics.
 
+Privileged post-Codex `git` and `gh` additionally require a separately reviewed,
+host-owned `C:\ProgramData\SESHAT\git-gh-launch-policy.json`. The v1 policy pins
+canonical absolute `git.exe` and `gh.exe` paths, independent approved roots,
+SHA-256 hashes, Authenticode signer thumbprints, and file versions for each tool,
+plus an `implementation_binding_sha256` that must match the reviewed gate logic.
+Dispatch must copy the complete binding into `job.git_gh_launch_policy` and
+include it in the authorization digest. Execution, publication, reconciliation,
+and bundle provenance revalidate the policy, deny repo-root `git.exe`/`gh.exe`
+shadows, open both executables with read-only locks through process invocation,
+and never resolve bare `git`/`gh` names from PATH or the worker cwd. Missing,
+writable, reparse, drifted, forged, or CI-only synthetic policies fail closed
+before the first privileged `git status` or credential-bearing `gh` call. The
+repository cannot generate production pins; an operator must install the policy
+from independently verified installation evidence. **Operator-host gate (B01):**
+`dispatch.ps1` is outside this PR slice; until the trusted host copies
+`Get-SeshatGitGhLaunchPolicyBinding` into dispatched jobs, automatic dispatch
+remains blocked even after merge.
+
 Codex launch additionally requires a separately reviewed, host-owned
 `C:\ProgramData\SESHAT\codex-launch-policy.json`. The repository deliberately
 contains no release pin and cannot nominate a trusted binary. The v1 policy names
@@ -221,6 +239,7 @@ scanner, human acceptance, or disabled scheduler.
 Windows Task Scheduler task SESHAT-Codex-Dispatch is a five-minute task distinct from the existing SESHAT-Codex-Watch task and from hourly ChatGPT notifications. It is temporarily **DISABLED for PR #18 review**. If it is later re-enabled after all security gates are satisfied, the machine must be awake/logged in for the local scheduled process to run.
 
 Verification:
+- powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ops\codex_watch\tests\test-git-gh-launch-policy.ps1
 - powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ops\codex_watch\tests\test-gate.ps1
 - powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ops\codex_watch\tests\test-publisher-recovery.ps1 (Windows PowerShell 5.1 quoting, UTF-8 and bounded streaming; isolated CI only)
 - pwsh -File ops/codex_watch/tests/test-gate.ps1 (isolated GitHub Actions job; checkout uses `persist-credentials: false` and `contents: read`)
