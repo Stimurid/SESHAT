@@ -81,6 +81,7 @@ if($dispatchSource -notmatch 'Get-SeshatGitGhLaunchPolicyBinding'){throw 'DISPAT
 if($dispatchSource -notmatch 'git_gh_launch_policy=\$gitGhLaunchPolicy'){throw 'DISPATCH_GIT_GH_JOB_FIELD_MISSING'}
 if($dispatchSource -notmatch 'New-SeshatBundleManifest[^\r\n]+-GitExePath'){throw 'DISPATCH_BUNDLE_GIT_EXE_MISSING'}
 if($dispatchSource -match '(?m)^\s*&\s*git\s' -or $dispatchSource -match '(?m)^\s*&\s*gh\s' -or $dispatchSource -match "FilePath 'git'" -or $dispatchSource -match "FilePath 'gh'"){throw 'DISPATCH_BARE_GIT_GH_PRESENT'}
+if($dispatchSource -notmatch "Label 'dispatch-git-status'.{0,200}MaximumLines 64" -or $dispatchSource -notmatch 'dispatch-git-status.{0,200}MaximumStandardErrorBytes 32768' -or $dispatchSource -match 'statusResult\.stdout -split'){throw 'DISPATCH_UNBOUNDED_STATUS_REGRESSION'}
 if($gateSource -notmatch 'SESHAT_GIT_GH_LAUNCH_IMPLEMENTATION_BINDING_BEGIN' -or $gateSource -notmatch 'GIT_GH_TRUST_POLICY_ACL_INDETERMINATE'){throw 'GIT_GH_IMPL_BINDING_OR_ACL_GUARD_MISSING'}
 
 $bundle=@(Get-SeshatBundlePaths|ForEach-Object{[pscustomobject]@{path=$_;sha256=('1'*64)}})
