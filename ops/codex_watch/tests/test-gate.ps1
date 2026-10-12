@@ -86,6 +86,7 @@ $job=[pscustomobject]@{
     dispatch_key=('pr16-'+('f'*40)+'-issue17');approved_paths=@(Get-SeshatApprovedS2BPaths)
     ops_bundle=$bundle;repo='C:\projects\seshat';authorization_digest=''
     codex_launch_policy=[pscustomobject]@{policy_path='C:\ProgramData\SESHAT\codex-launch-policy.json';policy_sha256=('2'*64);policy_id='synthetic-policy';node_path='C:\trusted\node.exe';node_root='C:\trusted';node_sha256=('3'*64);node_signer_thumbprint=('4'*40);node_version='22.0.0';codex_root='C:\trusted\codex';codex_js_path='C:\trusted\codex\bin\codex.js';codex_js_sha256=('5'*64);package_json_path='C:\trusted\codex\package.json';package_json_sha256=('6'*64);package_name='@openai/codex';package_version='1.2.3'}
+    git_gh_launch_policy=[pscustomobject]@{policy_path='C:\ProgramData\SESHAT\git-gh-launch-policy.json';policy_sha256=('7'*64);policy_id='synthetic-git-gh';implementation_binding_sha256=(Get-SeshatGitGhLaunchImplementationBindingSha256);git_exe_path='C:\trusted\git.exe';git_exe_root='C:\trusted';git_exe_sha256=('8'*64);git_signer_thumbprint=('9'*40);git_file_version='2.47.0';gh_exe_path='C:\trusted\gh.exe';gh_exe_root='C:\trusted';gh_exe_sha256=('a'*64);gh_signer_thumbprint=('b'*40);gh_file_version='2.60.0'}
 }
 # Regression: runner fields are added to strict-mode JSON objects (issue #25).
 $bootstrapJob=('{"job_id":"fixture","runner_pid":0}'|ConvertFrom-Json)
@@ -98,6 +99,8 @@ if([int]$roundtrip.runner_pid -ne 32146 -or ([datetime]$roundtrip.started_at_utc
 if($executeSource -notmatch 'Set-SeshatRunnerStart -Job \$job -RunnerPid \$PID -StartedUtc \$Started'){throw 'EXECUTOR_BOOTSTRAP_HELPER_NOT_CALLED'}
 if($executeSource -notmatch '\$codexLaunch=Resolve-SeshatCodexLaunch' -or $executeSource -match "-FilePath 'codex'"){throw 'CODEX_NPM_LAUNCH_RESOLUTION_MISSING'}
 if($executeSource -notmatch '-ExpectedBinding \$job.codex_launch_policy' -or $executeSource -notmatch 'Close-SeshatCodexLaunch'){throw 'CODEX_PINNED_LAUNCH_BINDING_MISSING'}
+if($executeSource -notmatch 'Resolve-SeshatGitGhLaunch -ExpectedBinding \$job.git_gh_launch_policy' -or $executeSource -notmatch 'Close-SeshatGitGhLaunch' -or $executeSource -match "FilePath 'git'" -or $publishSource -match "FilePath 'git'" -or $reconcileSource -match "FilePath 'git'" -or $publishSource -match "FilePath 'gh'" -or $reconcileSource -match "FilePath 'gh'"){throw 'GIT_GH_PINNED_LAUNCH_BINDING_MISSING'}
+if($gateSource -notmatch 'Get-SeshatGitGhLaunchPolicyBinding' -or $gateSource -notmatch 'GIT_GH_TRUST_POLICY_SYNTHETIC_FIXTURE_DENIED'){throw 'GIT_GH_LAUNCH_POLICY_GUARD_MISSING'}
 $gateSource=Get-Content -LiteralPath (Join-Path $opsRoot 'gate.ps1') -Raw -Encoding UTF8
 if($gateSource -match 'Get-Command -Name (\$candidate|\$CommandName|node.exe)' -or $gateSource -match "launch_mode='DIRECT_EXECUTABLE'"){throw 'PATH_OR_DIRECT_CODEX_FALLBACK_PRESENT'}
 $job.authorization_digest=Get-SeshatJobAuthorizationDigest -Job $job
