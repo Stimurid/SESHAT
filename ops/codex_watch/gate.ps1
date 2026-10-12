@@ -1,5 +1,6 @@
 # Pure governance gate. Source facts come from GitHub, not from Codex statements.
 Set-StrictMode -Version Latest
+$SeshatCodexWatchScriptRoot = $PSScriptRoot
 function ConvertTo-SeshatNativeArgument {
     param([Parameter(Mandatory=$true)][AllowEmptyString()][string]$Value)
     if($Value.Length -eq 0){return '""'}
@@ -574,6 +575,207 @@ function Close-SeshatCodexLaunch {
     param([object]$Launch)
     if($Launch -and $Launch.PSObject.Properties['identity_locks']){foreach($stream in @($Launch.identity_locks)){if($stream){$stream.Dispose()}}}
 }
+function Get-SeshatGitGhLaunchImplementationBindingSourceText {
+    param([Parameter(Mandatory=$true)][string]$ScriptRoot)
+    $gatePath=Join-Path $ScriptRoot 'gate.ps1'
+    if(-not(Test-Path -LiteralPath $gatePath -PathType Leaf)){throw 'GIT_GH_IMPL_BINDING_GATE_MISSING'}
+    $content=[System.IO.File]::ReadAllText($gatePath,(New-Object System.Text.UTF8Encoding($false)))
+    $begin='# SESHAT_GIT_GH_LAUNCH_IMPLEMENTATION_BINDING_BEGIN'
+    $end='# SESHAT_GIT_GH_LAUNCH_IMPLEMENTATION_BINDING_END'
+    $start=$content.IndexOf($begin,[System.StringComparison]::Ordinal)
+    $stop=$content.IndexOf($end,[System.StringComparison]::Ordinal)
+    if($start -lt 0 -or $stop -lt 0 -or $stop -le $start){throw 'GIT_GH_IMPL_BINDING_MARKERS_MISSING'}
+    $body=$content.Substring($start+$begin.Length,$stop-$start-$begin.Length).Trim()
+    return ("seshat.git-gh-launch-policy.impl.v1`n"+$body)
+}
+function Get-SeshatGitGhLaunchImplementationBindingSha256 {
+    param([string]$ScriptRoot)
+    if(-not $ScriptRoot){
+        if(-not $SeshatCodexWatchScriptRoot){throw 'GIT_GH_IMPL_BINDING_SCRIPT_ROOT_UNKNOWN'}
+        $ScriptRoot=$SeshatCodexWatchScriptRoot
+    }
+    return Get-SeshatUtf8Sha256 -Text (Get-SeshatGitGhLaunchImplementationBindingSourceText -ScriptRoot $ScriptRoot)
+}
+# SESHAT_GIT_GH_LAUNCH_IMPLEMENTATION_BINDING_BEGIN
+function Get-SeshatGitGhLaunchPolicyDefaultPath {
+    return 'C:\ProgramData\SESHAT\git-gh-launch-policy.json'
+}
+function Test-SeshatWindowsPlatform {
+    if($PSVersionTable.PSObject.Properties['Platform'] -and [string]$PSVersionTable.Platform -ceq 'Win32NT'){return $true}
+    if($PSVersionTable.PSObject.Properties['OS'] -and [string]$PSVersionTable.OS -match 'Windows'){return $true}
+    return ($env:OS -match '(?i)^Windows')
+}
+function Test-SeshatFileSystemRightsGrantModify {
+    param([Parameter(Mandatory=$true)][System.Security.AccessControl.FileSystemRights]$Rights)
+    $mask=[System.Security.AccessControl.FileSystemRights]::WriteData -bor [System.Security.AccessControl.FileSystemRights]::CreateFiles -bor [System.Security.AccessControl.FileSystemRights]::AppendData -bor [System.Security.AccessControl.FileSystemRights]::Delete -bor [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [System.Security.AccessControl.FileSystemRights]::Modify -bor [System.Security.AccessControl.FileSystemRights]::Write -bor [System.Security.AccessControl.FileSystemRights]::WriteAttributes -bor [System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor [System.Security.AccessControl.FileSystemRights]::WriteDAC -bor [System.Security.AccessControl.FileSystemRights]::WriteOwner
+    return (($Rights -band $mask) -ne 0)
+}
+function Test-SeshatSecurityIdentifierIsBroadModifyPrincipal {
+    param([Parameter(Mandatory=$true)][System.Security.Principal.SecurityIdentifier]$Sid)
+    $known=@(
+        [System.Security.Principal.WellKnownSidType]::WorldSid
+        [System.Security.Principal.WellKnownSidType]::AuthenticatedUserSid
+        [System.Security.Principal.WellKnownSidType]::BuiltinUsersSid
+    )
+    foreach($type in $known){
+        $candidate=New-Object System.Security.Principal.SecurityIdentifier($type,$null)
+        if($Sid.Equals($candidate)){return $true}
+    }
+    return $false
+}
+function Test-SeshatCurrentPrincipalCanModifyPathAcl {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    try{
+        $acl=Get-Acl -LiteralPath $Path -ErrorAction Stop
+    }catch{
+        throw 'GIT_GH_TRUST_POLICY_ACL_INDETERMINATE'
+    }
+    $principal=New-Object System.Security.Principal.WindowsPrincipal([System.Security.Principal.WindowsIdentity]::GetCurrent())
+    foreach($rule in $acl.Access){
+        if($rule.AccessControlType -ne 'Allow'){continue}
+        if(-not (Test-SeshatFileSystemRightsGrantModify -Rights $rule.FileSystemRights)){continue}
+        try{
+            $sid=$rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier])
+        }catch{
+            throw 'GIT_GH_TRUST_POLICY_ACL_INDETERMINATE'
+        }
+        if(Test-SeshatSecurityIdentifierIsBroadModifyPrincipal -Sid $sid){return $true}
+        if($principal.IsInRole($sid)){return $true}
+    }
+    return $false
+}
+function Test-SeshatCurrentPrincipalCanModifyPath {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    if(-not (Test-SeshatWindowsPlatform)){return $false}
+    $full=[System.IO.Path]::GetFullPath($Path)
+    $targets=New-Object 'System.Collections.Generic.List[string]'
+    [void]$targets.Add($full)
+    $parent=[System.IO.Path]::GetFullPath((Split-Path -Parent $full))
+    while($parent -and $parent.Length -ge 3){
+        [void]$targets.Add($parent)
+        if($parent -match '^[A-Za-z]:\\?$'){break}
+        $parent=[System.IO.Path]::GetFullPath((Split-Path -Parent $parent))
+    }
+    foreach($target in $targets){
+        if(Test-SeshatCurrentPrincipalCanModifyPathAcl -Path $target){return $true}
+    }
+    return $false
+}
+function Assert-SeshatHostTrustPolicyStorage {
+    param(
+        [Parameter(Mandatory=$true)][string]$PolicyPath,
+        [switch]$AllowSyntheticTestFixture
+    )
+    if(-not(Test-Path -LiteralPath $PolicyPath -PathType Leaf)){throw 'GIT_GH_TRUST_POLICY_MISSING'}
+    $policyFull=[System.IO.Path]::GetFullPath($PolicyPath)
+    $policyDir=[System.IO.Path]::GetFullPath((Split-Path -Parent $policyFull)).TrimEnd('\')
+    $expectedRoot='C:\ProgramData\SESHAT'
+    if(-not $AllowSyntheticTestFixture){
+        if($policyDir -ine [System.IO.Path]::GetFullPath($expectedRoot).TrimEnd('\')){throw 'GIT_GH_TRUST_POLICY_LOCATION_INVALID'}
+    }
+    try{[void](Assert-SeshatPathUnderRootNoReparse -Path $policyFull -Root $policyDir -Leaf)}catch{throw 'GIT_GH_TRUST_POLICY_REPARSE_POINT'}
+    if(-not $AllowSyntheticTestFixture){
+        if(Test-SeshatCurrentPrincipalCanModifyPath -Path $policyFull){throw 'GIT_GH_TRUST_POLICY_WRITABLE'}
+        if(Test-SeshatCurrentPrincipalCanModifyPath -Path $policyDir){throw 'GIT_GH_TRUST_POLICY_DIR_WRITABLE'}
+    }
+}
+function Assert-SeshatPinnedHostExecutable {
+    param(
+        [Parameter(Mandatory=$true)][string]$ExePath,
+        [Parameter(Mandatory=$true)][string]$ExeRoot,
+        [Parameter(Mandatory=$true)][string]$ExpectedSha256,
+        [Parameter(Mandatory=$true)][string]$SignerThumbprint,
+        [Parameter(Mandatory=$true)][string]$ExpectedFileVersion,
+        [switch]$AllowSyntheticTestFixture
+    )
+    $full=Assert-SeshatPathUnderRootNoReparse -Path $ExePath -Root $ExeRoot -Leaf
+    if([System.IO.Path]::GetExtension($full) -cne '.exe'){throw 'GIT_GH_TRUST_POLICY_PATH_KIND'}
+    if((Get-SeshatFileSha256 -Path $full) -cne $ExpectedSha256){throw 'GIT_GH_TRUSTED_FILE_HASH_DRIFT'}
+    if(-not $AllowSyntheticTestFixture){
+        $signature=Get-AuthenticodeSignature -LiteralPath $full
+        if([string]$signature.Status -cne 'Valid' -or -not $signature.SignerCertificate -or ([string]$signature.SignerCertificate.Thumbprint).ToUpperInvariant() -cne $SignerThumbprint.ToUpperInvariant()){throw 'GIT_GH_EXECUTABLE_SIGNATURE_INVALID'}
+        $fileVersion=[string]([System.Diagnostics.FileVersionInfo]::GetVersionInfo($full).ProductVersion)
+        if($fileVersion -cne $ExpectedFileVersion){throw 'GIT_GH_EXECUTABLE_VERSION_DRIFT'}
+    }
+    return $full
+}
+function Get-SeshatGitGhLaunchPolicyBinding {
+    param(
+        [string]$PolicyPath,
+        [switch]$AllowSyntheticTestFixture
+    )
+    if(-not $PolicyPath){$PolicyPath=Get-SeshatGitGhLaunchPolicyDefaultPath}
+    Assert-SeshatHostTrustPolicyStorage -PolicyPath $PolicyPath -AllowSyntheticTestFixture:$AllowSyntheticTestFixture
+    $policyFull=[System.IO.Path]::GetFullPath($PolicyPath)
+    $policy=Get-Content -LiteralPath $policyFull -Raw -Encoding UTF8|ConvertFrom-Json
+    try{
+        if([string]$policy.schema -cne 'seshat.git-gh-launch-policy.v1'){throw 'GIT_GH_TRUST_POLICY_SCHEMA'}
+        if([bool]$policy.synthetic_test_fixture -and -not $AllowSyntheticTestFixture){throw 'GIT_GH_TRUST_POLICY_SYNTHETIC_FIXTURE_DENIED'}
+        if(-not([string]$policy.policy_id -cmatch '^[A-Za-z0-9][A-Za-z0-9_.-]{2,63}$')){throw 'GIT_GH_TRUST_POLICY_ID'}
+        if([string]$policy.implementation_binding_sha256 -cne (Get-SeshatGitGhLaunchImplementationBindingSha256)){throw 'GIT_GH_TRUST_POLICY_IMPL_BINDING_DRIFT'}
+        foreach($name in @('git_exe_sha256','gh_exe_sha256')){if(-not([string]$policy.$name -cmatch '^[0-9a-f]{64}$')){throw 'GIT_GH_TRUST_POLICY_PIN_INVALID'}}
+        foreach($name in @('git_signer_thumbprint','gh_signer_thumbprint')){if(-not([string]$policy.$name -match '^[0-9a-f]{40,64}$')){throw 'GIT_GH_TRUST_POLICY_PIN_INVALID'}}
+        foreach($name in @('git_file_version','gh_file_version')){if(-not([string]$policy.$name -cmatch '^[0-9]+\.[0-9]+\.[0-9]+([-.][A-Za-z0-9.]+)?$')){throw 'GIT_GH_EXECUTABLE_VERSION_INVALID'}}
+        $gitExe=Assert-SeshatPinnedHostExecutable -ExePath ([string]$policy.git_exe_path) -ExeRoot ([string]$policy.git_exe_root) -ExpectedSha256 ([string]$policy.git_exe_sha256) -SignerThumbprint ([string]$policy.git_signer_thumbprint) -ExpectedFileVersion ([string]$policy.git_file_version) -AllowSyntheticTestFixture:$AllowSyntheticTestFixture
+        $ghExe=Assert-SeshatPinnedHostExecutable -ExePath ([string]$policy.gh_exe_path) -ExeRoot ([string]$policy.gh_exe_root) -ExpectedSha256 ([string]$policy.gh_exe_sha256) -SignerThumbprint ([string]$policy.gh_signer_thumbprint) -ExpectedFileVersion ([string]$policy.gh_file_version) -AllowSyntheticTestFixture:$AllowSyntheticTestFixture
+        return [pscustomobject]@{
+            policy_path=$policyFull
+            policy_sha256=(Get-SeshatFileSha256 -Path $policyFull)
+            policy_id=[string]$policy.policy_id
+            implementation_binding_sha256=[string]$policy.implementation_binding_sha256
+            git_exe_path=$gitExe
+            git_exe_root=[System.IO.Path]::GetFullPath([string]$policy.git_exe_root)
+            git_exe_sha256=[string]$policy.git_exe_sha256
+            git_signer_thumbprint=([string]$policy.git_signer_thumbprint).ToUpperInvariant()
+            git_file_version=[string]$policy.git_file_version
+            gh_exe_path=$ghExe
+            gh_exe_root=[System.IO.Path]::GetFullPath([string]$policy.gh_exe_root)
+            gh_exe_sha256=[string]$policy.gh_exe_sha256
+            gh_signer_thumbprint=([string]$policy.gh_signer_thumbprint).ToUpperInvariant()
+            gh_file_version=[string]$policy.gh_file_version
+            synthetic_test_fixture=[bool]$policy.synthetic_test_fixture
+        }
+    }catch{if($_.Exception.Message -cmatch '^[A-Z][A-Z0-9_]+$'){throw};throw 'GIT_GH_TRUST_POLICY_MALFORMED'}
+}
+function Assert-SeshatPrivilegedRepositorySurface {
+    param([Parameter(Mandatory=$true)][string]$Repo)
+    $root=[System.IO.Path]::GetFullPath($Repo).TrimEnd('\')
+    foreach($shadow in @('git.exe','gh.exe')){
+        $candidate=Join-Path $root $shadow
+        if(Test-Path -LiteralPath $candidate){throw 'GIT_GH_REPO_EXECUTABLE_SHADOW'}
+    }
+}
+function Resolve-SeshatGitGhLaunch {
+    param(
+        [Parameter(Mandatory=$true)][object]$ExpectedBinding,
+        [switch]$AllowSyntheticTestFixture
+    )
+    $policyPath=if($ExpectedBinding.PSObject.Properties['policy_path']){[string]$ExpectedBinding.policy_path}else{Get-SeshatGitGhLaunchPolicyDefaultPath}
+    $actual=Get-SeshatGitGhLaunchPolicyBinding -PolicyPath $policyPath -AllowSyntheticTestFixture:$AllowSyntheticTestFixture
+    foreach($field in @('policy_sha256','policy_id','implementation_binding_sha256','git_exe_path','git_exe_root','git_exe_sha256','git_signer_thumbprint','git_file_version','gh_exe_path','gh_exe_root','gh_exe_sha256','gh_signer_thumbprint','gh_file_version')){
+        if([string]$actual.$field -cne [string]$ExpectedBinding.$field){throw 'GIT_GH_TRUST_POLICY_BINDING_DRIFT'}
+    }
+    $locks=@()
+    try{
+        foreach($path in @($actual.git_exe_path,$actual.gh_exe_path)){$locks+=,[System.IO.File]::Open([string]$path,[System.IO.FileMode]::Open,[System.IO.FileAccess]::Read,[System.IO.FileShare]::Read)}
+        if((Get-SeshatFileSha256 -Path $actual.git_exe_path) -cne $actual.git_exe_sha256 -or (Get-SeshatFileSha256 -Path $actual.gh_exe_path) -cne $actual.gh_exe_sha256){throw 'GIT_GH_TRUSTED_FILE_POST_LOCK_DRIFT'}
+        return [pscustomobject]@{git_exe_path=$actual.git_exe_path;gh_exe_path=$actual.gh_exe_path;provenance=$actual;identity_locks=$locks}
+    }catch{foreach($stream in $locks){$stream.Dispose()};throw}
+}
+function Close-SeshatGitGhLaunch {
+    param([object]$Launch)
+    if($Launch -and $Launch.PSObject.Properties['identity_locks']){foreach($stream in @($Launch.identity_locks)){if($stream){$stream.Dispose()}}}
+}
+function Get-SeshatPrivilegedNativeExecutablePath {
+    param(
+        [Parameter(Mandatory=$true)][ValidateSet('git','gh')][string]$Tool,
+        [Parameter(Mandatory=$true)][object]$Launch
+    )
+    if($Tool -ceq 'git'){return [string]$Launch.git_exe_path}
+    if($Tool -ceq 'gh'){return [string]$Launch.gh_exe_path}
+    throw 'GIT_GH_PRIVILEGED_TOOL_INVALID'
+}
+# SESHAT_GIT_GH_LAUNCH_IMPLEMENTATION_BINDING_END
 function Set-SeshatRunnerStart {
     param(
         [Parameter(Mandatory=$true)][object]$Job,
@@ -590,11 +792,12 @@ function Get-SeshatJobAuthorizationDigest {
     $approved=(@($Job.approved_paths|ForEach-Object{[string]$_}|Sort-Object)-join ',')
     $bundle=(@($Job.ops_bundle|ForEach-Object{([string]$_.path)+'='+([string]$_.sha256)}|Sort-Object)-join ',')
     $launch=if($Job.PSObject.Properties['codex_launch_policy']){(@($Job.codex_launch_policy.PSObject.Properties|ForEach-Object{([string]$_.Name)+'='+([string]$_.Value)}|Sort-Object)-join ',')}else{''}
+    $gitGh=if($Job.PSObject.Properties['git_gh_launch_policy']){(@($Job.git_gh_launch_policy.PSObject.Properties|ForEach-Object{([string]$_.Name)+'='+([string]$_.Value)}|Sort-Object)-join ',')}else{''}
     $fields=@(
         [string]$Job.job_id,[string]$Job.issue_number,[string]$Job.branch,[string]$Job.base_branch,[string]$Job.base_sha,
         [string]$Job.after_pr,[string]$Job.accepted_reviewed_head_sha,[string]$Job.ops_pr,
         [string]$Job.ops_merge_sha,[string]$Job.issue_body_utf8_sha256,[string]$Job.dispatch_key,
-        $approved,$bundle,$launch
+        $approved,$bundle,$launch,$gitGh
     )
     return Get-SeshatUtf8Sha256 -Text ($fields -join "`n")
 }
@@ -617,6 +820,8 @@ function Test-SeshatJobAuthorization {
         if(-not (Test-SeshatExactStringSet -Left @($Job.ops_bundle|ForEach-Object{$_.path}) -Right @(Get-SeshatBundlePaths))){return 'BLOCK_OPS_BUNDLE_PATH_SET_MISMATCH'}
         if(-not $Job.PSObject.Properties['codex_launch_policy']){return 'BLOCK_CODEX_TRUST_POLICY_MISSING'}
         if([string]$Job.codex_launch_policy.policy_path -cne 'C:\ProgramData\SESHAT\codex-launch-policy.json' -or -not([string]$Job.codex_launch_policy.policy_sha256 -cmatch '^[0-9a-f]{64}$') -or [string]$Job.codex_launch_policy.package_name -cne '@openai/codex'){return 'BLOCK_CODEX_TRUST_POLICY_BINDING'}
+        if(-not $Job.PSObject.Properties['git_gh_launch_policy']){return 'BLOCK_GIT_GH_TRUST_POLICY_MISSING'}
+        if([string]$Job.git_gh_launch_policy.policy_path -cne (Get-SeshatGitGhLaunchPolicyDefaultPath) -or -not([string]$Job.git_gh_launch_policy.policy_sha256 -cmatch '^[0-9a-f]{64}$') -or [string]$Job.git_gh_launch_policy.implementation_binding_sha256 -cne (Get-SeshatGitGhLaunchImplementationBindingSha256)){return 'BLOCK_GIT_GH_TRUST_POLICY_BINDING'}
         if(-not ([string]$Job.dispatch_key -cmatch '^pr16-[0-9a-f]{40}-issue17$')){return 'BLOCK_INVALID_DISPATCH_KEY'}
         if([string]$Marker.key -cne [string]$Job.dispatch_key -or [string]$Marker.job_id -cne [string]$Job.job_id){return 'BLOCK_DISPATCH_MARKER_BINDING_MISMATCH'}
         if([string]$Marker.state -cnotin @('AUTHORIZED','LAUNCHED')){return 'BLOCK_DISPATCH_MARKER_STATE'}
@@ -667,14 +872,16 @@ function New-SeshatBundleManifest {
         [Parameter(Mandatory=$true)][string]$Repo,
         [Parameter(Mandatory=$true)][string]$ScriptRoot,
         [Parameter(Mandatory=$true)][string]$OpsMergeSha,
-        [Parameter(Mandatory=$true)][string]$BaseSha
+        [Parameter(Mandatory=$true)][string]$BaseSha,
+        [Parameter(Mandatory=$true)][string]$GitExePath
     )
+    Assert-SeshatPrivilegedRepositorySurface -Repo $Repo
     $paths=@(Get-SeshatBundlePaths)
-    $ancestor=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'merge-base','--is-ancestor',$OpsMergeSha,$BaseSha) -WorkingDirectory $Repo -Label 'bundle-ancestor'
+    $ancestor=Invoke-SeshatNativeCommand -FilePath $GitExePath -ArgumentList @('-C',$Repo,'merge-base','--is-ancestor',$OpsMergeSha,$BaseSha) -WorkingDirectory $Repo -Label 'bundle-ancestor'
     if($ancestor.exit_code -ne 0){throw 'OPS_MERGE_NOT_ANCESTOR_OF_BASE'}
-    $reviewDiff=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList (@('-C',$Repo,'diff','--quiet',$OpsMergeSha,$BaseSha,'--')+$paths) -WorkingDirectory $Repo -Label 'bundle-reviewed-diff'
+    $reviewDiff=Invoke-SeshatNativeCommand -FilePath $GitExePath -ArgumentList (@('-C',$Repo,'diff','--quiet',$OpsMergeSha,$BaseSha,'--')+$paths) -WorkingDirectory $Repo -Label 'bundle-reviewed-diff'
     if($reviewDiff.exit_code -ne 0){throw 'OPS_BUNDLE_CHANGED_AFTER_REVIEW'}
-    $worktreeDiff=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList (@('-C',$Repo,'diff','--quiet',$BaseSha,'--')+$paths) -WorkingDirectory $Repo -Label 'bundle-worktree-diff'
+    $worktreeDiff=Invoke-SeshatNativeCommand -FilePath $GitExePath -ArgumentList (@('-C',$Repo,'diff','--quiet',$BaseSha,'--')+$paths) -WorkingDirectory $Repo -Label 'bundle-worktree-diff'
     if($worktreeDiff.exit_code -ne 0){throw 'OPS_BUNDLE_WORKTREE_DRIFT'}
     $manifest=@()
     foreach($relative in $paths){
@@ -691,9 +898,10 @@ function Assert-SeshatBundleProvenance {
     param(
         [Parameter(Mandatory=$true)][object]$Job,
         [Parameter(Mandatory=$true)][string]$Repo,
-        [Parameter(Mandatory=$true)][string]$ScriptRoot
+        [Parameter(Mandatory=$true)][string]$ScriptRoot,
+        [Parameter(Mandatory=$true)][object]$GitGhLaunch
     )
-    $actual=@(New-SeshatBundleManifest -Repo $Repo -ScriptRoot $ScriptRoot -OpsMergeSha ([string]$Job.ops_merge_sha) -BaseSha ([string]$Job.base_sha))
+    $actual=@(New-SeshatBundleManifest -Repo $Repo -ScriptRoot $ScriptRoot -OpsMergeSha ([string]$Job.ops_merge_sha) -BaseSha ([string]$Job.base_sha) -GitExePath ([string]$GitGhLaunch.git_exe_path))
     foreach($entry in $actual){
         $record=@($Job.ops_bundle|Where-Object{[string]$_.path -ceq [string]$entry.path})
         if($record.Count -ne 1 -or [string]$record[0].sha256 -cne [string]$entry.sha256){throw 'OPS_BUNDLE_MANIFEST_MISMATCH'}

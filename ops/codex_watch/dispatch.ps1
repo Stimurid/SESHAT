@@ -7,10 +7,22 @@ $Root='C:\Users\Homee\AppData\Local\SESHAT\watch'
 . (Join-Path $PSScriptRoot 'gate.ps1')
 $lock=New-Object System.Threading.Mutex($false,'Local\SESHAT_Codex_Dispatch')
 if(-not $lock.WaitOne(0)){exit 0}
+$dispatchGit=''
+$dispatchGh=''
 function Need([bool]$ok,[string]$reason){if(-not $ok){throw $reason}}
+function Invoke-DispatchGit {
+    param([Parameter(Mandatory=$true)][AllowEmptyCollection()][string[]]$GitArgs)
+    if(-not $dispatchGit){throw 'DISPATCH_GIT_POLICY_UNBOUND'}
+    $result=Invoke-SeshatNativeCommand -FilePath $dispatchGit -ArgumentList (@('-C',$Repo)+$GitArgs) -WorkingDirectory $Repo -Label 'dispatch-git'
+    $global:LASTEXITCODE=[int]$result.exit_code
+    return $result
+}
 function FromGh([string]$url){
-    $raw=@(& gh api $url 2>$null)
-    Need ($LASTEXITCODE -eq 0) ('GH_QUERY_FAILED_'+$url.Split('?')[0])
+    if(-not $dispatchGh){throw 'DISPATCH_GH_POLICY_UNBOUND'}
+    $apiArgs=@('api',$url)
+    $result=Invoke-SeshatNativeCommand -FilePath $dispatchGh -ArgumentList $apiArgs -WorkingDirectory $Repo -Label 'dispatch-gh-api'
+    Need ($result.exit_code -eq 0) ('GH_QUERY_FAILED_'+$url.Split('?')[0])
+    $raw=@($result.stdout -split "`n")
     return (($raw -join [Environment]::NewLine)|ConvertFrom-Json)
 }
 function Save-Atomic([object]$val,[string]$path){
@@ -32,7 +44,11 @@ function State([string]$label,[string]$detail=''){
 }
 try {
     Need (Test-Path (Join-Path $PSScriptRoot 'task_queue.json')) 'QUEUE_MISSING'
-    Need ((& git -C $Repo remote get-url origin) -eq 'https://github.com/Stimurid/SESHAT.git') 'ORIGIN_MISMATCH'
+    $gitGhLaunchPolicy=Get-SeshatGitGhLaunchPolicyBinding
+    $dispatchGit=[string]$gitGhLaunchPolicy.git_exe_path
+    $dispatchGh=[string]$gitGhLaunchPolicy.gh_exe_path
+    $originResult=Invoke-DispatchGit -GitArgs @('remote','get-url','origin')
+    Need ($originResult.exit_code -eq 0 -and $originResult.stdout.Trim() -eq 'https://github.com/Stimurid/SESHAT.git') 'ORIGIN_MISMATCH'
     $queue=Get-Content (Join-Path $PSScriptRoot 'task_queue.json') -Raw|ConvertFrom-Json
     Need ([int]$queue.schema_version -eq 2 -and @($queue.transitions).Count -eq 1) 'UNAPPROVED_QUEUE'
     $t=@($queue.transitions)[0]
@@ -61,16 +77,17 @@ try {
         $e=Get-Content $oldExit -Raw|ConvertFrom-Json
         if([string]$e.job_id -ne [string]$j.job_id){State 'BLOCK_PREVIOUS_JOB_MISMATCH';exit 0}
     }
-    if(@(& git -C $Repo status --porcelain=v1 -uall).Count -gt 0){
+    $statusResult=Invoke-SeshatBoundedNativeText -FilePath $dispatchGit -ArgumentList @('-C',$Repo,'-c','core.quotePath=false','status','--porcelain=v1','-uall') -WorkingDirectory $Repo -Label 'dispatch-git-status' -MaximumStandardOutputBytes 262144 -MaximumStandardErrorBytes 32768 -MaximumLines 64
+    if(@($statusResult.lines).Count -gt 0){
         State 'BLOCK_DIRTY_WORKTREE';exit 0
     }
     $branch=[string]$t.next_branch
     Need ($branch -match '^codex/[a-z0-9][a-z0-9-]{4,79}$') 'UNSAFE_BRANCH'
-    & git -C $Repo show-ref --verify --quiet ('refs/heads/'+$branch)
-    if($LASTEXITCODE -eq 0){State 'BLOCK_BRANCH_EXISTS';exit 0}
-    & git -C $Repo ls-remote --exit-code --heads origin ('refs/heads/'+$branch) *> $null
-    if($LASTEXITCODE -eq 0){State 'BLOCK_REMOTE_BRANCH_EXISTS';exit 0}
-    Need ($LASTEXITCODE -eq 2) 'REMOTE_BRANCH_PREFLIGHT_FAILED'
+    $showRef=Invoke-DispatchGit -GitArgs @('show-ref','--verify','--quiet',('refs/heads/'+$branch))
+    if($showRef.exit_code -eq 0){State 'BLOCK_BRANCH_EXISTS';exit 0}
+    $lsRemote=Invoke-DispatchGit -GitArgs @('ls-remote','--exit-code','--heads','origin',('refs/heads/'+$branch))
+    if($lsRemote.exit_code -eq 0){State 'BLOCK_REMOTE_BRANCH_EXISTS';exit 0}
+    Need ($lsRemote.exit_code -eq 2) 'REMOTE_BRANCH_PREFLIGHT_FAILED'
     $encodedHead=[uri]::EscapeDataString('Stimurid:'+$branch)
     $existingPulls=@(FromGh ("repos/Stimurid/SESHAT/pulls?state=all&head="+$encodedHead+"&per_page=2"))
     if($existingPulls.Count -gt 0){State 'BLOCK_REMOTE_PR_EXISTS';exit 0}
@@ -87,17 +104,19 @@ try {
             if(Test-Path $p){Copy-Item $p (Join-Path $archive $n) -Force}
         }
     }
-    & git -C $Repo fetch origin main
-    Need ($LASTEXITCODE -eq 0) 'GIT_FETCH_FAILED'
-    Need ((& git -C $Repo rev-parse 'origin/main') -eq $sha) 'MAIN_MOVED_RETRY'
-    & git -C $Repo switch main
-    Need ($LASTEXITCODE -eq 0) 'GIT_SWITCH_MAIN_FAILED'
-    & git -C $Repo merge --ff-only origin/main
-    Need ($LASTEXITCODE -eq 0) 'LOCAL_FAST_FORWARD_FAILED'
-    Need ((& git -C $Repo rev-parse HEAD) -eq $sha) 'LOCAL_MAIN_SHA_MISMATCH'
-    $opsBundle=@(New-SeshatBundleManifest -Repo $Repo -ScriptRoot $PSScriptRoot -OpsMergeSha ([string]$opsPr.merge_commit_sha) -BaseSha $sha)
-    & git -C $Repo switch -c $branch
-    Need ($LASTEXITCODE -eq 0) 'GIT_SWITCH_TASK_FAILED'
+    $fetch=Invoke-DispatchGit -GitArgs @('fetch','origin','main')
+    Need ($fetch.exit_code -eq 0) 'GIT_FETCH_FAILED'
+    $originMain=Invoke-DispatchGit -GitArgs @('rev-parse','origin/main')
+    Need ($originMain.exit_code -eq 0 -and $originMain.stdout.Trim() -eq $sha) 'MAIN_MOVED_RETRY'
+    $switchMain=Invoke-DispatchGit -GitArgs @('switch','main')
+    Need ($switchMain.exit_code -eq 0) 'GIT_SWITCH_MAIN_FAILED'
+    $ffMerge=Invoke-DispatchGit -GitArgs @('merge','--ff-only','origin/main')
+    Need ($ffMerge.exit_code -eq 0) 'LOCAL_FAST_FORWARD_FAILED'
+    $headSha=Invoke-DispatchGit -GitArgs @('rev-parse','HEAD')
+    Need ($headSha.exit_code -eq 0 -and $headSha.stdout.Trim() -eq $sha) 'LOCAL_MAIN_SHA_MISMATCH'
+    $opsBundle=@(New-SeshatBundleManifest -Repo $Repo -ScriptRoot $PSScriptRoot -OpsMergeSha ([string]$opsPr.merge_commit_sha) -BaseSha $sha -GitExePath $dispatchGit)
+    $switchBranch=Invoke-DispatchGit -GitArgs @('switch','-c',$branch)
+    Need ($switchBranch.exit_code -eq 0) 'GIT_SWITCH_TASK_FAILED'
     # No automatic remote PR merge, only local fast-forward of already accepted main.
     foreach($n in @('exit.json','stdout.jsonl','stderr.log','last_message.txt','publish_receipt.json','publisher-output.log','host-pytest.log','host-ruff.log','task_prompt.txt')){
         $p=Join-Path $Root $n
@@ -116,6 +135,7 @@ try {
         issue_body_utf8_sha256=[string]$t.next_issue_body_utf8_sha256
         dispatch_key=$key;approved_paths=@($t.approved_paths);ops_bundle=$opsBundle
         codex_launch_policy=$codexLaunchPolicy
+        git_gh_launch_policy=$gitGhLaunchPolicy
         repo=$Repo;branch=$branch;base_branch='main';base_sha=$sha;runner_pid=0
         created_at_utc=(Get-Date).ToUniversalTime().ToString('o')
     }

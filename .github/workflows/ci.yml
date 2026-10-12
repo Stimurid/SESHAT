@@ -33,12 +33,18 @@ jobs:
       - name: PowerShell 7 publisher and streaming recovery
         shell: pwsh
         run: ./ops/codex_watch/tests/test-publisher-recovery.ps1
+      - name: PowerShell 7 synthetic Git/GH trust policy negatives
+        shell: pwsh
+        run: ./ops/codex_watch/tests/test-git-gh-launch-policy.ps1
       - name: Windows PowerShell 5.1 gate
         shell: cmd
         run: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ops\codex_watch\tests\test-gate.ps1
       - name: Windows PowerShell 5.1 publisher and streaming recovery
         shell: cmd
         run: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ops\codex_watch\tests\test-publisher-recovery.ps1
+      - name: Windows PowerShell 5.1 synthetic Git/GH trust policy negatives
+        shell: cmd
+        run: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ops\codex_watch\tests\test-git-gh-launch-policy.ps1
 
   test:
     runs-on: ubuntu-latest
