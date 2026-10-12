@@ -34,12 +34,12 @@ if($latest){
 }
 $headResult=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'rev-parse','HEAD') -WorkingDirectory $Repo -Label 'reconcile-git-head'
 $branchResult=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'branch','--show-current') -WorkingDirectory $Repo -Label 'reconcile-git-branch'
-$statusResult=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'status','--porcelain=v1','-uall') -WorkingDirectory $Repo -Label 'reconcile-git-status'
+$statusResult=Invoke-SeshatBoundedNativeText -FilePath 'git' -ArgumentList @('-C',$Repo,'status','--porcelain=v1','-uall') -WorkingDirectory $Repo -Label 'reconcile-git-status' -MaximumStandardOutputBytes 262144 -MaximumStandardErrorBytes 32768 -MaximumLines 64
 $indexResult=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'diff','--cached','--name-only') -WorkingDirectory $Repo -Label 'reconcile-git-index'
 $remoteResult=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'ls-remote','--heads','origin',('refs/heads/'+[string]$job.branch)) -WorkingDirectory $Repo -Label 'reconcile-git-remote-ref'
 $localHead=if($headResult.exit_code -eq 0){$headResult.stdout.Trim()}else{$null}
 $localBranch=if($branchResult.exit_code -eq 0){$branchResult.stdout.Trim()}else{$null}
-$dirtyCount=if($statusResult.exit_code -eq 0){@(Get-SeshatOutputLines -Text $statusResult.stdout).Count}else{$null}
+$dirtyCount=if($statusResult.exit_code -eq 0){@($statusResult.lines).Count}else{$null}
 $indexPaths=if($indexResult.exit_code -eq 0){@(Get-SeshatOutputLines -Text $indexResult.stdout)}else{@()}
 $remoteLines=if($remoteResult.exit_code -eq 0){@(Get-SeshatOutputLines -Text $remoteResult.stdout)}else{@()}
 $remoteHead=if($remoteLines.Count -eq 1 -and $remoteLines[0] -cmatch '^([0-9a-f]{40})\s'){[string]$Matches[1]}else{$null}

@@ -77,8 +77,8 @@ try{
 
     $cachedBefore=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'diff','--cached','--quiet') -WorkingDirectory $Repo -Label 'git-index-clean-preflight' -AuditPath $nativeAuditPath -JobId $jobId
     Need ([int]$cachedBefore.exit_code -eq 0) 'PREEXISTING_STAGED_CHANGES'
-    $status=InvokePublisherNative 'git' @('-C',$Repo,'-c','core.quotePath=false','status','--porcelain=v1','-uall') 'git-status' 'STATUS_FAILED'
-    $statusLines=@(Get-SeshatOutputLines -Text $status.stdout)
+    $status=Invoke-SeshatBoundedNativeText -FilePath 'git' -ArgumentList @('-C',$Repo,'-c','core.quotePath=false','status','--porcelain=v1','-uall') -WorkingDirectory $Repo -Label 'git-status' -MaximumStandardOutputBytes 262144 -MaximumStandardErrorBytes 32768 -MaximumLines 64
+    $statusLines=@($status.lines)
     Need ($statusLines.Count -gt 0) 'NO_CODE_CHANGES'
     $paths=@(Get-SeshatStatusPaths -StatusLines $statusLines)
     $pathDecision=Test-SeshatOwnedPathSet -ApprovedPaths @($job.approved_paths) -OwnedPaths @($job.owned_paths) -DirtyPaths $paths

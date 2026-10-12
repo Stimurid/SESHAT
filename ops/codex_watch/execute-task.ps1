@@ -91,8 +91,8 @@ try {
     $CodexLimitStream=$codexResult.limit_stream
     if($codexResult.limit_exceeded){throw 'CODEX_OUTPUT_LIMIT_EXCEEDED'}
     if($ExitCode -ne 0){throw 'CODEX_NONZERO'}
-    $statusResult=InvokeExecutorNative 'git' @('-C',$Repo,'-c','core.quotePath=false','status','--porcelain=v1','-uall') 'executor-git-status-after' 'STATUS_FAILED'
-    $statusLines=@(Get-SeshatOutputLines -Text $statusResult.stdout)
+    $statusResult=Invoke-SeshatBoundedNativeText -FilePath 'git' -ArgumentList @('-C',$Repo,'-c','core.quotePath=false','status','--porcelain=v1','-uall') -WorkingDirectory $Repo -Label 'executor-git-status-after' -MaximumStandardOutputBytes 262144 -MaximumStandardErrorBytes 32768 -MaximumLines 64
+    $statusLines=@($statusResult.lines)
     $ownedPaths=@(Get-SeshatStatusPaths -StatusLines $statusLines)
     $pathDecision=Test-SeshatOwnedPathSet -ApprovedPaths @($job.approved_paths) -OwnedPaths $ownedPaths -DirtyPaths $ownedPaths
     if($pathDecision -ne 'ADMIT'){throw $pathDecision}
@@ -126,7 +126,7 @@ try {
     $head=$null;$branch=$null;$dirty=@()
     try{$finalHead=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'rev-parse','HEAD') -WorkingDirectory $Repo -Label 'executor-final-head';if($finalHead.exit_code -eq 0){$head=$finalHead.stdout.Trim()}}catch{}
     try{$finalBranch=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'branch','--show-current') -WorkingDirectory $Repo -Label 'executor-final-branch';if($finalBranch.exit_code -eq 0){$branch=$finalBranch.stdout.Trim()}}catch{}
-    try{$finalStatus=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'status','--porcelain=v1') -WorkingDirectory $Repo -Label 'executor-final-status';if($finalStatus.exit_code -eq 0){$dirty=@(Get-SeshatOutputLines -Text $finalStatus.stdout)}}catch{}
+    try{$finalStatus=Invoke-SeshatBoundedNativeText -FilePath 'git' -ArgumentList @('-C',$Repo,'status','--porcelain=v1','-uall') -WorkingDirectory $Repo -Label 'executor-final-status' -MaximumStandardOutputBytes 262144 -MaximumStandardErrorBytes 32768 -MaximumLines 64;if($finalStatus.exit_code -eq 0){$dirty=@($finalStatus.lines)}}catch{}
     $receipt=[ordered]@{
         job_id=if($job){[string]$job.job_id}else{'unknown'}
         start_utc=$Started; completed_at_utc=(Get-Date).ToUniversalTime().ToString('o')

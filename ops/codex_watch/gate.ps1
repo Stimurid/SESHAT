@@ -29,13 +29,51 @@ function ConvertTo-SeshatSanitizedLogText {
     return $safe
 }
 function Write-SeshatAppendJsonLine {
-    param([Parameter(Mandatory=$true)][object]$Value,[Parameter(Mandatory=$true)][string]$Path)
+    param([Parameter(Mandatory=$true)][object]$Value,[Parameter(Mandatory=$true)][string]$Path,[scriptblock]$FlushAction)
     $parent=Split-Path -Parent $Path
     [void][System.IO.Directory]::CreateDirectory($parent)
     $json=($Value|ConvertTo-Json -Depth 8 -Compress)+"`n"
     $bytes=[System.Text.UTF8Encoding]::new($false).GetBytes($json)
     $stream=[System.IO.File]::Open($Path,[System.IO.FileMode]::Append,[System.IO.FileAccess]::Write,[System.IO.FileShare]::Read)
-    try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush()}finally{$stream.Dispose()}
+    try{$stream.Write($bytes,0,$bytes.Length);Invoke-SeshatDurableFlush -Stream $stream -FlushAction $FlushAction}finally{$stream.Dispose()}
+}
+function Invoke-SeshatDurableFlush {
+    param([Parameter(Mandatory=$true)][System.IO.FileStream]$Stream,[scriptblock]$FlushAction)
+    if($FlushAction){& $FlushAction $Stream}else{$Stream.Flush($true)}
+}
+function Invoke-SeshatBoundedNativeText {
+    param(
+        [Parameter(Mandatory=$true)][string]$FilePath,
+        [Parameter(Mandatory=$true)][AllowEmptyCollection()][string[]]$ArgumentList,
+        [Parameter(Mandatory=$true)][string]$WorkingDirectory,
+        [Parameter(Mandatory=$true)][string]$Label,
+        [long]$MaximumStandardOutputBytes=262144,
+        [long]$MaximumStandardErrorBytes=32768,
+        [int]$MaximumLines=64
+    )
+    if($MaximumLines -le 0){throw 'INVALID_NATIVE_LINE_LIMIT'}
+    $token=[guid]::NewGuid().ToString('N')
+    $outPath=Join-Path ([System.IO.Path]::GetTempPath()) ('seshat-'+$token+'.out')
+    $errPath=Join-Path ([System.IO.Path]::GetTempPath()) ('seshat-'+$token+'.err')
+    try{
+        $result=Invoke-SeshatStreamingNativeCommand -FilePath $FilePath -ArgumentList $ArgumentList -WorkingDirectory $WorkingDirectory -Label $Label -StandardOutputPath $outPath -StandardErrorPath $errPath -MaximumStandardOutputBytes $MaximumStandardOutputBytes -MaximumStandardErrorBytes $MaximumStandardErrorBytes
+        if($result.limit_exceeded){throw 'NATIVE_OUTPUT_LIMIT_EXCEEDED'}
+        Assert-SeshatNativeSuccess -Result $result -FailureClass 'NATIVE_COMMAND_FAILED'
+        $strictUtf8=[System.Text.UTF8Encoding]::new($false,$true)
+        $reader=[System.IO.StreamReader]::new($outPath,$strictUtf8,$false,4096)
+        $lines=New-Object 'System.Collections.Generic.List[string]'
+        $lineCount=0
+        try{
+            while($null -ne ($line=$reader.ReadLine())){
+                $lineCount++
+                if($lineCount -gt $MaximumLines){throw 'NATIVE_LINE_LIMIT_EXCEEDED'}
+                if($line.Length -gt 0){$lines.Add($line)}
+            }
+        }finally{$reader.Dispose()}
+        return [pscustomobject]@{exit_code=[int]$result.exit_code;lines=@($lines.ToArray());stderr_present=([long]$result.stderr_bytes -gt 0)}
+    }finally{
+        foreach($path in @($outPath,$errPath)){if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Force}}
+    }
 }
 function Invoke-SeshatNativeCommand {
     param(
@@ -275,13 +313,14 @@ function Write-SeshatMutationEvent {
         [Parameter(Mandatory=$true)][string]$Phase,
         [Parameter(Mandatory=$true)][object]$BeforeWitness,
         [object]$AfterWitness,
-        [Nullable[int]]$ExitCode
+        [Nullable[int]]$ExitCode,
+        [scriptblock]$FlushAction
     )
     Write-SeshatAppendJsonLine -Value ([ordered]@{
         schema='seshat.publication-mutation.v2';recorded_at_utc=(Get-Date).ToUniversalTime().ToString('o')
         job_id=$JobId;attempt_nonce=$AttemptNonce;action=$Action;status=$Status;phase=$Phase
         before_witness=$BeforeWitness;after_witness=$AfterWitness;exit_code=$ExitCode
-    }) -Path $Path
+    }) -Path $Path -FlushAction $FlushAction
 }
 function Get-SeshatMutationRecoveryState {
     param([AllowNull()][object]$LatestMutation)
@@ -308,7 +347,8 @@ function Start-SeshatPublicationAttempt {
         [Parameter(Mandatory=$true)][string]$ReceiptPath,
         [Parameter(Mandatory=$true)][string]$JobId,
         [Parameter(Mandatory=$true)][string]$Branch,
-        [Parameter(Mandatory=$true)][string]$BaseSha
+        [Parameter(Mandatory=$true)][string]$BaseSha,
+        [scriptblock]$FlushAction
     )
     if(Test-Path -LiteralPath $ReceiptPath){throw 'PUBLICATION_RECEIPT_ALREADY_EXISTS'}
     $parent=Split-Path -Parent $EventPath
@@ -319,7 +359,7 @@ function Start-SeshatPublicationAttempt {
     }
     $bytes=[System.Text.UTF8Encoding]::new($false).GetBytes((($event|ConvertTo-Json -Depth 8 -Compress)+"`n"))
     try{$stream=[System.IO.File]::Open($EventPath,[System.IO.FileMode]::CreateNew,[System.IO.FileAccess]::Write,[System.IO.FileShare]::Read)}catch{if(Test-Path -LiteralPath $EventPath){throw 'PUBLICATION_ATTEMPT_ALREADY_RECORDED'};throw}
-    try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush()}finally{$stream.Dispose()}
+    try{$stream.Write($bytes,0,$bytes.Length);Invoke-SeshatDurableFlush -Stream $stream -FlushAction $FlushAction}finally{$stream.Dispose()}
 }
 function Test-SeshatPublicationReceipt {
     param([Parameter(Mandatory=$true)][object]$Receipt,[Parameter(Mandatory=$true)][object]$Job,[Parameter(Mandatory=$true)][string]$HeadSha)

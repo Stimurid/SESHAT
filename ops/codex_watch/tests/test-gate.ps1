@@ -60,10 +60,14 @@ if(-not(Test-SeshatExactStringSet -Left @($queue.transitions[0].approved_paths) 
 $opsRoot=Split-Path -Parent $PSScriptRoot
 $executeSource=Get-Content -LiteralPath (Join-Path $opsRoot 'execute-task.ps1') -Raw -Encoding UTF8
 $publishSource=Get-Content -LiteralPath (Join-Path $opsRoot 'publish.ps1') -Raw -Encoding UTF8
+$reconcileSource=Get-Content -LiteralPath (Join-Path $opsRoot 'reconcile-publish.ps1') -Raw -Encoding UTF8
+$gateSource=Get-Content -LiteralPath (Join-Path $opsRoot 'gate.ps1') -Raw -Encoding UTF8
 $dispatchSource=Get-Content -LiteralPath (Join-Path $opsRoot 'dispatch.ps1') -Raw -Encoding UTF8
 if($executeSource -notmatch 'Test-SeshatCanonicalJobPath' -or $executeSource -notmatch 'Test-SeshatJobAuthorization'){throw 'EXECUTOR_ENTRYPOINT_BINDING_MISSING'}
 if($executeSource -notmatch 'Invoke-SeshatStreamingNativeCommand' -or $executeSource -match '\$codexResult=Invoke-SeshatNativeCommand'){throw 'EXECUTOR_CODEX_STREAMING_MODE_MISSING'}
 if($executeSource -notmatch 'MaximumStandardOutputBytes 67108864' -or $executeSource -notmatch 'MaximumStandardErrorBytes 8388608'){throw 'EXECUTOR_STREAM_LIMITS_MISSING'}
+if($executeSource -notmatch 'executor-git-status-after.{0,250}MaximumLines 64' -or $publishSource -notmatch 'Label ''git-status''.{0,150}MaximumLines 64' -or $reconcileSource -notmatch 'Label ''reconcile-git-status''.{0,150}MaximumLines 64'){throw 'STATUS_BOUNDED_READ_MISSING'}
+if($gateSource -notmatch '\.Flush\(\$true\)' -or $gateSource -notmatch 'NATIVE_OUTPUT_LIMIT_EXCEEDED' -or $gateSource -notmatch 'NATIVE_LINE_LIMIT_EXCEEDED'){throw 'DURABLE_OR_BOUNDED_IO_GUARD_MISSING'}
 if($executeSource.IndexOf('if($codexResult.limit_exceeded)') -lt 0 -or $executeSource.IndexOf('if($codexResult.limit_exceeded)') -gt $executeSource.IndexOf('if($ExitCode -ne 0)')){throw 'EXECUTOR_STREAM_LIMIT_FALSE_SUCCESS_GUARD_MISSING'}
 if($publishSource -notmatch 'Test-SeshatCanonicalJobPath' -or $publishSource -notmatch 'Test-SeshatJobAuthorization'){throw 'PUBLISHER_ENTRYPOINT_BINDING_MISSING'}
 $exitPrecheck=$executeSource.IndexOf('Assert-SeshatExitReceiptAbsent -Path $ExitPath')

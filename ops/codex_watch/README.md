@@ -164,7 +164,9 @@ An isolated synthetic probe reproduced the relevant Windows PowerShell 5 behavio
 that probe is evidence for the fix, not a reconstruction of the missing stack.
 
 Each publication attempt has an append-only per-job stream under
-`publication-events`. Before every `git add`, `git commit`, create-only push, and
+`publication-events`. Journal and attempt writes call `FileStream.Flush(true)`
+before returning, so an I/O or durable-flush failure stops the publisher before
+the associated mutation. Before every `git add`, `git commit`, create-only push, and
 `gh pr create`, it durably appends a v2 `INTENT` with job, attempt nonce, phase and
 before-witness; native return is recorded as `RETURNED`; verified after-witness is
 then recorded as `COMPLETE`. Any exception after the first intent records
@@ -172,6 +174,13 @@ then recorded as `COMPLETE`. Any exception after the first intent records
 `exit.json` and `publish_receipt.json` use create-new semantics and are never
 overwritten. Reconciliation reads the index, HEAD, remote ref and PR state and
 reports an incomplete intent/return without mutating any of them.
+
+Worker-amplifiable `git status --porcelain -uall` reads use separate byte-streamed
+stdout and stderr caps (256 KiB and 32 KiB) and a 64-line ceiling. Output above
+either ceiling or invalid UTF-8 fails closed; status is never accepted from a
+truncated prefix. The reader retains at most 64 decoded records and preserves the
+leading status-column whitespace. This applies in executor, publisher and
+reconciliation paths.
 
 Before staging, every owned regular file is constrained to 2 MiB and the total to
 5 MiB, with repository containment and reparse-point denial. After staging, Git

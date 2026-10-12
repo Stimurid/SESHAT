@@ -41,6 +41,17 @@ if($Mode -eq 'floodstderr'){
     Start-Sleep -Seconds 1
     exit 0
 }
+if($Mode -eq 'statusflood'){
+    [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false)
+    [Console]::Out.Write(" M path with leading space.txt`n")
+    [Console]::Out.Write(('x'*8192))
+    [Console]::Out.Flush()
+    exit 0
+}
+if($Mode -eq 'statuslines'){
+    for($i=0;$i -lt 65;$i++){[Console]::Out.WriteLine((' M f'+$i))}
+    exit 0
+}
 exit 99
 '@|Set-Content -LiteralPath $childScript -Encoding UTF8
     $zeroWarningResults=@(Invoke-SeshatNativeCommand -FilePath $engine -ArgumentList @('-NoProfile','-NonInteractive','-Command',"[Console]::Error.WriteLine('synthetic warning'); exit 0") -WorkingDirectory $temp -Label 'mock-zero-warning' -AuditPath $audit -JobId 'synthetic-job')
@@ -141,6 +152,34 @@ exit 99
     $stderrLimited=Invoke-SeshatStreamingNativeCommand -FilePath $engine -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$childScript,'floodstderr') -WorkingDirectory $temp -Label 'mock-stderr-stream-limit' -StandardOutputPath $stderrLimitedOut -StandardErrorPath $stderrLimitedErr -MaximumStandardOutputBytes 128 -MaximumStandardErrorBytes 64 -JobId 'synthetic-stderr-limit'
     if(-not [bool]$stderrLimited.limit_exceeded -or [string]$stderrLimited.status -cne 'OUTPUT_LIMIT_EXCEEDED' -or [string]$stderrLimited.limit_stream -cne 'stderr'){throw 'STDERR_STREAM_LIMIT_DID_NOT_FAIL_CLOSED'}
     if((Get-Item -LiteralPath $stderrLimitedErr).Length -ne 64 -or [long]$stderrLimited.stderr_bytes -ne 64){throw 'STDERR_STREAM_LIMIT_NOT_ENFORCED_EXACTLY'}
+
+    $boundedRejected=$false
+    try{
+        [void](Invoke-SeshatBoundedNativeText -FilePath $engine -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$childScript,'statusflood') -WorkingDirectory $temp -Label 'mock-status-limit' -MaximumStandardOutputBytes 128 -MaximumStandardErrorBytes 128 -MaximumLines 4)
+    }catch{$boundedRejected=($_.Exception.Message -eq 'NATIVE_OUTPUT_LIMIT_EXCEEDED')}
+    if(-not $boundedRejected){throw 'BOUNDED_STATUS_ACCEPTED_TRUNCATED_OUTPUT'}
+    $lineLimitRejected=$false
+    try{[void](Invoke-SeshatBoundedNativeText -FilePath $engine -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$childScript,'statuslines') -WorkingDirectory $temp -Label 'mock-status-lines' -MaximumStandardOutputBytes 4096 -MaximumStandardErrorBytes 128 -MaximumLines 4)}catch{$lineLimitRejected=($_.Exception.Message -eq 'NATIVE_LINE_LIMIT_EXCEEDED')}
+    if(-not $lineLimitRejected){throw 'BOUNDED_STATUS_ACCEPTED_TOO_MANY_LINES'}
+    $porcelain=Invoke-SeshatBoundedNativeText -FilePath $engine -ArgumentList @('-NoProfile','-NonInteractive','-Command',"[Console]::Out.WriteLine(' M path with leading space.txt')") -WorkingDirectory $temp -Label 'mock-status-prefix' -MaximumStandardOutputBytes 128 -MaximumStandardErrorBytes 128 -MaximumLines 4
+    if(@($porcelain.lines).Count -ne 1 -or [string]$porcelain.lines[0] -cne ' M path with leading space.txt'){throw 'PORCELAIN_PREFIX_WHITESPACE_CHANGED'}
+
+    $failedIntentPath=Join-Path $temp 'flush-failed-intent.jsonl'
+    $mutationMockRan=$false
+    $flushFail={param($stream) throw 'SYNTHETIC_DURABLE_FLUSH_FAILED'}
+    $intentBlocked=$false
+    try{
+        Write-SeshatMutationEvent -Path $failedIntentPath -JobId 'synthetic-job' -AttemptNonce ([guid]::NewGuid().ToString('N')) -Action 'git-add' -Status 'INTENT' -Phase 'TEST' -BeforeWitness @{head=('a'*40)} -FlushAction $flushFail
+        $mutationMockRan=$true
+    }catch{$intentBlocked=($_.Exception.Message -eq 'SYNTHETIC_DURABLE_FLUSH_FAILED')}
+    if(-not $intentBlocked -or $mutationMockRan){throw 'DURABLE_INTENT_FAILURE_DID_NOT_BLOCK_MUTATION'}
+    $failedAttemptPath=Join-Path $temp 'flush-failed-attempt.jsonl'
+    $attemptBlocked=$false
+    try{Start-SeshatPublicationAttempt -EventPath $failedAttemptPath -ReceiptPath (Join-Path $temp 'none.json') -JobId 'synthetic-job' -Branch 'codex/synthetic' -BaseSha ('a'*40) -FlushAction $flushFail}catch{$attemptBlocked=($_.Exception.Message -eq 'SYNTHETIC_DURABLE_FLUSH_FAILED')}
+    if(-not $attemptBlocked){throw 'DURABLE_ATTEMPT_FAILURE_NOT_PROPAGATED'}
+    $partialAttemptRetryBlocked=$false
+    try{Assert-SeshatPublicationAttemptAbsent -EventPath $failedAttemptPath -ReceiptPath (Join-Path $temp 'none.json')}catch{$partialAttemptRetryBlocked=($_.Exception.Message -eq 'PUBLICATION_ATTEMPT_ALREADY_RECORDED')}
+    if(-not $partialAttemptRetryBlocked){throw 'FAILED_ATTEMPT_WRITE_DID_NOT_FAIL_CLOSED'}
 
     # Synthetic pins are created only inside this isolated CI fixture. Production
     # pins live in the separately reviewed host policy and are never in the repo.
