@@ -21,6 +21,7 @@ jobs:
 
   ops-publisher-windows:
     runs-on: windows-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -39,6 +40,15 @@ jobs:
       - name: Windows PowerShell 5.1 publisher and streaming recovery
         shell: cmd
         run: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ops\codex_watch\tests\test-publisher-recovery.ps1
+      - name: PowerShell 7 descendant containment
+        shell: pwsh
+        run: ./ops/codex_watch/tests/test-descendant-containment.ps1
+      - name: Windows PowerShell 5.1 descendant containment
+        shell: cmd
+        run: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ops\codex_watch\tests\test-descendant-containment.ps1
+      - name: SysWOW64 Windows PowerShell 5.1 descendant containment struct sizes
+        shell: cmd
+        run: C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ops\codex_watch\tests\test-descendant-containment.ps1
 
   test:
     runs-on: ubuntu-latest
