@@ -75,8 +75,13 @@ $exitPrecheck=$executeSource.IndexOf('Assert-SeshatExitReceiptAbsent -Path $Exit
 $exitWriter=$executeSource.IndexOf('Write-SeshatJsonCreateNew -Value $receipt -Path $ExitPath')
 if($exitPrecheck -lt 0 -or $exitWriter -lt 0 -or $exitPrecheck -ge $exitWriter){throw 'EXECUTOR_EXIT_CREATE_ONCE_ORDER_MISSING'}
 if($publishSource -match "\^src/seshat/\[A-Za-z0-9_" -or $publishSource -notmatch 'Test-SeshatOwnedPathSet'){throw 'PUBLISHER_EXACT_MANIFEST_ENFORCEMENT_MISSING'}
-if($dispatchSource -notmatch 'ls-remote --exit-code --heads origin' -or $dispatchSource -notmatch 'BLOCK_REMOTE_BRANCH_EXISTS' -or $dispatchSource -notmatch 'BLOCK_REMOTE_PR_EXISTS'){throw 'DISPATCH_REMOTE_COLLISION_PREFLIGHT_MISSING'}
+if($dispatchSource -notmatch "ls-remote','--exit-code','--heads','origin'" -or $dispatchSource -notmatch 'BLOCK_REMOTE_BRANCH_EXISTS' -or $dispatchSource -notmatch 'BLOCK_REMOTE_PR_EXISTS'){throw 'DISPATCH_REMOTE_COLLISION_PREFLIGHT_MISSING'}
 if($dispatchSource -notmatch 'Get-SeshatCodexLaunchPolicyBinding'){throw 'DISPATCH_TRUST_POLICY_BINDING_MISSING'}
+if($dispatchSource -notmatch 'Get-SeshatGitGhLaunchPolicyBinding'){throw 'DISPATCH_GIT_GH_TRUST_POLICY_BINDING_MISSING'}
+if($dispatchSource -notmatch 'git_gh_launch_policy=\$gitGhLaunchPolicy'){throw 'DISPATCH_GIT_GH_JOB_FIELD_MISSING'}
+if($dispatchSource -notmatch 'New-SeshatBundleManifest[^\r\n]+-GitExePath'){throw 'DISPATCH_BUNDLE_GIT_EXE_MISSING'}
+if($dispatchSource -match '(?m)^\s*&\s*git\s' -or $dispatchSource -match '(?m)^\s*&\s*gh\s' -or $dispatchSource -match "FilePath 'git'" -or $dispatchSource -match "FilePath 'gh'"){throw 'DISPATCH_BARE_GIT_GH_PRESENT'}
+if($gateSource -notmatch 'SESHAT_GIT_GH_LAUNCH_IMPLEMENTATION_BINDING_BEGIN' -or $gateSource -notmatch 'GIT_GH_TRUST_POLICY_ACL_INDETERMINATE'){throw 'GIT_GH_IMPL_BINDING_OR_ACL_GUARD_MISSING'}
 
 $bundle=@(Get-SeshatBundlePaths|ForEach-Object{[pscustomobject]@{path=$_;sha256=('1'*64)}})
 $job=[pscustomobject]@{
