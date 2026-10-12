@@ -1,5 +1,6 @@
 # Pure governance gate. Source facts come from GitHub, not from Codex statements.
 Set-StrictMode -Version Latest
+$SeshatCodexWatchScriptRoot = $PSScriptRoot
 function ConvertTo-SeshatNativeArgument {
     param([Parameter(Mandatory=$true)][AllowEmptyString()][string]$Value)
     if($Value.Length -eq 0){return '""'}
@@ -574,41 +575,90 @@ function Close-SeshatCodexLaunch {
     param([object]$Launch)
     if($Launch -and $Launch.PSObject.Properties['identity_locks']){foreach($stream in @($Launch.identity_locks)){if($stream){$stream.Dispose()}}}
 }
+function Get-SeshatGitGhLaunchImplementationBindingSourceText {
+    param([Parameter(Mandatory=$true)][string]$ScriptRoot)
+    $gatePath=Join-Path $ScriptRoot 'gate.ps1'
+    if(-not(Test-Path -LiteralPath $gatePath -PathType Leaf)){throw 'GIT_GH_IMPL_BINDING_GATE_MISSING'}
+    $content=[System.IO.File]::ReadAllText($gatePath,(New-Object System.Text.UTF8Encoding($false)))
+    $begin='# SESHAT_GIT_GH_LAUNCH_IMPLEMENTATION_BINDING_BEGIN'
+    $end='# SESHAT_GIT_GH_LAUNCH_IMPLEMENTATION_BINDING_END'
+    $start=$content.IndexOf($begin,[System.StringComparison]::Ordinal)
+    $stop=$content.IndexOf($end,[System.StringComparison]::Ordinal)
+    if($start -lt 0 -or $stop -lt 0 -or $stop -le $start){throw 'GIT_GH_IMPL_BINDING_MARKERS_MISSING'}
+    $body=$content.Substring($start+$begin.Length,$stop-$start-$begin.Length).Trim()
+    return ("seshat.git-gh-launch-policy.impl.v1`n"+$body)
+}
+function Get-SeshatGitGhLaunchImplementationBindingSha256 {
+    param([string]$ScriptRoot)
+    if(-not $ScriptRoot){
+        if(-not $SeshatCodexWatchScriptRoot){throw 'GIT_GH_IMPL_BINDING_SCRIPT_ROOT_UNKNOWN'}
+        $ScriptRoot=$SeshatCodexWatchScriptRoot
+    }
+    return Get-SeshatUtf8Sha256 -Text (Get-SeshatGitGhLaunchImplementationBindingSourceText -ScriptRoot $ScriptRoot)
+}
+# SESHAT_GIT_GH_LAUNCH_IMPLEMENTATION_BINDING_BEGIN
 function Get-SeshatGitGhLaunchPolicyDefaultPath {
     return 'C:\ProgramData\SESHAT\git-gh-launch-policy.json'
 }
-function Get-SeshatGitGhLaunchImplementationBindingSha256 {
-    return Get-SeshatUtf8Sha256 -Text (@(
-        'seshat.git-gh-launch-policy.impl.v1'
-        'fields=git_exe,gh_exe,policy_acl,reparse,authenticode,toctou_lock'
-    ) -join "`n")
+function Test-SeshatWindowsPlatform {
+    if($PSVersionTable.PSObject.Properties['Platform'] -and [string]$PSVersionTable.Platform -ceq 'Win32NT'){return $true}
+    if($PSVersionTable.PSObject.Properties['OS'] -and [string]$PSVersionTable.OS -match 'Windows'){return $true}
+    return ($env:OS -match '(?i)^Windows')
+}
+function Test-SeshatFileSystemRightsGrantModify {
+    param([Parameter(Mandatory=$true)][System.Security.AccessControl.FileSystemRights]$Rights)
+    $mask=[System.Security.AccessControl.FileSystemRights]::WriteData -bor [System.Security.AccessControl.FileSystemRights]::CreateFiles -bor [System.Security.AccessControl.FileSystemRights]::AppendData -bor [System.Security.AccessControl.FileSystemRights]::Delete -bor [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [System.Security.AccessControl.FileSystemRights]::Modify -bor [System.Security.AccessControl.FileSystemRights]::Write -bor [System.Security.AccessControl.FileSystemRights]::WriteAttributes -bor [System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor [System.Security.AccessControl.FileSystemRights]::WriteDAC -bor [System.Security.AccessControl.FileSystemRights]::WriteOwner
+    return (($Rights -band $mask) -ne 0)
+}
+function Test-SeshatSecurityIdentifierIsBroadModifyPrincipal {
+    param([Parameter(Mandatory=$true)][System.Security.Principal.SecurityIdentifier]$Sid)
+    $known=@(
+        [System.Security.Principal.WellKnownSidType]::WorldSid
+        [System.Security.Principal.WellKnownSidType]::AuthenticatedUserSid
+        [System.Security.Principal.WellKnownSidType]::BuiltinUsersSid
+    )
+    foreach($type in $known){
+        $candidate=New-Object System.Security.Principal.SecurityIdentifier($type,$null)
+        if($Sid.Equals($candidate)){return $true}
+    }
+    return $false
+}
+function Test-SeshatCurrentPrincipalCanModifyPathAcl {
+    param([Parameter(Mandatory=$true)][string]$Path)
+    try{
+        $acl=Get-Acl -LiteralPath $Path -ErrorAction Stop
+    }catch{
+        throw 'GIT_GH_TRUST_POLICY_ACL_INDETERMINATE'
+    }
+    $principal=New-Object System.Security.Principal.WindowsPrincipal([System.Security.Principal.WindowsIdentity]::GetCurrent())
+    foreach($rule in $acl.Access){
+        if($rule.AccessControlType -ne 'Allow'){continue}
+        if(-not (Test-SeshatFileSystemRightsGrantModify -Rights $rule.FileSystemRights)){continue}
+        try{
+            $sid=$rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier])
+        }catch{
+            throw 'GIT_GH_TRUST_POLICY_ACL_INDETERMINATE'
+        }
+        if(Test-SeshatSecurityIdentifierIsBroadModifyPrincipal -Sid $sid){return $true}
+        if($principal.IsInRole($sid)){return $true}
+    }
+    return $false
 }
 function Test-SeshatCurrentPrincipalCanModifyPath {
     param([Parameter(Mandatory=$true)][string]$Path)
-    if(-not ($IsWindows -or $env:OS -match 'Windows')){return $false}
-    try{
-        $item=Get-Item -LiteralPath $Path -Force
-        $acl=Get-Acl -LiteralPath $Path
-        $principal=New-Object System.Security.Principal.WindowsPrincipal([System.Security.Principal.WindowsIdentity]::GetCurrent())
-        foreach($rule in $acl.Access){
-            if($rule.AccessControlType -ne 'Allow'){continue}
-            $rights=$rule.FileSystemRights
-            $writeMask=[System.Security.AccessControl.FileSystemRights]::WriteData -bor [System.Security.AccessControl.FileSystemRights]::CreateFiles -bor [System.Security.AccessControl.FileSystemRights]::Delete -bor [System.Security.AccessControl.FileSystemRights]::Modify -bor [System.Security.AccessControl.FileSystemRights]::Write
-            if(($rights -band $writeMask) -eq 0){continue}
-            $identity=$rule.IdentityReference
-            if($identity.IsWellKnown('World') -or $identity.IsWellKnown('AuthenticatedUser') -or $identity.Value -match '\\Users$|\\Everyone$'){return $true}
-            if($principal.IsInRole($identity)){return $true}
-        }
-        if($item.PSIsContainer){
-            $tempName='.seshat-write-probe-'+[guid]::NewGuid().ToString('N')
-            $probe=Join-Path $Path $tempName
-            try{
-                [System.IO.File]::WriteAllText($probe,'')
-                Remove-Item -LiteralPath $probe -Force
-                return $true
-            }catch{}
-        }
-    }catch{}
+    if(-not (Test-SeshatWindowsPlatform)){return $false}
+    $full=[System.IO.Path]::GetFullPath($Path)
+    $targets=New-Object 'System.Collections.Generic.List[string]'
+    [void]$targets.Add($full)
+    $parent=[System.IO.Path]::GetFullPath((Split-Path -Parent $full))
+    while($parent -and $parent.Length -ge 3){
+        [void]$targets.Add($parent)
+        if($parent -match '^[A-Za-z]:\\?$'){break}
+        $parent=[System.IO.Path]::GetFullPath((Split-Path -Parent $parent))
+    }
+    foreach($target in $targets){
+        if(Test-SeshatCurrentPrincipalCanModifyPathAcl -Path $target){return $true}
+    }
     return $false
 }
 function Assert-SeshatHostTrustPolicyStorage {
@@ -725,6 +775,7 @@ function Get-SeshatPrivilegedNativeExecutablePath {
     if($Tool -ceq 'gh'){return [string]$Launch.gh_exe_path}
     throw 'GIT_GH_PRIVILEGED_TOOL_INVALID'
 }
+# SESHAT_GIT_GH_LAUNCH_IMPLEMENTATION_BINDING_END
 function Set-SeshatRunnerStart {
     param(
         [Parameter(Mandatory=$true)][object]$Job,
