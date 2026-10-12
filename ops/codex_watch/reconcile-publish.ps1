@@ -9,7 +9,12 @@ $Root='C:\Users\Homee\AppData\Local\SESHAT\watch'
 
 if(-not(Test-SeshatCanonicalJobPath -JobPath $JobPath -Root $Root)){throw 'UNAUTHORIZED_JOB_PATH'}
 $job=Get-Content -LiteralPath $JobPath -Raw -Encoding UTF8|ConvertFrom-Json
+if(-not $job.PSObject.Properties['git_gh_launch_policy']){throw 'GIT_GH_TRUST_POLICY_MISSING'}
+$gitGhLaunch=Resolve-SeshatGitGhLaunch -ExpectedBinding $job.git_gh_launch_policy
+Assert-SeshatPrivilegedRepositorySurface -Repo $Repo
 $jobId=[string]$job.job_id
+$gitExe=[string]$gitGhLaunch.git_exe_path
+$ghExe=[string]$gitGhLaunch.gh_exe_path
 $eventPath=Join-Path (Join-Path $Root 'publication-events') ($jobId+'.jsonl')
 $receiptPath=Join-Path $Root 'publish_receipt.json'
 $events=@()
@@ -32,11 +37,11 @@ if($latest){
         [string]$latest.base_sha -ceq [string]$job.base_sha -and $phase -cin $validPhases
     )}catch{$eventValid=$false}
 }
-$headResult=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'rev-parse','HEAD') -WorkingDirectory $Repo -Label 'reconcile-git-head'
-$branchResult=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'branch','--show-current') -WorkingDirectory $Repo -Label 'reconcile-git-branch'
-$statusResult=Invoke-SeshatBoundedNativeText -FilePath 'git' -ArgumentList @('-C',$Repo,'status','--porcelain=v1','-uall') -WorkingDirectory $Repo -Label 'reconcile-git-status' -MaximumStandardOutputBytes 262144 -MaximumStandardErrorBytes 32768 -MaximumLines 64
-$indexResult=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'diff','--cached','--name-only') -WorkingDirectory $Repo -Label 'reconcile-git-index'
-$remoteResult=Invoke-SeshatNativeCommand -FilePath 'git' -ArgumentList @('-C',$Repo,'ls-remote','--heads','origin',('refs/heads/'+[string]$job.branch)) -WorkingDirectory $Repo -Label 'reconcile-git-remote-ref'
+$headResult=Invoke-SeshatNativeCommand -FilePath $gitExe -ArgumentList @('-C',$Repo,'rev-parse','HEAD') -WorkingDirectory $Repo -Label 'reconcile-git-head'
+$branchResult=Invoke-SeshatNativeCommand -FilePath $gitExe -ArgumentList @('-C',$Repo,'branch','--show-current') -WorkingDirectory $Repo -Label 'reconcile-git-branch'
+$statusResult=Invoke-SeshatBoundedNativeText -FilePath $gitExe -ArgumentList @('-C',$Repo,'status','--porcelain=v1','-uall') -WorkingDirectory $Repo -Label 'reconcile-git-status' -MaximumStandardOutputBytes 262144 -MaximumStandardErrorBytes 32768 -MaximumLines 64
+$indexResult=Invoke-SeshatNativeCommand -FilePath $gitExe -ArgumentList @('-C',$Repo,'diff','--cached','--name-only') -WorkingDirectory $Repo -Label 'reconcile-git-index'
+$remoteResult=Invoke-SeshatNativeCommand -FilePath $gitExe -ArgumentList @('-C',$Repo,'ls-remote','--heads','origin',('refs/heads/'+[string]$job.branch)) -WorkingDirectory $Repo -Label 'reconcile-git-remote-ref'
 $localHead=if($headResult.exit_code -eq 0){$headResult.stdout.Trim()}else{$null}
 $localBranch=if($branchResult.exit_code -eq 0){$branchResult.stdout.Trim()}else{$null}
 $dirtyCount=if($statusResult.exit_code -eq 0){@($statusResult.lines).Count}else{$null}
@@ -47,7 +52,7 @@ $remoteHead=if($remoteLines.Count -eq 1 -and $remoteLines[0] -cmatch '^([0-9a-f]
 $githubState=if($SkipGithub){'SKIPPED'}else{'NOT_NEEDED_BEFORE_PUSH'}
 $githubPrNumber=$null
 if(-not $SkipGithub){
-    $query=Invoke-SeshatNativeCommand -FilePath 'gh' -ArgumentList @('pr','list','--repo','Stimurid/SESHAT','--head',([string]$job.branch),'--state','all','--limit','2','--json','number,state,isDraft,baseRefName,headRefName,headRefOid') -WorkingDirectory $Repo -Label 'reconcile-gh-pr-list'
+    $query=Invoke-SeshatNativeCommand -FilePath $ghExe -ArgumentList @('pr','list','--repo','Stimurid/SESHAT','--head',([string]$job.branch),'--state','all','--limit','2','--json','number,state,isDraft,baseRefName,headRefName,headRefOid') -WorkingDirectory $Repo -Label 'reconcile-gh-pr-list'
     if($query.exit_code -ne 0){
         $githubState='UNKNOWN_GITHUB_QUERY_FAILED'
     }else{
@@ -85,3 +90,4 @@ $result=[ordered]@{
     publication_receipt=$receiptState;automatic_retry='DENIED';automatic_mutation='NONE'
 }
 Write-Output ($result|ConvertTo-Json -Depth 8)
+Close-SeshatGitGhLaunch -Launch $gitGhLaunch
