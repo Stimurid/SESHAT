@@ -77,8 +77,8 @@ try {
         $e=Get-Content $oldExit -Raw|ConvertFrom-Json
         if([string]$e.job_id -ne [string]$j.job_id){State 'BLOCK_PREVIOUS_JOB_MISMATCH';exit 0}
     }
-    $statusResult=Invoke-DispatchGit -GitArgs @('status','--porcelain=v1','-uall')
-    if(@($statusResult.stdout -split "`n" | Where-Object {$_ -ne ''}).Count -gt 0){
+    $statusResult=Invoke-SeshatBoundedNativeText -FilePath $dispatchGit -ArgumentList @('-C',$Repo,'-c','core.quotePath=false','status','--porcelain=v1','-uall') -WorkingDirectory $Repo -Label 'dispatch-git-status' -MaximumStandardOutputBytes 262144 -MaximumStandardErrorBytes 32768 -MaximumLines 64
+    if(@($statusResult.lines).Count -gt 0){
         State 'BLOCK_DIRTY_WORKTREE';exit 0
     }
     $branch=[string]$t.next_branch
