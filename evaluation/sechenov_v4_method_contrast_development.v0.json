@@ -1,0 +1,229 @@
+{
+  "schema": "seshat.sechenovka_method_contrast_casebook.v0.1",
+  "source_snapshot": "2026-10-12",
+  "primary_manifest_url": "https://drive.google.com/file/d/1kdQQpiF5Fu3i8ug1WofL7XmyOjjH8ox0/view",
+  "intake_url": "https://drive.google.com/file/d/1pBvdSBwbVwy1CQfP14itk0QV8I3xKVYm/view",
+  "quality_url": "https://drive.google.com/file/d/1x0iORXsSZSiUx3_1yKxwB5A1mZGsT6he/view",
+  "gold_rationale_doc": "https://docs.google.com/document/d/1hB43PDHAfsAqAY3_XgGfYo2CJQWLEG8_RRE7Wn7jj94/edit",
+  "issue": "https://github.com/Stimurid/SESHAT/issues/50",
+  "access_contract": "RESEARCH_DEVELOPMENT_ONLY_NO_PRIVATE_PDF_EMBEDDED",
+  "semantic_authority": "HUMAN_METHOD_OWNER_OR_ARTIKL_REVIEW_REQUIRED",
+  "page_anchor_status": "PENDING_EXACT_VISUAL_PAGE_VERIFICATION",
+  "runtime_ingestion_proven": false,
+  "source_reviewed_via": "DRIVE_PDF_TEXT_EXTRACTION",
+  "overall_corpus": {
+    "authorabstracts": 186,
+    "paired_theses": 94,
+    "pdf_carriers": 280,
+    "exposure": "ALL_DEVELOPMENT_EXPOSED"
+  },
+  "cases": [
+    {
+      "case_kind": "METHOD_CONTRAST_POSITIVE_CANDIDATE",
+      "exposure": "DEVELOPMENT_EXPOSED",
+      "blind_holdout": false,
+      "admission": "SOURCE_AVAILABLE",
+      "readability": "TEXT_EXTRACTED",
+      "semantic_gold": "NOT_ADJUDICATED",
+      "case_id": "P01",
+      "study_id": "SECH-537198c2b4001d9f",
+      "author": "Гусева Екатерина Андреевна",
+      "year": "2024",
+      "discipline": "hygiene",
+      "abstract_id": "10nFoNDAhPDGULvaa5-lBFmuOmpe5gYSH",
+      "abstract_sha": "895d6c617d591319a123d6c57cc86cd2be0925a59c8b33564104870694dad413",
+      "thesis_id": "1_DVSA1m-2bqq4sj3AIOYLdnIhUPV03rU",
+      "distinctions": [
+        "in_vitro_comparison_vs_model_training",
+        "training_vs_external_validation",
+        "procedure_specific_algorithms",
+        "negative_model_validation"
+      ],
+      "observed_params": {
+        "train_test_split": "80/20",
+        "algorithms": [
+          "linear_regression",
+          "support_vector_regression",
+          "knn_regression",
+          "random_forest",
+          "decision_tree",
+          "neural_network"
+        ],
+        "validation_fail_example": "in_sample_fit_did_not_survive_cv_and_external_validation"
+      },
+      "evidence_level": "SOURCE_TEXT_EXTRACTED_PENDING_EXACT_PAGE_ORACLE"
+    },
+    {
+      "case_kind": "METHOD_CONTRAST_POSITIVE_CANDIDATE",
+      "exposure": "DEVELOPMENT_EXPOSED",
+      "blind_holdout": false,
+      "admission": "SOURCE_AVAILABLE",
+      "readability": "TEXT_EXTRACTED",
+      "semantic_gold": "NOT_ADJUDICATED",
+      "case_id": "P02",
+      "study_id": "SECH-0c1b03940d9fee46",
+      "author": "Муравьев Дмитрий Николаевич",
+      "year": "2023",
+      "discipline": "public_health_financing",
+      "abstract_id": "18qaxSPgjV8CFyRva9xCmdYq3DE7jgW9G",
+      "abstract_sha": "5f0cd077725d28207209ace3f19b9686955c1199a467181e2f944f9046b32172",
+      "thesis_id": "13_M2FbqoWTjpq7zUNX4qu6Q8IQE6qfuf",
+      "distinctions": [
+        "organization_as_unit_vs_patient",
+        "register_data_vs_policy_model",
+        "organizational_experiment_vs_clinical_trial",
+        "statistical_non_significance_vs_normative_retain"
+      ],
+      "observed_params": {
+        "study_stages": 4,
+        "non_significant_indicator_retained": {
+          "type": "recurrent_myocardial_infarction_rate",
+          "p_value_reported": 0.4789,
+          "reason_class": "clinical_social_economic_value"
+        }
+      },
+      "evidence_level": "SOURCE_TEXT_EXTRACTED_PENDING_EXACT_PAGE_ORACLE"
+    },
+    {
+      "case_kind": "METHOD_CONTRAST_POSITIVE_CANDIDATE",
+      "exposure": "DEVELOPMENT_EXPOSED",
+      "blind_holdout": false,
+      "admission": "SOURCE_AVAILABLE",
+      "readability": "TEXT_EXTRACTED",
+      "semantic_gold": "NOT_ADJUDICATED",
+      "case_id": "P03",
+      "study_id": "SECH-415cbc0ece667714",
+      "author": "Гурин Алексей Николаевич",
+      "year": "2022",
+      "printed_cover_year": "2021",
+      "discipline": "biomaterials_stomatology",
+      "abstract_id": "1tEdp4E1nKboWnOhrf8nGKIWjJJyIgive",
+      "abstract_sha": "f094e8485d0afcc79642d92f3083e76d1a22a25e107335c5be541aeeeed802b6",
+      "thesis_id": "1qTC_AvovJvnQ83KrrqOMeoL9vaLGQ7hT",
+      "distinctions": [
+        "biomaterial_object_vs_technique",
+        "physical_instrument_vs_animal_experiment",
+        "animal_study_vs_clinical_outcome",
+        "posting_vs_printed_year"
+      ],
+      "evidence_level": "SOURCE_TEXT_EXTRACTED_PENDING_EXACT_PAGE_ORACLE"
+    },
+    {
+      "case_kind": "METHOD_CONTRAST_POSITIVE_CANDIDATE",
+      "exposure": "DEVELOPMENT_EXPOSED",
+      "blind_holdout": false,
+      "admission": "SOURCE_AVAILABLE",
+      "readability": "TEXT_EXTRACTED",
+      "semantic_gold": "NOT_ADJUDICATED",
+      "case_id": "P04",
+      "study_id": "SECH-7c389be698da19c4",
+      "author": "Дудник Олеся Викторовна",
+      "year": "2023",
+      "discipline": "multidisciplinary_stomatology",
+      "abstract_id": "1QjDx87QDmnp8DiPo8FtfySIOkrJ80CL9",
+      "abstract_sha": "2235d9e48960bc9a08e84792661a1597d28be4201ef4092867cd82b470b16673",
+      "thesis_id": "1wb1lUsR2r54AJWUCnDBcu8ZInln4Uue4",
+      "distinctions": [
+        "overall_examined_vs_treated_sample",
+        "age_and_condition_strata",
+        "interdisciplinary_team_vs_measurement_method",
+        "prenatal_diagnosis_vs_later_rehabilitation"
+      ],
+      "observed_params": {
+        "examined_n": 358,
+        "treated_n": 288,
+        "age_range_years": "0-18"
+      },
+      "evidence_level": "SOURCE_TEXT_EXTRACTED_PENDING_EXACT_PAGE_ORACLE"
+    },
+    {
+      "case_kind": "METHOD_CONTRAST_POSITIVE_CANDIDATE",
+      "exposure": "DEVELOPMENT_EXPOSED",
+      "blind_holdout": false,
+      "admission": "SOURCE_AVAILABLE",
+      "readability": "TEXT_EXTRACTED",
+      "semantic_gold": "NOT_ADJUDICATED",
+      "case_id": "P05",
+      "study_id": "SECH-7cdb1c6f8c1f0a78",
+      "author": "Балдин Алексей Викторович",
+      "year": "2021",
+      "discipline": "molecular_biology",
+      "abstract_id": "1ceaIyEjIItMFsmt-KGRqzdi9l7TljkCU",
+      "abstract_sha": "abd7412cdddb37b9c0bd7dfc690d0664a6c59fc0a3e82be7aa2a2e0fef0296b4",
+      "thesis_id": "1bnzNL-mOkUYuvqwl3XKxtUPhyAzIw3u5",
+      "distinctions": [
+        "target_vs_marker",
+        "molecular_assay_vs_tissue_control",
+        "detection_result_vs_diagnostic_use_claim",
+        "assay_vs_bisulfite_sequencing"
+      ],
+      "evidence_level": "SOURCE_TEXT_EXTRACTED_PENDING_EXACT_PAGE_ORACLE"
+    },
+    {
+      "case_kind": "TEXT_LAYER_NEGATIVE",
+      "exposure": "DEVELOPMENT_EXPOSED",
+      "blind_holdout": false,
+      "admission": "SOURCE_AVAILABLE",
+      "readability": "TEXT_UNAVAILABLE_BY_DIRECT_DRIVE_EXTRACTION",
+      "expected_gate": "OCR_REQUIRED_NO_METHOD_DERIVATION",
+      "semantic_gold": "NOT_APPLICABLE_UNTIL_TEXT_ADMITTED",
+      "case_id": "N01",
+      "study_id": "SECH-08f4eac3fe4c5cad",
+      "author": "Львова Дарья Петровна",
+      "year": "2021",
+      "abstract_id": "1TXkoxG8tR332HRGvnKGFGHhDJGb7oDR8",
+      "abstract_sha": "76fc4cf44afaff7c0fd3e61fc2666bc560cbf64407ff09df07dabf739de5069a",
+      "full_thesis_id": "1y8csCzbrwh890UXjBAagcYW0JsRcjH5R",
+      "page_rendered": true
+    },
+    {
+      "case_kind": "TEXT_LAYER_NEGATIVE",
+      "exposure": "DEVELOPMENT_EXPOSED",
+      "blind_holdout": false,
+      "admission": "SOURCE_AVAILABLE",
+      "readability": "TEXT_UNAVAILABLE_BY_DIRECT_DRIVE_EXTRACTION",
+      "expected_gate": "OCR_REQUIRED_NO_METHOD_DERIVATION",
+      "semantic_gold": "NOT_APPLICABLE_UNTIL_TEXT_ADMITTED",
+      "case_id": "N02",
+      "study_id": "SECH-d51b3ad1340385e1",
+      "author": "Столярова Анжелика Евгеньевна",
+      "year": "2021",
+      "abstract_id": "1eDGNjI6vuRNKV5RZt1QtwpCR6w3IbVDg",
+      "abstract_sha": "bebb292d0b0d927eae4ac8cd9e797425e31159fd2f2ec3d4c7ab331acfc65558",
+      "full_thesis_id": "1ax3bGTDapIEul48eaEakgUVIB3AdEiun",
+      "page_rendered": false
+    },
+    {
+      "case_kind": "TEXT_LAYER_NEGATIVE",
+      "exposure": "DEVELOPMENT_EXPOSED",
+      "blind_holdout": false,
+      "admission": "SOURCE_AVAILABLE",
+      "readability": "TEXT_UNAVAILABLE_BY_DIRECT_DRIVE_EXTRACTION",
+      "expected_gate": "OCR_REQUIRED_NO_METHOD_DERIVATION",
+      "semantic_gold": "NOT_APPLICABLE_UNTIL_TEXT_ADMITTED",
+      "case_id": "N03",
+      "study_id": "SECH-f9f740421e742a61",
+      "author": "Соколов Никита Александрович",
+      "year": "2021",
+      "abstract_id": "128h9X7a8fZngiIKIRBU7XgG-dpkCHSoP",
+      "abstract_sha": "5f93a8dba9a2cdf6793d48b1b170268dec6da33519891c8c39d6e47a3c305213",
+      "page_rendered": false
+    },
+    {
+      "case_kind": "TEXT_LAYER_NEGATIVE",
+      "exposure": "DEVELOPMENT_EXPOSED",
+      "blind_holdout": false,
+      "admission": "SOURCE_AVAILABLE",
+      "readability": "TEXT_UNAVAILABLE_BY_DIRECT_DRIVE_EXTRACTION",
+      "expected_gate": "OCR_REQUIRED_NO_METHOD_DERIVATION",
+      "semantic_gold": "NOT_APPLICABLE_UNTIL_TEXT_ADMITTED",
+      "case_id": "N04",
+      "study_id": "SECH-643703d0a26d3d79",
+      "author": "Еремин Станислав Юрьевич",
+      "year": "2022",
+      "abstract_id": "1qvP4hKu0oqI4gFOrE1M0lKT3Smxs7ouA",
+      "abstract_sha": "bbd8d0ea44696b7a464a01c0d31ff5918ce586da9d5a35b5c0c39956389fd693",
+      "page_rendered": false
+    }
+  ]
+}
