@@ -12,6 +12,9 @@ dependencies = [
   "pydantic>=2.8,<3",
 ]
 
+[project.scripts]
+seshat-fabric-demo = "scripts.fabric_waves_demo:main"
+
 [project.optional-dependencies]
 dev = [
   "pytest>=8,<9",
