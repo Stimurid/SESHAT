@@ -180,6 +180,7 @@ def render_result(result: ScenarioResult, output_dir: Path) -> dict[str, Any]:
             ledger=engine.ledger,
             sediment=engine.sediment,
             resonances=engine.resonance_composer,
+            thread_specs=engine.thread_specs,
             title=f"SESHAT fabric_waves scenario {result.scenario_id} — {run.run_id}",
         )
         _write_text(output_dir / f"{result.scenario_id}-{run.run_id}.html", html_doc)

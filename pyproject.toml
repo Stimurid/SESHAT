@@ -14,6 +14,7 @@ dependencies = [
 
 [project.scripts]
 seshat-fabric-demo = "seshat.fabric_waves.demo:main"
+seshat-fabric-operator = "seshat.fabric_waves.operator:main"
 
 [project.optional-dependencies]
 dev = [

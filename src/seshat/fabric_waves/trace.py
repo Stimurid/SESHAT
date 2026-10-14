@@ -9,13 +9,14 @@ without a build step.
 from __future__ import annotations
 
 import html
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from seshat.fabric_waves.contracts import (
     ActivationOutcome,
     ResonanceKind,
     StoneEventKind,
+    WorkflowThreadSpec,
 )
 from seshat.fabric_waves.ledger import RunLedger
 from seshat.fabric_waves.resonance import ResonanceComposer
@@ -52,6 +53,7 @@ def render_html(
     sediment: SedimentState,
     resonances: ResonanceComposer,
     title: str = "SESHAT fabric trace",
+    thread_specs: Mapping[str, WorkflowThreadSpec] | None = None,
 ) -> str:
     """Render the run as a self-contained HTML document."""
 
@@ -96,16 +98,100 @@ def render_html(
     parts.append(
         f"<div><strong>ledger head:</strong> <code>{html.escape(run_record.ledger_head_hash[:16])}…</code></div>"
     )
+    budget = run_record.budget
+    parts.append(
+        f"<div><strong>budget:</strong> waves≤{budget.max_waves}, "
+        f"activations≤{budget.max_activations}, "
+        f"stone_events≤{budget.max_stone_events}, "
+        f"aporia_after_waves={budget.aporia_after_waves}</div>"
+    )
+    parts.append(
+        "<div><strong>decision_right:</strong> "
+        "<code>seshat:fabric:human-acceptance</code> (acceptance never self-certified)</div>"
+    )
     parts.append("</div>")
+
+    run_id = run_record.run_id
+    run_events = tuple(event for event in ledger.events if event.run_id == run_id)
+    parts.append("<div class=\"block\">")
+    parts.append("<h2>Stone events (this run)</h2>")
+    if run_events:
+        parts.append("<table>")
+        parts.append(
+            "<thead><tr><th>event</th><th>kind</th><th>tick</th><th>carrier</th><th>payload hash</th></tr></thead>"
+        )
+        parts.append("<tbody>")
+        for event in run_events:
+            color = _color_for_stone_kind(event.kind)
+            parts.append(
+                "<tr>"
+                f"<td>{html.escape(event.event_id)}</td>"
+                f"<td><span class=\"chip\" style=\"background:{color}\">{html.escape(event.kind.value)}</span></td>"
+                f"<td>{event.issued_at_tick}</td>"
+                f"<td>{html.escape(event.target_carrier_id or '')}</td>"
+                f"<td><code>{html.escape(event.payload_hash[:16])}…</code></td>"
+                "</tr>"
+            )
+        parts.append("</tbody></table>")
+    else:
+        parts.append("<div>no stone events recorded for this run</div>")
+    parts.append("</div>")
+
+    run_decisions = tuple(dec for dec in ledger.decisions if dec.run_id == run_id)
+    parts.append("<div class=\"block\">")
+    parts.append("<h2>Human decisions (this run)</h2>")
+    if run_decisions:
+        parts.append("<table>")
+        parts.append(
+            "<thead><tr><th>decision</th><th>by</th><th>choice</th><th>sediment</th></tr></thead>"
+        )
+        parts.append("<tbody>")
+        for decision in run_decisions:
+            parts.append(
+                "<tr>"
+                f"<td>{html.escape(decision.decision_id)}</td>"
+                f"<td>{html.escape(decision.decided_by)}</td>"
+                f"<td>{html.escape(decision.choice)}</td>"
+                f"<td>{html.escape(decision.subject_sediment_id or '')}</td>"
+                "</tr>"
+            )
+        parts.append("</tbody></table>")
+    else:
+        parts.append("<div>none — engine did not self-certify acceptance</div>")
+    parts.append("</div>")
+
+    if thread_specs:
+        parts.append("<div class=\"block\">")
+        parts.append("<h2>Workflow threads (configured)</h2>")
+        parts.append("<table>")
+        parts.append(
+            "<thead><tr><th>thread</th><th>purpose</th><th>carriers</th><th>nodes</th></tr></thead>"
+        )
+        parts.append("<tbody>")
+        for thread_id in sorted(thread_specs):
+            spec = thread_specs[thread_id]
+            carriers = ", ".join(spec.admissible_source_carriers) or "—"
+            parts.append(
+                "<tr>"
+                f"<td>{html.escape(thread_id)}</td>"
+                f"<td>{html.escape(spec.purpose)}</td>"
+                f"<td>{html.escape(carriers)}</td>"
+                f"<td>{len(spec.nodes)}</td>"
+                "</tr>"
+            )
+        parts.append("</tbody></table>")
+        parts.append("</div>")
 
     parts.append("<div class=\"block\">")
     parts.append("<h2>Sediment (final)</h2>")
     parts.append("<table>")
     parts.append(
-        "<thead><tr><th>sediment_id</th><th>object_type</th><th>version</th><th>state</th><th>thread</th></tr></thead>"
+        "<thead><tr><th>sediment_id</th><th>object_type</th><th>version</th><th>state</th>"
+        "<th>thread</th><th>reads</th><th>stone</th></tr></thead>"
     )
     parts.append("<tbody>")
     for record in sediment.all_records():
+        reads = ", ".join(record.read_dependencies) or "—"
         parts.append(
             "<tr>"
             f"<td>{html.escape(record.sediment_id)}</td>"
@@ -113,6 +199,8 @@ def render_html(
             f"<td>{html.escape(record.version)}</td>"
             f"<td>{html.escape(record.acceptance_state.value)}</td>"
             f"<td>{html.escape(record.produced_by_thread)}</td>"
+            f"<td>{html.escape(reads)}</td>"
+            f"<td>{html.escape(record.produced_by_stone_kind.value)}</td>"
             "</tr>"
         )
     parts.append("</tbody></table>")

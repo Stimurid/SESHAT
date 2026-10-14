@@ -46,6 +46,8 @@ def test_render_html_contains_run_id() -> None:
     assert "r-html" in html_doc
     assert "Sediment" in html_doc
     assert "Resonance" in html_doc
+    assert "Stone events (this run)" in html_doc
+    assert "budget:" in html_doc
 
 
 def test_render_svg_handles_empty_waves() -> None:

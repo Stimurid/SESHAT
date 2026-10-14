@@ -6,7 +6,7 @@ artifacts to ``--output-dir`` (default ``artifacts/fabric_waves/``).
 
 Scenarios:
 
-* S1 — single-study Object↔Method mutual repair (uppercase + sum).
+* S1 — single-study Object/Method mutual repair (uppercase + sum).
 * S2 — corpus question reusing individual states (C12/C04 aggregation).
 * S3 — changed external EvidenceReturn invalidating dependent conclusions
        and selectively waking only the necessary threads (SOURCE_DELTA).
@@ -209,6 +209,7 @@ def render_result(result: ScenarioResult, output_dir: Path) -> dict[str, Any]:
             ledger=engine.ledger,
             sediment=engine.sediment,
             resonances=engine.resonance_composer,
+            thread_specs=engine.thread_specs,
             title=f"SESHAT fabric_waves scenario {result.scenario_id} — {run.run_id}",
         )
         _write_text(output_dir / f"{result.scenario_id}-{run.run_id}.html", html_doc)

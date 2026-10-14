@@ -42,8 +42,22 @@ MethodBodies for protected profiles.
 ## Demo CLI
 
 ```bash
+pip install -e ".[dev]"
+seshat-fabric-demo --output-dir artifacts/fabric_waves
+# or (from repo root, ASCII-only help on Windows cp1251 consoles):
 PYTHONPATH=src python scripts/fabric_waves_demo.py --output-dir artifacts/fabric_waves
 ```
+
+## Operator CLI (typed Stone events)
+
+```bash
+seshat-fabric-operator --events path/to/events.json --profile repair --output-dir artifacts/fabric_waves/operator
+```
+
+`events.json` is a JSON array of objects with at least `kind` (one of
+`QUERY`, `SOURCE_DELTA`, `APORIA`, `HUMAN_DECISION`, `FRONTIER_RETURN`) and
+optional `payload`, `target_carrier_id`, `issued_at_tick`, `event_id`.
+Profiles: `repair` (D1), `corpus` (D2), `invalidation` (D3 carrier wake).
 
 Produces:
 
