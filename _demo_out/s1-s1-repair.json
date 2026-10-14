@@ -1,0 +1,516 @@
+{
+  "ledger": {
+    "activations": [
+      {
+        "activation_id": "s1-repair:wave:1:t-uppercase:upper",
+        "ended_at_tick": 1,
+        "error_code": null,
+        "error_detail": null,
+        "fired_node_ids": [
+          "upper"
+        ],
+        "invalidated_sediment_ids": [],
+        "method_body_refs": [
+          {
+            "method_body_id": "safe-fixture.uppercase",
+            "version": "1"
+          }
+        ],
+        "outcome": "FIRED",
+        "produced_sediment_ids": [
+          "t-uppercase:upper"
+        ],
+        "read_sediment_ids": [],
+        "receipts_hash": "b1861de8666939eb957b7c0a501684eb23f8436347ae4241b4763f98dfe5e320",
+        "run_id": "s1-repair",
+        "source_carrier_ids": [
+          "c-upper"
+        ],
+        "started_at_tick": 1,
+        "stop_reason": "",
+        "thread_id": "t-uppercase",
+        "wave_id": "s1-repair:wave:1",
+        "write_sediment_ids": [
+          "t-uppercase:upper"
+        ]
+      },
+      {
+        "activation_id": "s1-repair:wave:1:t-sum:sum",
+        "ended_at_tick": 2,
+        "error_code": null,
+        "error_detail": null,
+        "fired_node_ids": [
+          "sum"
+        ],
+        "invalidated_sediment_ids": [],
+        "method_body_refs": [
+          {
+            "method_body_id": "safe-fixture.sum",
+            "version": "1"
+          }
+        ],
+        "outcome": "FIRED",
+        "produced_sediment_ids": [
+          "t-sum:sum"
+        ],
+        "read_sediment_ids": [],
+        "receipts_hash": "7c73d302c6fb96ef6e2ab4ce77c22af4f3be14983c03eaebde621571eeac8b39",
+        "run_id": "s1-repair",
+        "source_carrier_ids": [
+          "c-sum"
+        ],
+        "started_at_tick": 2,
+        "stop_reason": "",
+        "thread_id": "t-sum",
+        "wave_id": "s1-repair:wave:1",
+        "write_sediment_ids": [
+          "t-sum:sum"
+        ]
+      }
+    ],
+    "decisions": [],
+    "events": [
+      {
+        "consumed_by_wave_id": "s1-repair:wave:1",
+        "event_id": "s1-repair:init",
+        "issued_at_tick": 0,
+        "kind": "QUERY",
+        "kind_enum": "QUERY",
+        "payload_hash": "2c0617a96099d1c3eeab315c0c33e59f41236917d2a9e333a8c931ce7dab8d4c",
+        "run_id": "s1-repair",
+        "target_carrier_id": null,
+        "target_research_object_id": null
+      },
+      {
+        "consumed_by_wave_id": "s1-repair:wave:2",
+        "event_id": "s1-repair:sediment:t-uppercase:upper:3733cd977ff8eb18",
+        "issued_at_tick": 2,
+        "kind": "SEDIMENT_AVAILABLE",
+        "kind_enum": "SEDIMENT_AVAILABLE",
+        "payload_hash": "da9e2e0318f68c6898b17e3fdd5954978274c5858e9881f05db86d7a0310a915",
+        "run_id": "s1-repair",
+        "target_carrier_id": null,
+        "target_research_object_id": null
+      },
+      {
+        "consumed_by_wave_id": "s1-repair:wave:3",
+        "event_id": "s1-repair:sediment:t-sum:sum:4a44dc15364204a8",
+        "issued_at_tick": 3,
+        "kind": "SEDIMENT_AVAILABLE",
+        "kind_enum": "SEDIMENT_AVAILABLE",
+        "payload_hash": "e1062151729fb8b632b1ddfe3f019b17c6bf884bac5f5a5a8138a0cb43c71ac9",
+        "run_id": "s1-repair",
+        "target_carrier_id": null,
+        "target_research_object_id": null
+      }
+    ],
+    "head_hash": "2b2b6d1bdd16b5a6dec1f2024aa151febf0fea86efe995721672a3341da5622c",
+    "resonances": [
+      {
+        "kind": "ANSWER",
+        "payload": {
+          "evidence": [
+            {
+              "acceptance_state": "WORKING",
+              "object_type": "safe.uppercase_text",
+              "sediment_id": "t-uppercase:upper",
+              "version": "3733cd977ff8eb18"
+            },
+            {
+              "acceptance_state": "WORKING",
+              "object_type": "safe.sum",
+              "sediment_id": "t-sum:sum",
+              "version": "4a44dc15364204a8"
+            }
+          ],
+          "kind": "ANSWER",
+          "summary": "Run s1-repair finished as SATURATED after 3 wave(s) and 2 activation(s)."
+        },
+        "payload_hash": "3d3f8f84d2d5c61b0fa2e3a25fc0a0e57ec17c5a63565846f038b426b1d83d05",
+        "produced_at_tick": 4,
+        "resonance_id": "s1-repair:resonance:answer",
+        "run_id": "s1-repair",
+        "trace_activation_ids": [
+          "s1-repair:wave:1:t-uppercase:upper",
+          "s1-repair:wave:1:t-sum:sum"
+        ],
+        "trace_event_ids": [
+          "s1-repair:init",
+          "s1-repair:sediment:t-uppercase:upper:3733cd977ff8eb18",
+          "s1-repair:sediment:t-sum:sum:4a44dc15364204a8"
+        ],
+        "trace_sediment_ids": [
+          "t-uppercase:upper",
+          "t-sum:sum"
+        ],
+        "trace_wave_ids": [
+          "s1-repair:wave:1",
+          "s1-repair:wave:2",
+          "s1-repair:wave:3"
+        ]
+      },
+      {
+        "kind": "MAP",
+        "payload": {
+          "edges": [
+            {
+              "from": "event:s1-repair:init",
+              "to": "t-sum"
+            },
+            {
+              "from": "event:s1-repair:init",
+              "to": "t-uppercase"
+            }
+          ],
+          "kind": "MAP",
+          "nodes": [
+            {
+              "id": "t-uppercase",
+              "label": "uppercase text reconstruction"
+            },
+            {
+              "id": "t-sum",
+              "label": "integer sum"
+            }
+          ]
+        },
+        "payload_hash": "f23528bd68a431fd5ecd87f2d46835f6f79920130da14fbddbaf4182f8117773",
+        "produced_at_tick": 4,
+        "resonance_id": "s1-repair:resonance:map",
+        "run_id": "s1-repair",
+        "trace_activation_ids": [
+          "s1-repair:wave:1:t-uppercase:upper",
+          "s1-repair:wave:1:t-sum:sum"
+        ],
+        "trace_event_ids": [],
+        "trace_sediment_ids": [
+          "t-uppercase:upper",
+          "t-sum:sum"
+        ],
+        "trace_wave_ids": []
+      },
+      {
+        "kind": "REPORT",
+        "payload": {
+          "headline": "SESHAT fabric run s1-repair",
+          "kind": "REPORT",
+          "sections": [
+            {
+              "activations_total": 2,
+              "outcome": "SATURATED",
+              "stop_reason": "NO_DELTA",
+              "waves_emitted": 3
+            }
+          ]
+        },
+        "payload_hash": "aae777f61c060c383283ae9059104b6f6845001a6ae1e057e249f4890821bb20",
+        "produced_at_tick": 4,
+        "resonance_id": "s1-repair:resonance:report",
+        "run_id": "s1-repair",
+        "trace_activation_ids": [],
+        "trace_event_ids": [],
+        "trace_sediment_ids": [],
+        "trace_wave_ids": []
+      }
+    ],
+    "runs": [
+      {
+        "activations_total": 2,
+        "budget": {
+          "aporia_after_waves": 2,
+          "max_activations": 12,
+          "max_stone_events": 12,
+          "max_waves": 6
+        },
+        "decision_ids": [],
+        "ended_at_tick": 4,
+        "ledger_head_hash": "24af634524d44a9f2823f4962033f0483ca9fa3247175731e146ebb300434ac8",
+        "notes": [
+          "deterministic_run"
+        ],
+        "outcome": "SATURATED",
+        "resonance_ids": [],
+        "run_id": "s1-repair",
+        "sediment_final_versions": {
+          "t-sum:sum": "4a44dc15364204a8",
+          "t-uppercase:upper": "3733cd977ff8eb18"
+        },
+        "sediment_initial_versions": {},
+        "started_at_tick": 1,
+        "stop_reason": "NO_DELTA",
+        "waves_emitted": 3
+      }
+    ],
+    "waves": [
+      {
+        "blocked_thread_ids": [],
+        "budget_used": 2,
+        "eligible_thread_ids": [
+          "t-uppercase",
+          "t-sum"
+        ],
+        "fired_thread_ids": [
+          "t-sum",
+          "t-uppercase"
+        ],
+        "no_delta_thread_ids": [],
+        "run_id": "s1-repair",
+        "sediment_versions_after": {
+          "t-sum:sum": "4a44dc15364204a8",
+          "t-uppercase:upper": "3733cd977ff8eb18"
+        },
+        "skipped_thread_ids": [],
+        "triggered_by": "QUERY",
+        "triggering_event_id": "s1-repair:init",
+        "wave_id": "s1-repair:wave:1",
+        "wave_index": 1
+      },
+      {
+        "blocked_thread_ids": [],
+        "budget_used": 0,
+        "eligible_thread_ids": [],
+        "fired_thread_ids": [],
+        "no_delta_thread_ids": [],
+        "run_id": "s1-repair",
+        "sediment_versions_after": {
+          "t-sum:sum": "4a44dc15364204a8",
+          "t-uppercase:upper": "3733cd977ff8eb18"
+        },
+        "skipped_thread_ids": [],
+        "triggered_by": "SEDIMENT_AVAILABLE",
+        "triggering_event_id": "s1-repair:sediment:t-uppercase:upper:3733cd977ff8eb18",
+        "wave_id": "s1-repair:wave:2",
+        "wave_index": 2
+      },
+      {
+        "blocked_thread_ids": [],
+        "budget_used": 0,
+        "eligible_thread_ids": [],
+        "fired_thread_ids": [],
+        "no_delta_thread_ids": [],
+        "run_id": "s1-repair",
+        "sediment_versions_after": {
+          "t-sum:sum": "4a44dc15364204a8",
+          "t-uppercase:upper": "3733cd977ff8eb18"
+        },
+        "skipped_thread_ids": [],
+        "triggered_by": "SEDIMENT_AVAILABLE",
+        "triggering_event_id": "s1-repair:sediment:t-sum:sum:4a44dc15364204a8",
+        "wave_id": "s1-repair:wave:3",
+        "wave_index": 3
+      }
+    ]
+  },
+  "resonances": [
+    {
+      "kind": "ANSWER",
+      "payload": {
+        "evidence": [
+          {
+            "acceptance_state": "WORKING",
+            "object_type": "safe.uppercase_text",
+            "sediment_id": "t-uppercase:upper",
+            "version": "3733cd977ff8eb18"
+          },
+          {
+            "acceptance_state": "WORKING",
+            "object_type": "safe.sum",
+            "sediment_id": "t-sum:sum",
+            "version": "4a44dc15364204a8"
+          }
+        ],
+        "kind": "ANSWER",
+        "summary": "Run s1-repair finished as SATURATED after 3 wave(s) and 2 activation(s)."
+      },
+      "payload_hash": "3d3f8f84d2d5c61b0fa2e3a25fc0a0e57ec17c5a63565846f038b426b1d83d05",
+      "produced_at_tick": 4,
+      "resonance_id": "s1-repair:resonance:answer",
+      "run_id": "s1-repair",
+      "trace_activation_ids": [
+        "s1-repair:wave:1:t-uppercase:upper",
+        "s1-repair:wave:1:t-sum:sum"
+      ],
+      "trace_event_ids": [
+        "s1-repair:init",
+        "s1-repair:sediment:t-uppercase:upper:3733cd977ff8eb18",
+        "s1-repair:sediment:t-sum:sum:4a44dc15364204a8"
+      ],
+      "trace_sediment_ids": [
+        "t-uppercase:upper",
+        "t-sum:sum"
+      ],
+      "trace_wave_ids": [
+        "s1-repair:wave:1",
+        "s1-repair:wave:2",
+        "s1-repair:wave:3"
+      ]
+    },
+    {
+      "kind": "MAP",
+      "payload": {
+        "edges": [
+          {
+            "from": "event:s1-repair:init",
+            "to": "t-sum"
+          },
+          {
+            "from": "event:s1-repair:init",
+            "to": "t-uppercase"
+          }
+        ],
+        "kind": "MAP",
+        "nodes": [
+          {
+            "id": "t-uppercase",
+            "label": "uppercase text reconstruction"
+          },
+          {
+            "id": "t-sum",
+            "label": "integer sum"
+          }
+        ]
+      },
+      "payload_hash": "f23528bd68a431fd5ecd87f2d46835f6f79920130da14fbddbaf4182f8117773",
+      "produced_at_tick": 4,
+      "resonance_id": "s1-repair:resonance:map",
+      "run_id": "s1-repair",
+      "trace_activation_ids": [
+        "s1-repair:wave:1:t-uppercase:upper",
+        "s1-repair:wave:1:t-sum:sum"
+      ],
+      "trace_event_ids": [],
+      "trace_sediment_ids": [
+        "t-uppercase:upper",
+        "t-sum:sum"
+      ],
+      "trace_wave_ids": []
+    },
+    {
+      "kind": "REPORT",
+      "payload": {
+        "headline": "SESHAT fabric run s1-repair",
+        "kind": "REPORT",
+        "sections": [
+          {
+            "activations_total": 2,
+            "outcome": "SATURATED",
+            "stop_reason": "NO_DELTA",
+            "waves_emitted": 3
+          }
+        ]
+      },
+      "payload_hash": "aae777f61c060c383283ae9059104b6f6845001a6ae1e057e249f4890821bb20",
+      "produced_at_tick": 4,
+      "resonance_id": "s1-repair:resonance:report",
+      "run_id": "s1-repair",
+      "trace_activation_ids": [],
+      "trace_event_ids": [],
+      "trace_sediment_ids": [],
+      "trace_wave_ids": []
+    }
+  ],
+  "run": {
+    "activations_total": 2,
+    "budget": {
+      "aporia_after_waves": 2,
+      "max_activations": 12,
+      "max_stone_events": 12,
+      "max_waves": 6
+    },
+    "decision_ids": [],
+    "ended_at_tick": 4,
+    "ledger_head_hash": "24af634524d44a9f2823f4962033f0483ca9fa3247175731e146ebb300434ac8",
+    "notes": [
+      "deterministic_run"
+    ],
+    "outcome": "SATURATED",
+    "resonance_ids": [],
+    "run_id": "s1-repair",
+    "sediment_final_versions": {
+      "t-sum:sum": "4a44dc15364204a8",
+      "t-uppercase:upper": "3733cd977ff8eb18"
+    },
+    "sediment_initial_versions": {},
+    "started_at_tick": 1,
+    "stop_reason": "NO_DELTA",
+    "waves_emitted": 3
+  },
+  "sediment": [
+    {
+      "acceptance_state": "WORKING",
+      "applicability": [],
+      "dependency_versions": {},
+      "epistemic_level": "E3",
+      "method_body_refs": [
+        {
+          "method_body_id": "safe-fixture.uppercase",
+          "version": "1"
+        }
+      ],
+      "object_type": "safe.uppercase_text",
+      "payload": {
+        "value": "HELLO"
+      },
+      "payload_hash": "e3717df2ed67ecf6a3b25d7a60f8c643cd328d3b81eeec47d23c5bc9802c7c52",
+      "produced_at_tick": 1,
+      "produced_by_stone_kind": "QUERY",
+      "produced_by_thread": "t-uppercase",
+      "produced_in_wave": 1,
+      "provenance": [
+        "safe-fixture.uppercase",
+        "thread=t-uppercase",
+        "thread=t-uppercase",
+        "node=upper",
+        "wave=s1-repair:wave:1"
+      ],
+      "read_dependencies": [],
+      "research_object_id": "t-uppercase",
+      "sediment_id": "t-uppercase:upper",
+      "source_access_manifest": null,
+      "source_carrier_refs": [
+        "c-upper"
+      ],
+      "uncertainty": [],
+      "version": "3733cd977ff8eb18",
+      "write_dependencies": []
+    },
+    {
+      "acceptance_state": "WORKING",
+      "applicability": [],
+      "dependency_versions": {},
+      "epistemic_level": "E3",
+      "method_body_refs": [
+        {
+          "method_body_id": "safe-fixture.sum",
+          "version": "1"
+        }
+      ],
+      "object_type": "safe.sum",
+      "payload": {
+        "total": 10
+      },
+      "payload_hash": "f133478af453cc4c404cc5e649fc223a27799d5ab624015bcfc3ef41c14c556e",
+      "produced_at_tick": 2,
+      "produced_by_stone_kind": "QUERY",
+      "produced_by_thread": "t-sum",
+      "produced_in_wave": 1,
+      "provenance": [
+        "safe-fixture.sum",
+        "thread=t-sum",
+        "thread=t-sum",
+        "node=sum",
+        "wave=s1-repair:wave:1"
+      ],
+      "read_dependencies": [],
+      "research_object_id": "t-sum",
+      "sediment_id": "t-sum:sum",
+      "source_access_manifest": null,
+      "source_carrier_refs": [
+        "c-sum"
+      ],
+      "uncertainty": [],
+      "version": "4a44dc15364204a8",
+      "write_dependencies": []
+    }
+  ]
+}

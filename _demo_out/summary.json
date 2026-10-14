@@ -1,0 +1,68 @@
+{
+  "artifacts": [
+    {
+      "runs": [
+        {
+          "activations_total": 2,
+          "ledger_head_hash": "24af634524d44a9f2823f4962033f0483ca9fa3247175731e146ebb300434ac8",
+          "outcome": "SATURATED",
+          "run_id": "s1-repair",
+          "sediment_final_versions": {
+            "t-sum:sum": "4a44dc15364204a8",
+            "t-uppercase:upper": "3733cd977ff8eb18"
+          },
+          "stop_reason": "NO_DELTA",
+          "waves_emitted": 3
+        }
+      ],
+      "scenario_id": "s1"
+    },
+    {
+      "runs": [
+        {
+          "activations_total": 2,
+          "ledger_head_hash": "9df546185db339f61471aa364cdae0067359af988c10f90752c46852e43d5cd6",
+          "outcome": "SATURATED",
+          "run_id": "s2-corpus",
+          "sediment_final_versions": {
+            "corpus-1:aggregate": "69cb32da7f691132",
+            "t-sum-corpus:sum": "39fa9ec190eee7b6"
+          },
+          "stop_reason": "NO_DELTA",
+          "waves_emitted": 3
+        }
+      ],
+      "scenario_id": "s2"
+    },
+    {
+      "runs": [
+        {
+          "activations_total": 2,
+          "ledger_head_hash": "27db3b8ef6593d7a724e648a8da6bfd95010d1a8c270caefbeab7fbff1dd8946",
+          "outcome": "SATURATED",
+          "run_id": "s3-init",
+          "sediment_final_versions": {
+            "t-sum-3:sum": "e7f6c011776e8db7",
+            "t-upper-3:upper": "3733cd977ff8eb18"
+          },
+          "stop_reason": "NO_DELTA",
+          "waves_emitted": 3
+        },
+        {
+          "activations_total": 1,
+          "ledger_head_hash": "bee5b32f99e353e16f8dc50bae7f6b0df8051b1335e1195fd276b2ace1eefabb",
+          "outcome": "SATURATED",
+          "run_id": "s3-after-delta",
+          "sediment_final_versions": {
+            "t-sum-3:sum": "e7f6c011776e8db7",
+            "t-upper-3:upper": "8edd6ed800263979"
+          },
+          "stop_reason": "NO_DELTA",
+          "waves_emitted": 2
+        }
+      ],
+      "scenario_id": "s3"
+    }
+  ],
+  "decision_right": "seshat:fabric:human-acceptance"
+}
