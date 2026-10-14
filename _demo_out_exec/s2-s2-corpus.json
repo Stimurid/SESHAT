@@ -1,0 +1,487 @@
+{
+  "ledger": {
+    "activations": [
+      {
+        "activation_id": "s2-corpus:wave:1:t-sum-corpus:sum",
+        "ended_at_tick": 1,
+        "error_code": null,
+        "error_detail": null,
+        "fired_node_ids": [
+          "sum"
+        ],
+        "invalidated_sediment_ids": [],
+        "method_body_refs": [
+          {
+            "method_body_id": "safe-fixture.sum",
+            "version": "1"
+          }
+        ],
+        "outcome": "FIRED",
+        "produced_sediment_ids": [
+          "t-sum-corpus:sum"
+        ],
+        "read_sediment_ids": [],
+        "receipts_hash": "72b702d6101fe7e111a015831e60cd6c58c7d0e1a1e8c254a4f4f0e0bb3aa151",
+        "run_id": "s2-corpus",
+        "source_carrier_ids": [
+          "c-sum"
+        ],
+        "started_at_tick": 1,
+        "stop_reason": "",
+        "thread_id": "t-sum-corpus",
+        "wave_id": "s2-corpus:wave:1",
+        "write_sediment_ids": [
+          "t-sum-corpus:sum"
+        ]
+      },
+      {
+        "activation_id": "s2-corpus:wave:2:t-corpus-1:aggregate",
+        "ended_at_tick": 2,
+        "error_code": null,
+        "error_detail": null,
+        "fired_node_ids": [
+          "aggregate"
+        ],
+        "invalidated_sediment_ids": [],
+        "method_body_refs": [
+          {
+            "method_body_id": "safe-fixture.aggregate-corpus",
+            "version": "1"
+          }
+        ],
+        "outcome": "FIRED",
+        "produced_sediment_ids": [
+          "corpus-1:aggregate"
+        ],
+        "read_sediment_ids": [],
+        "receipts_hash": "8b0327c167adac3353b3fe2c5208306adbec0bc36f28a20324d3df1083f54d90",
+        "run_id": "s2-corpus",
+        "source_carrier_ids": [],
+        "started_at_tick": 2,
+        "stop_reason": "",
+        "thread_id": "t-corpus-1",
+        "wave_id": "s2-corpus:wave:2",
+        "write_sediment_ids": [
+          "corpus-1:aggregate"
+        ]
+      }
+    ],
+    "decisions": [],
+    "events": [
+      {
+        "consumed_by_wave_id": "s2-corpus:wave:1",
+        "event_id": "s2-corpus:init",
+        "issued_at_tick": 0,
+        "kind": "QUERY",
+        "kind_enum": "QUERY",
+        "payload_hash": "01af7aff61f40cdb2bd323b317639f33d2944080a87c4171641697e36af08f2f",
+        "run_id": "s2-corpus",
+        "target_carrier_id": null,
+        "target_research_object_id": null
+      },
+      {
+        "consumed_by_wave_id": "s2-corpus:wave:2",
+        "event_id": "s2-corpus:sediment:t-sum-corpus:sum:39fa9ec190eee7b6",
+        "issued_at_tick": 2,
+        "kind": "SEDIMENT_AVAILABLE",
+        "kind_enum": "SEDIMENT_AVAILABLE",
+        "payload_hash": "b75a927dfe5c637984b36a1eec6174b7e8674e8eb950907cab0e7eb23fa516a7",
+        "run_id": "s2-corpus",
+        "target_carrier_id": null,
+        "target_research_object_id": null
+      }
+    ],
+    "head_hash": "803686b76fea3f72c58874ac1286a028141d2d93bdb298b736cb493648f8bf6d",
+    "resonances": [
+      {
+        "kind": "ANSWER",
+        "payload": {
+          "evidence": [
+            {
+              "acceptance_state": "WORKING",
+              "object_type": "safe.sum",
+              "sediment_id": "t-sum-corpus:sum",
+              "version": "39fa9ec190eee7b6"
+            },
+            {
+              "acceptance_state": "PROPOSED",
+              "object_type": "safe.corpus_aggregate",
+              "sediment_id": "corpus-1:aggregate",
+              "version": "69cb32da7f691132"
+            }
+          ],
+          "kind": "ANSWER",
+          "summary": "Run s2-corpus finished as EXHAUSTED after 2 wave(s) and 2 activation(s)."
+        },
+        "payload_hash": "0ab85c70e44e31d3f0e470fcfb388a6025370c2454a48d88926210676f0af5c6",
+        "produced_at_tick": 3,
+        "resonance_id": "s2-corpus:resonance:answer",
+        "run_id": "s2-corpus",
+        "trace_activation_ids": [
+          "s2-corpus:wave:1:t-sum-corpus:sum",
+          "s2-corpus:wave:2:t-corpus-1:aggregate"
+        ],
+        "trace_event_ids": [
+          "s2-corpus:init",
+          "s2-corpus:sediment:t-sum-corpus:sum:39fa9ec190eee7b6"
+        ],
+        "trace_sediment_ids": [
+          "t-sum-corpus:sum",
+          "corpus-1:aggregate"
+        ],
+        "trace_wave_ids": [
+          "s2-corpus:wave:1",
+          "s2-corpus:wave:2"
+        ]
+      },
+      {
+        "kind": "MAP",
+        "payload": {
+          "edges": [
+            {
+              "from": "event:s2-corpus:init",
+              "to": "t-sum-corpus"
+            },
+            {
+              "from": "event:s2-corpus:sediment:t-sum-corpus:sum:39fa9ec190eee7b6",
+              "to": "t-corpus-1"
+            }
+          ],
+          "kind": "MAP",
+          "nodes": [
+            {
+              "id": "t-sum-corpus",
+              "label": "integer sum"
+            },
+            {
+              "id": "t-corpus-1",
+              "label": "corpus aggregation (C12 / C04 reuse)"
+            }
+          ]
+        },
+        "payload_hash": "f72404196d32a271f863ff912f5da815e207e6530beaaba63200038a30653835",
+        "produced_at_tick": 3,
+        "resonance_id": "s2-corpus:resonance:map",
+        "run_id": "s2-corpus",
+        "trace_activation_ids": [
+          "s2-corpus:wave:1:t-sum-corpus:sum",
+          "s2-corpus:wave:2:t-corpus-1:aggregate"
+        ],
+        "trace_event_ids": [],
+        "trace_sediment_ids": [
+          "t-sum-corpus:sum",
+          "corpus-1:aggregate"
+        ],
+        "trace_wave_ids": []
+      },
+      {
+        "kind": "REPORT",
+        "payload": {
+          "headline": "SESHAT fabric run s2-corpus",
+          "kind": "REPORT",
+          "sections": [
+            {
+              "activations_total": 2,
+              "outcome": "EXHAUSTED",
+              "stop_reason": "BUDGET_EXHAUSTED",
+              "waves_emitted": 2
+            }
+          ]
+        },
+        "payload_hash": "b05d3c4b5d12d329c3f40e7146b5444df8ae4bcd5ff5ebd450dc0e1b869de207",
+        "produced_at_tick": 3,
+        "resonance_id": "s2-corpus:resonance:report",
+        "run_id": "s2-corpus",
+        "trace_activation_ids": [],
+        "trace_event_ids": [],
+        "trace_sediment_ids": [],
+        "trace_wave_ids": []
+      }
+    ],
+    "runs": [
+      {
+        "activations_total": 2,
+        "budget": {
+          "aporia_after_waves": 2,
+          "max_activations": 8,
+          "max_stone_events": 4,
+          "max_waves": 4
+        },
+        "decision_ids": [],
+        "ended_at_tick": 3,
+        "ledger_head_hash": "e00127696b0714d8bebc781c3af886b1b9058e7a566cab95d0cbda08385c44b4",
+        "notes": [
+          "deterministic_run"
+        ],
+        "outcome": "EXHAUSTED",
+        "resonance_ids": [],
+        "run_id": "s2-corpus",
+        "sediment_final_versions": {
+          "corpus-1:aggregate": "69cb32da7f691132",
+          "t-sum-corpus:sum": "39fa9ec190eee7b6"
+        },
+        "sediment_initial_versions": {},
+        "started_at_tick": 1,
+        "stop_reason": "BUDGET_EXHAUSTED",
+        "waves_emitted": 2
+      }
+    ],
+    "waves": [
+      {
+        "blocked_thread_ids": [],
+        "budget_used": 1,
+        "eligible_thread_ids": [
+          "t-sum-corpus"
+        ],
+        "fired_thread_ids": [
+          "t-sum-corpus"
+        ],
+        "no_delta_thread_ids": [],
+        "run_id": "s2-corpus",
+        "sediment_versions_after": {
+          "t-sum-corpus:sum": "39fa9ec190eee7b6"
+        },
+        "skipped_thread_ids": [],
+        "triggered_by": "QUERY",
+        "triggering_event_id": "s2-corpus:init",
+        "wave_id": "s2-corpus:wave:1",
+        "wave_index": 1
+      },
+      {
+        "blocked_thread_ids": [],
+        "budget_used": 1,
+        "eligible_thread_ids": [
+          "t-corpus-1"
+        ],
+        "fired_thread_ids": [
+          "t-corpus-1"
+        ],
+        "no_delta_thread_ids": [],
+        "run_id": "s2-corpus",
+        "sediment_versions_after": {
+          "corpus-1:aggregate": "69cb32da7f691132",
+          "t-sum-corpus:sum": "39fa9ec190eee7b6"
+        },
+        "skipped_thread_ids": [],
+        "triggered_by": "SEDIMENT_AVAILABLE",
+        "triggering_event_id": "s2-corpus:sediment:t-sum-corpus:sum:39fa9ec190eee7b6",
+        "wave_id": "s2-corpus:wave:2",
+        "wave_index": 2
+      }
+    ]
+  },
+  "resonances": [
+    {
+      "kind": "ANSWER",
+      "payload": {
+        "evidence": [
+          {
+            "acceptance_state": "WORKING",
+            "object_type": "safe.sum",
+            "sediment_id": "t-sum-corpus:sum",
+            "version": "39fa9ec190eee7b6"
+          },
+          {
+            "acceptance_state": "PROPOSED",
+            "object_type": "safe.corpus_aggregate",
+            "sediment_id": "corpus-1:aggregate",
+            "version": "69cb32da7f691132"
+          }
+        ],
+        "kind": "ANSWER",
+        "summary": "Run s2-corpus finished as EXHAUSTED after 2 wave(s) and 2 activation(s)."
+      },
+      "payload_hash": "0ab85c70e44e31d3f0e470fcfb388a6025370c2454a48d88926210676f0af5c6",
+      "produced_at_tick": 3,
+      "resonance_id": "s2-corpus:resonance:answer",
+      "run_id": "s2-corpus",
+      "trace_activation_ids": [
+        "s2-corpus:wave:1:t-sum-corpus:sum",
+        "s2-corpus:wave:2:t-corpus-1:aggregate"
+      ],
+      "trace_event_ids": [
+        "s2-corpus:init",
+        "s2-corpus:sediment:t-sum-corpus:sum:39fa9ec190eee7b6"
+      ],
+      "trace_sediment_ids": [
+        "t-sum-corpus:sum",
+        "corpus-1:aggregate"
+      ],
+      "trace_wave_ids": [
+        "s2-corpus:wave:1",
+        "s2-corpus:wave:2"
+      ]
+    },
+    {
+      "kind": "MAP",
+      "payload": {
+        "edges": [
+          {
+            "from": "event:s2-corpus:init",
+            "to": "t-sum-corpus"
+          },
+          {
+            "from": "event:s2-corpus:sediment:t-sum-corpus:sum:39fa9ec190eee7b6",
+            "to": "t-corpus-1"
+          }
+        ],
+        "kind": "MAP",
+        "nodes": [
+          {
+            "id": "t-sum-corpus",
+            "label": "integer sum"
+          },
+          {
+            "id": "t-corpus-1",
+            "label": "corpus aggregation (C12 / C04 reuse)"
+          }
+        ]
+      },
+      "payload_hash": "f72404196d32a271f863ff912f5da815e207e6530beaaba63200038a30653835",
+      "produced_at_tick": 3,
+      "resonance_id": "s2-corpus:resonance:map",
+      "run_id": "s2-corpus",
+      "trace_activation_ids": [
+        "s2-corpus:wave:1:t-sum-corpus:sum",
+        "s2-corpus:wave:2:t-corpus-1:aggregate"
+      ],
+      "trace_event_ids": [],
+      "trace_sediment_ids": [
+        "t-sum-corpus:sum",
+        "corpus-1:aggregate"
+      ],
+      "trace_wave_ids": []
+    },
+    {
+      "kind": "REPORT",
+      "payload": {
+        "headline": "SESHAT fabric run s2-corpus",
+        "kind": "REPORT",
+        "sections": [
+          {
+            "activations_total": 2,
+            "outcome": "EXHAUSTED",
+            "stop_reason": "BUDGET_EXHAUSTED",
+            "waves_emitted": 2
+          }
+        ]
+      },
+      "payload_hash": "b05d3c4b5d12d329c3f40e7146b5444df8ae4bcd5ff5ebd450dc0e1b869de207",
+      "produced_at_tick": 3,
+      "resonance_id": "s2-corpus:resonance:report",
+      "run_id": "s2-corpus",
+      "trace_activation_ids": [],
+      "trace_event_ids": [],
+      "trace_sediment_ids": [],
+      "trace_wave_ids": []
+    }
+  ],
+  "run": {
+    "activations_total": 2,
+    "budget": {
+      "aporia_after_waves": 2,
+      "max_activations": 8,
+      "max_stone_events": 4,
+      "max_waves": 4
+    },
+    "decision_ids": [],
+    "ended_at_tick": 3,
+    "ledger_head_hash": "e00127696b0714d8bebc781c3af886b1b9058e7a566cab95d0cbda08385c44b4",
+    "notes": [
+      "deterministic_run"
+    ],
+    "outcome": "EXHAUSTED",
+    "resonance_ids": [],
+    "run_id": "s2-corpus",
+    "sediment_final_versions": {
+      "corpus-1:aggregate": "69cb32da7f691132",
+      "t-sum-corpus:sum": "39fa9ec190eee7b6"
+    },
+    "sediment_initial_versions": {},
+    "started_at_tick": 1,
+    "stop_reason": "BUDGET_EXHAUSTED",
+    "waves_emitted": 2
+  },
+  "sediment": [
+    {
+      "acceptance_state": "WORKING",
+      "applicability": [],
+      "dependency_versions": {},
+      "epistemic_level": "E3",
+      "method_body_refs": [
+        {
+          "method_body_id": "safe-fixture.sum",
+          "version": "1"
+        }
+      ],
+      "object_type": "safe.sum",
+      "payload": {
+        "total": 60
+      },
+      "payload_hash": "cdbae967b99c79bac7e8eaed6c743d26949ca1a2989ce0b0de59984217d7ac53",
+      "produced_at_tick": 1,
+      "produced_by_stone_kind": "QUERY",
+      "produced_by_thread": "t-sum-corpus",
+      "produced_in_wave": 1,
+      "provenance": [
+        "safe-fixture.sum",
+        "thread=t-sum-corpus",
+        "thread=t-sum-corpus",
+        "node=sum",
+        "wave=s2-corpus:wave:1"
+      ],
+      "read_dependencies": [],
+      "research_object_id": "t-sum-corpus",
+      "sediment_id": "t-sum-corpus:sum",
+      "source_access_manifest": null,
+      "source_carrier_refs": [
+        "c-sum"
+      ],
+      "uncertainty": [],
+      "version": "39fa9ec190eee7b6",
+      "write_dependencies": []
+    },
+    {
+      "acceptance_state": "PROPOSED",
+      "applicability": [
+        "C12-corpus-aggregation",
+        "C04-individual-reuse"
+      ],
+      "dependency_versions": {},
+      "epistemic_level": "E3",
+      "method_body_refs": [
+        {
+          "method_body_id": "safe-fixture.aggregate-corpus",
+          "version": "1"
+        }
+      ],
+      "object_type": "safe.corpus_aggregate",
+      "payload": {
+        "count": 1,
+        "total": 60
+      },
+      "payload_hash": "c15673c9316ee9ce0fc40d04b1fb193b1ff4c6a576af53822e9ebec8c747f993",
+      "produced_at_tick": 2,
+      "produced_by_stone_kind": "SEDIMENT_AVAILABLE",
+      "produced_by_thread": "t-corpus-1",
+      "produced_in_wave": 2,
+      "provenance": [
+        "safe-fixture.aggregate-corpus",
+        "thread=t-corpus-1",
+        "thread=t-corpus-1",
+        "node=aggregate",
+        "wave=s2-corpus:wave:2"
+      ],
+      "read_dependencies": [
+        "t-sum-corpus:sum"
+      ],
+      "research_object_id": "t-corpus-1",
+      "sediment_id": "corpus-1:aggregate",
+      "source_access_manifest": null,
+      "source_carrier_refs": [],
+      "uncertainty": [],
+      "version": "69cb32da7f691132",
+      "write_dependencies": []
+    }
+  ]
+}
