@@ -1,0 +1,8 @@
+[
+  {
+    "kind": "QUERY",
+    "event_id": "demo:query",
+    "issued_at_tick": 0,
+    "payload": { "text": "hello", "values": [1, 2, 3] }
+  }
+]

@@ -10,9 +10,9 @@ claim R01–R09, protected MethodBodies, F07 donor wiring, or scientific accepta
 ## Workspace preflight
 
 - **WORKSPACE_MODE:** `WINDOWS_LOCAL` (aiye-executor worktree)
-- **WORKDIR_ABSOLUTE:** `C:\AI\llm\aiye-executor\worktrees\jx-2a5815b9519b`
+- **WORKDIR_ABSOLUTE:** `C:\AI\llm\aiye-executor\worktrees\jx-7ce2ad57d565` (see also `docs/FABRIC_WAVES_FINALFIX_RESULT.md`)
 - **ORIGIN_URL:** `https://github.com/Stimurid/SESHAT.git`
-- **CURRENT_BRANCH:** `aiye/exec-2a5815b9519b`
+- **CURRENT_BRANCH:** `aiye/exec-7ce2ad57d565`
 - **BASE_SHA (parent at session start):** `7f2aea32a968e5241ba7dba71fcb49857f125786`
 - **DIRTY_STATUS (before commit):** modified `src/`, `tests/`, `scripts/`, `pyproject.toml`, `docs/`; untracked `AIYE_EXECUTOR_TASK.md`
 
