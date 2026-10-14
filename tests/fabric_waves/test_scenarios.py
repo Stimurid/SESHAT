@@ -110,6 +110,39 @@ def test_corpus_aggregation_reuses_sum_state() -> None:
     assert "C12-corpus-aggregation" in aggregate.applicability
 
 
+def test_corpus_aggregation_succeeds_when_corpus_registered_before_sum() -> None:
+    """D2: dependency satisfaction must not depend on thread registration order."""
+
+    sum_spec, sum_law = sum_thread(carrier_id="c1", thread_id="t-sum-1")
+    corpus_spec, corpus_law = corpus_aggregate_thread(
+        corpus_id="corpus-a", thread_id="t-corpus-a"
+    )
+    specs, laws = assemble_spec_law_map([(corpus_spec, corpus_law), (sum_spec, sum_law)])
+    engine = WaveEngine(
+        thread_specs=specs,
+        propagation_laws=laws,
+        sediment=SedimentState(),
+        bodies=build_safe_fixture_registry(),
+    )
+    engine.run(
+        run_id="r-corpus-reversed",
+        budget=WaveBudget(max_waves=6, max_activations=12, max_stone_events=12),
+        initial_stone=StoneEvent(
+            event_id="r-corpus-reversed:init",
+            kind=StoneEventKind.QUERY,
+            issued_at_tick=0,
+            payload={"values": [1, 2, 3]},
+        ),
+    )
+    aggregate_records = [
+        record
+        for record in engine.sediment.all_records()
+        if record.object_type == "safe.corpus_aggregate"
+    ]
+    assert aggregate_records
+    assert aggregate_records[0].payload["total"] == 6
+
+
 # -- Scenario 3: Source revision invalidates dependent conclusions ----------
 
 

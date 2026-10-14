@@ -66,7 +66,8 @@ Produces:
 PYTHONPATH=src python -m pytest tests/fabric_waves/
 ```
 
-76 tests covering the owner-charter invariants.
+Run the full suite with ``python -m pytest tests/`` (fabric_waves tests live under
+``tests/fabric_waves/``).
 
 ## Frontier gaps (NOT_READY)
 
