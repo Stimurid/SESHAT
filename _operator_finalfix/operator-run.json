@@ -1,0 +1,305 @@
+{
+  "ledger": {
+    "activations": [
+      {
+        "activation_id": "operator-run:wave:1:t-uppercase:upper",
+        "ended_at_tick": 1,
+        "error_code": null,
+        "error_detail": null,
+        "fired_node_ids": [
+          "upper"
+        ],
+        "invalidated_sediment_ids": [],
+        "method_body_refs": [
+          {
+            "method_body_id": "safe-fixture.uppercase",
+            "version": "1"
+          }
+        ],
+        "outcome": "FIRED",
+        "produced_sediment_ids": [
+          "t-uppercase:upper"
+        ],
+        "read_sediment_ids": [],
+        "receipts_hash": "b1861de8666939eb957b7c0a501684eb23f8436347ae4241b4763f98dfe5e320",
+        "run_id": "operator-run",
+        "source_carrier_ids": [
+          "c-upper"
+        ],
+        "started_at_tick": 1,
+        "stop_reason": "",
+        "thread_id": "t-uppercase",
+        "wave_id": "operator-run:wave:1",
+        "write_sediment_ids": [
+          "t-uppercase:upper"
+        ]
+      },
+      {
+        "activation_id": "operator-run:wave:1:t-sum:sum",
+        "ended_at_tick": 2,
+        "error_code": null,
+        "error_detail": null,
+        "fired_node_ids": [
+          "sum"
+        ],
+        "invalidated_sediment_ids": [],
+        "method_body_refs": [
+          {
+            "method_body_id": "safe-fixture.sum",
+            "version": "1"
+          }
+        ],
+        "outcome": "FIRED",
+        "produced_sediment_ids": [
+          "t-sum:sum"
+        ],
+        "read_sediment_ids": [],
+        "receipts_hash": "7c73d302c6fb96ef6e2ab4ce77c22af4f3be14983c03eaebde621571eeac8b39",
+        "run_id": "operator-run",
+        "source_carrier_ids": [
+          "c-sum"
+        ],
+        "started_at_tick": 2,
+        "stop_reason": "",
+        "thread_id": "t-sum",
+        "wave_id": "operator-run:wave:1",
+        "write_sediment_ids": [
+          "t-sum:sum"
+        ]
+      }
+    ],
+    "decisions": [],
+    "events": [
+      {
+        "consumed_by_wave_id": "operator-run:wave:1",
+        "event_id": "demo:query",
+        "issued_at_tick": 0,
+        "kind": "QUERY",
+        "kind_enum": "QUERY",
+        "payload_hash": "3262a00d63d72a5d428f4c6457228f2c8a26ed74841ed6d145b5eac46930cc7d",
+        "run_id": "operator-run",
+        "target_carrier_id": null,
+        "target_research_object_id": null
+      },
+      {
+        "consumed_by_wave_id": "operator-run:wave:2",
+        "event_id": "operator-run:sediment:t-uppercase:upper:3733cd977ff8eb18",
+        "issued_at_tick": 2,
+        "kind": "SEDIMENT_AVAILABLE",
+        "kind_enum": "SEDIMENT_AVAILABLE",
+        "payload_hash": "7aae7fc507f39538b2af9abd955b6849123fe289beb1e85345591b2054cac147",
+        "run_id": "operator-run",
+        "target_carrier_id": null,
+        "target_research_object_id": null
+      },
+      {
+        "consumed_by_wave_id": "operator-run:wave:3",
+        "event_id": "operator-run:sediment:t-sum:sum:e7f6c011776e8db7",
+        "issued_at_tick": 3,
+        "kind": "SEDIMENT_AVAILABLE",
+        "kind_enum": "SEDIMENT_AVAILABLE",
+        "payload_hash": "28222ac2bba96e5f74cfe154d3c8dea98b1d85daced7479e4b55b27676fdf8c8",
+        "run_id": "operator-run",
+        "target_carrier_id": null,
+        "target_research_object_id": null
+      }
+    ],
+    "head_hash": "ccc51b88fefcdbdbab5db52405485080d4e46021491b747d7298ce6bec457d55",
+    "resonances": [],
+    "runs": [
+      {
+        "activations_total": 2,
+        "budget": {
+          "aporia_after_waves": 2,
+          "max_activations": 12,
+          "max_stone_events": 12,
+          "max_waves": 6
+        },
+        "decision_ids": [],
+        "ended_at_tick": 4,
+        "ledger_head_hash": "0c95e251ce4df983676226be9d4b90c2466a235f34002dcb7c132781499be385",
+        "notes": [
+          "deterministic_run"
+        ],
+        "outcome": "SATURATED",
+        "resonance_ids": [],
+        "run_id": "operator-run",
+        "sediment_final_versions": {
+          "t-sum:sum": "e7f6c011776e8db7",
+          "t-uppercase:upper": "3733cd977ff8eb18"
+        },
+        "sediment_initial_versions": {},
+        "started_at_tick": 1,
+        "stop_reason": "NO_DELTA",
+        "waves_emitted": 3
+      }
+    ],
+    "waves": [
+      {
+        "blocked_thread_ids": [],
+        "budget_used": 2,
+        "eligible_thread_ids": [
+          "t-uppercase",
+          "t-sum"
+        ],
+        "fired_thread_ids": [
+          "t-sum",
+          "t-uppercase"
+        ],
+        "no_delta_thread_ids": [],
+        "run_id": "operator-run",
+        "sediment_versions_after": {
+          "t-sum:sum": "e7f6c011776e8db7",
+          "t-uppercase:upper": "3733cd977ff8eb18"
+        },
+        "skipped_thread_ids": [],
+        "triggered_by": "QUERY",
+        "triggering_event_id": "demo:query",
+        "wave_id": "operator-run:wave:1",
+        "wave_index": 1
+      },
+      {
+        "blocked_thread_ids": [],
+        "budget_used": 0,
+        "eligible_thread_ids": [],
+        "fired_thread_ids": [],
+        "no_delta_thread_ids": [],
+        "run_id": "operator-run",
+        "sediment_versions_after": {
+          "t-sum:sum": "e7f6c011776e8db7",
+          "t-uppercase:upper": "3733cd977ff8eb18"
+        },
+        "skipped_thread_ids": [],
+        "triggered_by": "SEDIMENT_AVAILABLE",
+        "triggering_event_id": "operator-run:sediment:t-uppercase:upper:3733cd977ff8eb18",
+        "wave_id": "operator-run:wave:2",
+        "wave_index": 2
+      },
+      {
+        "blocked_thread_ids": [],
+        "budget_used": 0,
+        "eligible_thread_ids": [],
+        "fired_thread_ids": [],
+        "no_delta_thread_ids": [],
+        "run_id": "operator-run",
+        "sediment_versions_after": {
+          "t-sum:sum": "e7f6c011776e8db7",
+          "t-uppercase:upper": "3733cd977ff8eb18"
+        },
+        "skipped_thread_ids": [],
+        "triggered_by": "SEDIMENT_AVAILABLE",
+        "triggering_event_id": "operator-run:sediment:t-sum:sum:e7f6c011776e8db7",
+        "wave_id": "operator-run:wave:3",
+        "wave_index": 3
+      }
+    ]
+  },
+  "resonances": [],
+  "run": {
+    "activations_total": 2,
+    "budget": {
+      "aporia_after_waves": 2,
+      "max_activations": 12,
+      "max_stone_events": 12,
+      "max_waves": 6
+    },
+    "decision_ids": [],
+    "ended_at_tick": 4,
+    "ledger_head_hash": "0c95e251ce4df983676226be9d4b90c2466a235f34002dcb7c132781499be385",
+    "notes": [
+      "deterministic_run"
+    ],
+    "outcome": "SATURATED",
+    "resonance_ids": [],
+    "run_id": "operator-run",
+    "sediment_final_versions": {
+      "t-sum:sum": "e7f6c011776e8db7",
+      "t-uppercase:upper": "3733cd977ff8eb18"
+    },
+    "sediment_initial_versions": {},
+    "started_at_tick": 1,
+    "stop_reason": "NO_DELTA",
+    "waves_emitted": 3
+  },
+  "sediment": [
+    {
+      "acceptance_state": "WORKING",
+      "applicability": [],
+      "dependency_versions": {},
+      "epistemic_level": "E3",
+      "method_body_refs": [
+        {
+          "method_body_id": "safe-fixture.uppercase",
+          "version": "1"
+        }
+      ],
+      "object_type": "safe.uppercase_text",
+      "payload": {
+        "value": "HELLO"
+      },
+      "payload_hash": "e3717df2ed67ecf6a3b25d7a60f8c643cd328d3b81eeec47d23c5bc9802c7c52",
+      "produced_at_tick": 1,
+      "produced_by_stone_kind": "QUERY",
+      "produced_by_thread": "t-uppercase",
+      "produced_in_wave": 1,
+      "provenance": [
+        "safe-fixture.uppercase",
+        "thread=t-uppercase",
+        "thread=t-uppercase",
+        "node=upper",
+        "wave=operator-run:wave:1"
+      ],
+      "read_dependencies": [],
+      "research_object_id": "t-uppercase",
+      "sediment_id": "t-uppercase:upper",
+      "source_access_manifest": null,
+      "source_carrier_refs": [
+        "c-upper"
+      ],
+      "uncertainty": [],
+      "version": "3733cd977ff8eb18",
+      "write_dependencies": []
+    },
+    {
+      "acceptance_state": "WORKING",
+      "applicability": [],
+      "dependency_versions": {},
+      "epistemic_level": "E3",
+      "method_body_refs": [
+        {
+          "method_body_id": "safe-fixture.sum",
+          "version": "1"
+        }
+      ],
+      "object_type": "safe.sum",
+      "payload": {
+        "total": 6
+      },
+      "payload_hash": "5eb7b2ecd86497f33ff318d8998d1c1935b64596f62d9d8b3f7b386acf9ca225",
+      "produced_at_tick": 2,
+      "produced_by_stone_kind": "QUERY",
+      "produced_by_thread": "t-sum",
+      "produced_in_wave": 1,
+      "provenance": [
+        "safe-fixture.sum",
+        "thread=t-sum",
+        "thread=t-sum",
+        "node=sum",
+        "wave=operator-run:wave:1"
+      ],
+      "read_dependencies": [],
+      "research_object_id": "t-sum",
+      "sediment_id": "t-sum:sum",
+      "source_access_manifest": null,
+      "source_carrier_refs": [
+        "c-sum"
+      ],
+      "uncertainty": [],
+      "version": "e7f6c011776e8db7",
+      "write_dependencies": []
+    }
+  ],
+  "stone_kinds_observed": [
+    "QUERY"
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "artifacts": [
+    {
+      "runs": [
+        {
+          "activations_total": 2,
+          "ledger_head_hash": "24af634524d44a9f2823f4962033f0483ca9fa3247175731e146ebb300434ac8",
+          "outcome": "SATURATED",
+          "run_id": "s1-repair",
+          "sediment_final_versions": {
+            "t-sum:sum": "4a44dc15364204a8",
+            "t-uppercase:upper": "3733cd977ff8eb18"
+          },
+          "stop_reason": "NO_DELTA",
+          "waves_emitted": 3
+        }
+      ],
+      "scenario_id": "s1"
+    }
+  ],
+  "decision_right": "seshat:fabric:human-acceptance"
+}

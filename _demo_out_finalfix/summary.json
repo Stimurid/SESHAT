@@ -1,0 +1,68 @@
+{
+  "artifacts": [
+    {
+      "runs": [
+        {
+          "activations_total": 2,
+          "ledger_head_hash": "6084c9ef679788dc00e52b6a2ce5af121f063351c56f586ecaf94e25f064b863",
+          "outcome": "EXHAUSTED",
+          "run_id": "s1-repair",
+          "sediment_final_versions": {
+            "t-sum:sum": "4a44dc15364204a8",
+            "t-uppercase:upper": "3733cd977ff8eb18"
+          },
+          "stop_reason": "BUDGET_EXHAUSTED",
+          "waves_emitted": 2
+        }
+      ],
+      "scenario_id": "s1"
+    },
+    {
+      "runs": [
+        {
+          "activations_total": 2,
+          "ledger_head_hash": "e00127696b0714d8bebc781c3af886b1b9058e7a566cab95d0cbda08385c44b4",
+          "outcome": "EXHAUSTED",
+          "run_id": "s2-corpus",
+          "sediment_final_versions": {
+            "corpus-1:aggregate": "69cb32da7f691132",
+            "t-sum-corpus:sum": "39fa9ec190eee7b6"
+          },
+          "stop_reason": "BUDGET_EXHAUSTED",
+          "waves_emitted": 2
+        }
+      ],
+      "scenario_id": "s2"
+    },
+    {
+      "runs": [
+        {
+          "activations_total": 2,
+          "ledger_head_hash": "2fe4d2ce98001769b6b39efb2bd1caaa69840d963033eb039c41dc4724356e84",
+          "outcome": "EXHAUSTED",
+          "run_id": "s3-init",
+          "sediment_final_versions": {
+            "t-sum-3:sum": "e7f6c011776e8db7",
+            "t-upper-3:upper": "3733cd977ff8eb18"
+          },
+          "stop_reason": "BUDGET_EXHAUSTED",
+          "waves_emitted": 2
+        },
+        {
+          "activations_total": 1,
+          "ledger_head_hash": "fc85dfe958f9f1dfa2084495754faa9f1dfdabd9d30609266b116a2645f47df6",
+          "outcome": "SATURATED",
+          "run_id": "s3-after-delta",
+          "sediment_final_versions": {
+            "t-sum-3:sum": "e7f6c011776e8db7",
+            "t-upper-3:upper": "e3b0c44298fc1c14"
+          },
+          "stop_reason": "NO_DELTA",
+          "waves_emitted": 2
+        }
+      ],
+      "scenario_id": "s3"
+    }
+  ],
+  "decision_right": "seshat:fabric:human-acceptance"
+}
