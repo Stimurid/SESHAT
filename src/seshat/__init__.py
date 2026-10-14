@@ -22,6 +22,17 @@ from .contracts import (
     SourceCarrier,
     SourceContent,
 )
+from .corpus import (
+    CorpusSelectionSpec,
+    CorpusSpaceSnapshot,
+    EvidenceField,
+    ManifestPin,
+    PopulationManifest,
+    Predicate,
+    StudyRecord,
+    build_corpus_space,
+    require_current,
+)
 
 __all__ = [
     "AcceptanceState",
@@ -44,4 +55,13 @@ __all__ = [
     "SourceAddress",
     "SourceCarrier",
     "SourceContent",
+    "CorpusSelectionSpec",
+    "CorpusSpaceSnapshot",
+    "EvidenceField",
+    "ManifestPin",
+    "PopulationManifest",
+    "Predicate",
+    "StudyRecord",
+    "build_corpus_space",
+    "require_current",
 ]

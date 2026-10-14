@@ -65,3 +65,10 @@ Before production code:
 6. validate in at least two independent hosts before deprecating local plumbing.
 
 See `docs/IMPLEMENTATION_CHARTER.md`.
+
+## Corpus selections (F07 candidate)
+
+`seshat.corpus` provides versioned, metadata-only `CorpusSelectionSpec` and
+`CorpusSpaceSnapshot` contracts. Hosts must supply evidenced study/carrier
+records and a trusted entitlement authority. See
+`docs/S_P1_F07_RESULT.md` for the source-only engineering receipt and limits.
