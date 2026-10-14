@@ -24,7 +24,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from seshat.contracts import AcceptanceState, SourceAccessManifest
-from seshat.fabric_waves.contracts import MethodBodyRef, StoneEventKind
+from seshat.fabric_waves.contracts import EpistemicLevel, MethodBodyRef, StoneEventKind
 
 
 def _canonical_json(value: Any) -> str:
@@ -76,6 +76,8 @@ class SedimentRecord(BaseModel):
     produced_in_wave: int = Field(ge=1)
     produced_by_stone_kind: StoneEventKind
     source_access_manifest: SourceAccessManifest | None = None
+    epistemic_level: EpistemicLevel = EpistemicLevel.E3
+    dependency_versions: dict[str, str] = Field(default_factory=dict)
 
 
 class SedimentCollisionError(ValueError):
@@ -213,19 +215,23 @@ class SedimentState:
     def invalidate_dependents(
         self, sediment_id: str, *, reason: str
     ) -> tuple[SedimentRecord, ...]:
-        """Mark every record that depends on ``sediment_id`` as STALE.
-
-        Returns the list of newly-stale records.
-        """
+        """Transitively mark descendants that depend on ``sediment_id`` as STALE."""
 
         invalidated: list[SedimentRecord] = []
         if sediment_id not in self._store:
             return tuple(invalidated)
-        self._store[sediment_id]
-        for record in self._store.values():
-            if record.sediment_id == sediment_id:
+        frontier: list[str] = [sediment_id]
+        visited: set[str] = set()
+        while frontier:
+            current = frontier.pop(0)
+            if current in visited:
                 continue
-            if sediment_id in record.read_dependencies or sediment_id in record.write_dependencies:
+            visited.add(current)
+            for record in list(self._store.values()):
+                if record.sediment_id == current:
+                    continue
+                if current not in record.read_dependencies and current not in record.write_dependencies:
+                    continue
                 if record.acceptance_state is AcceptanceState.STALE:
                     continue
                 updated = record.model_copy(
@@ -237,6 +243,7 @@ class SedimentState:
                 )
                 self._publish(updated)
                 invalidated.append(updated)
+                frontier.append(record.sediment_id)
         return tuple(invalidated)
 
     def carriers_touched_by(self, record: SedimentRecord) -> set[str]:
@@ -271,6 +278,10 @@ class SedimentState:
             raise SedimentCollisionError(f"unknown sediment_id {sediment_id!r}")
         if record.acceptance_state is AcceptanceState.ACCEPTED:
             return record
+        if record.acceptance_state is AcceptanceState.STALE:
+            raise SedimentCollisionError(
+                f"sediment_id {sediment_id!r} is STALE; reconcile before acceptance"
+            )
         accepted = record.model_copy(
             update={
                 "acceptance_state": AcceptanceState.ACCEPTED,

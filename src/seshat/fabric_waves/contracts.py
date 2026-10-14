@@ -28,9 +28,21 @@ F07_GAP: str = "F07"
 class StoneEventKind(StrEnum):
     QUERY = "QUERY"
     SOURCE_DELTA = "SOURCE_DELTA"
+    SEDIMENT_AVAILABLE = "SEDIMENT_AVAILABLE"
+    RECONCILE_REQUEST = "RECONCILE_REQUEST"
     APORIA = "APORIA"
     HUMAN_DECISION = "HUMAN_DECISION"
     FRONTIER_RETURN = "FRONTIER_RETURN"
+
+
+class EpistemicLevel(StrEnum):
+    """Claim strength tier (E1 weakest observational → E5 accepted canon)."""
+
+    E1 = "E1"
+    E2 = "E2"
+    E3 = "E3"
+    E4 = "E4"
+    E5 = "E5"
 
 
 class FabricRunOutcome(StrEnum):
@@ -122,6 +134,7 @@ class ThreadNodeSpec(BaseModel):
     output_sediment_type: str = Field(min_length=1)
     consumes_sediment_ids: tuple[str, ...] = Field(default_factory=tuple)
     produces_sediment_id: str | None = None
+    method_body_ref: MethodBodyRef | None = None
     conditions: tuple[EdgeCondition, ...] = Field(default_factory=tuple)
     notes: str = ""
 
@@ -211,6 +224,7 @@ class PropagationLaw(BaseModel):
     )
     requires_research_object_id: str | None = None
     initial_state: tuple[str, ...] = Field(default_factory=tuple)
+    wakes_on_sediment_types: tuple[str, ...] = Field(default_factory=tuple)
 
 
 class WaveBudget(BaseModel):
@@ -359,6 +373,7 @@ __all__ = [
     "ActivationRecord",
     "DecisionRecord",
     "EdgeCondition",
+    "EpistemicLevel",
     "EventRecord",
     "FabricRunOutcome",
     "FabricStopReason",

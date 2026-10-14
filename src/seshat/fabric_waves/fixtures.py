@@ -97,6 +97,7 @@ def uppercase_thread(
         operation_id="safe.uppercase",
         output_sediment_type="safe.uppercase_text",
         produces_sediment_id=f"{thread_id}:upper",
+        method_body_ref=body,
         consumes_sediment_ids=(),
         conditions=(),
     )
@@ -139,6 +140,7 @@ def sum_thread(
         operation_id="safe.sum",
         output_sediment_type="safe.sum",
         produces_sediment_id=f"{thread_id}:sum",
+        method_body_ref=body,
         consumes_sediment_ids=(),
         conditions=(),
     )
@@ -205,8 +207,9 @@ def corpus_aggregate_thread(
     law = PropagationLaw(
         thread_id=thread_id,
         wakes_on_carrier_ids=(),
-        wakes_on_stone_kinds=(StoneEventKind.QUERY, StoneEventKind.FRONTIER_RETURN),
-        initial_state=(),  # explicit: no required starting state
+        wakes_on_stone_kinds=(StoneEventKind.SEDIMENT_AVAILABLE,),
+        wakes_on_sediment_types=("safe.sum",),
+        initial_state=(),
     )
     return spec, law
 

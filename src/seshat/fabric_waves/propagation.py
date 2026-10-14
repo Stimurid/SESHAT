@@ -133,11 +133,6 @@ def invalidate_cascade(
         if carrier_id not in record.source_carrier_refs:
             continue
         direct_targets.append(record.sediment_id)
-    for sediment_id in direct_targets:
-        sediment.invalidate_dependents(
-            sediment_id,
-            reason=f"carrier_revision:{carrier_id}",
-        )
     # Invalidate the direct carriers themselves too.
     for sediment_id in direct_targets:
         record = sediment.views["working"].get(sediment_id)
@@ -165,6 +160,12 @@ def invalidate_cascade(
         )
         sediment.deposit(updated)
         affected.append(updated)
+        affected.extend(
+            sediment.invalidate_dependents(
+                sediment_id,
+                reason=f"carrier_revision:{carrier_id}",
+            )
+        )
     return tuple(affected)
 
 

@@ -8,6 +8,7 @@ from seshat.fabric_waves.contracts import (
     ActivationOutcome,
     WaveBudget,
 )
+from seshat.fabric_waves.decision_gate import synthetic_test_attestation
 from seshat.fabric_waves.engine import WaveEngine, WaveEngineConfigurationError
 from seshat.fabric_waves.fixtures import (
     assemble_spec_law_map,
@@ -83,6 +84,7 @@ def test_engine_records_human_decision_and_promotes_to_accepted() -> None:
         for record in engine.sediment.all_records()
         if record.object_type == "safe.uppercase_text"
     )
+    attestation = synthetic_test_attestation("d1", produced.sediment_id)
     decision = engine.record_human_decision(
         run_id="r1",
         decision_id="d1",
@@ -90,6 +92,7 @@ def test_engine_records_human_decision_and_promotes_to_accepted() -> None:
         choice="ACCEPT",
         rationale="human acceptance",
         accepts=(produced.sediment_id,),
+        attestation=attestation,
     )
     assert decision.decided_by == ACCEPTANCE_DECISION_RIGHT
     promoted = engine.sediment.views["accepted"].get(produced.sediment_id)

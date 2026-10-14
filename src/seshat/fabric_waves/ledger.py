@@ -76,6 +76,8 @@ class RunLedger:
         self._decisions: list[DecisionRecord] = []
         self._resonances: list[ResonanceRecord] = []
         self._hashes: dict[str, list[str]] = {kind: [] for kind in self._KINDS}
+        self._chain_head: str = _EMPTY_HASH
+        self._append_sequence: int = 0
 
     @property
     def runs(self) -> tuple[RunRecord, ...]:
@@ -103,11 +105,13 @@ class RunLedger:
 
     @property
     def head_hash(self) -> str:
-        parts: list[str] = []
-        for kind in self._KINDS:
-            chain = self._hashes[kind]
-            parts.append(f"{kind}:{chain[-1] if chain else _EMPTY_HASH}")
-        return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+        return self._chain_head
+
+    def _link_append(self, kind: str, digest: str) -> None:
+        self._append_sequence += 1
+        material = f"{self._chain_head}|{kind}|{self._append_sequence}|{digest}"
+        self._chain_head = hashlib.sha256(material.encode("utf-8")).hexdigest()
+        self._hashes[kind].append(digest)
 
     @staticmethod
     def _check_uniqueness(kind: str, record_id: str, seen: set[str]) -> None:
@@ -120,43 +124,49 @@ class RunLedger:
     def append_run(self, record: RunRecord) -> RunRecord:
         seen = {item.run_id for item in self._runs}
         self._check_uniqueness("run", record.run_id, seen)
+        digest = _material_hash(record)
         self._runs.append(record.model_copy(deep=True))
-        self._hashes["runs"].append(_material_hash(record))
+        self._link_append("runs", digest)
         return record.model_copy(deep=True)
 
     def append_event(self, record: EventRecord) -> EventRecord:
         seen = {item.event_id for item in self._events}
         self._check_uniqueness("event", record.event_id, seen)
+        digest = _material_hash(record)
         self._events.append(record.model_copy(deep=True))
-        self._hashes["events"].append(_material_hash(record))
+        self._link_append("events", digest)
         return record.model_copy(deep=True)
 
     def append_wave(self, record: WaveRecord) -> WaveRecord:
         seen = {item.wave_id for item in self._waves}
         self._check_uniqueness("wave", record.wave_id, seen)
+        digest = _material_hash(record)
         self._waves.append(record.model_copy(deep=True))
-        self._hashes["waves"].append(_material_hash(record))
+        self._link_append("waves", digest)
         return record.model_copy(deep=True)
 
     def append_activation(self, record: ActivationRecord) -> ActivationRecord:
         seen = {item.activation_id for item in self._activations}
         self._check_uniqueness("activation", record.activation_id, seen)
+        digest = _material_hash(record)
         self._activations.append(record.model_copy(deep=True))
-        self._hashes["activations"].append(_material_hash(record))
+        self._link_append("activations", digest)
         return record.model_copy(deep=True)
 
     def append_decision(self, record: DecisionRecord) -> DecisionRecord:
         seen = {item.decision_id for item in self._decisions}
         self._check_uniqueness("decision", record.decision_id, seen)
+        digest = _material_hash(record)
         self._decisions.append(record.model_copy(deep=True))
-        self._hashes["decisions"].append(_material_hash(record))
+        self._link_append("decisions", digest)
         return record.model_copy(deep=True)
 
     def append_resonance(self, record: ResonanceRecord) -> ResonanceRecord:
         seen = {item.resonance_id for item in self._resonances}
         self._check_uniqueness("resonance", record.resonance_id, seen)
+        digest = _material_hash(record)
         self._resonances.append(record.model_copy(deep=True))
-        self._hashes["resonances"].append(_material_hash(record))
+        self._link_append("resonances", digest)
         return record.model_copy(deep=True)
 
     def activations_for_wave(self, wave_id: str) -> tuple[ActivationRecord, ...]:

@@ -25,11 +25,11 @@ from pydantic import BaseModel
 
 from seshat.contracts import AcceptanceState
 from seshat.fabric_waves.contracts import (
-    ACCEPTANCE_DECISION_RIGHT,
     F07_GAP,
     ActivationOutcome,
     ActivationRecord,
     DecisionRecord,
+    EpistemicLevel,
     FabricRunOutcome,
     FabricStopReason,
     PropagationLaw,
@@ -41,6 +41,11 @@ from seshat.fabric_waves.contracts import (
     WaveRecord,
     WorkflowThreadSpec,
 )
+from seshat.fabric_waves.decision_gate import (
+    TrustedDecisionAttestation,
+    accept_with_attestation,
+)
+from seshat.fabric_waves.errors import sanitize_provider_error, sanitize_receipt_material
 from seshat.fabric_waves.frontier import (
     LexicographicFrontierStrategy,
     select_frontier,
@@ -67,6 +72,7 @@ from seshat.fabric_waves.resonance import (
     report as compose_report,
 )
 from seshat.fabric_waves.sediment import SedimentRecord, SedimentState, payload_hash
+from seshat.fabric_waves.source_access import FabricCarrierStore
 from seshat.fabric_waves.stone import StoneDispatcher
 
 
@@ -110,6 +116,7 @@ class WaveEngine:
         ledger: RunLedger | None = None,
         dispatcher: StoneDispatcher | None = None,
         resonance_composer: ResonanceComposer | None = None,
+        carrier_store: FabricCarrierStore | None = None,
     ) -> None:
         if set(thread_specs) != set(propagation_laws):
             raise WaveEngineConfigurationError(
@@ -129,6 +136,7 @@ class WaveEngine:
         self.ledger = ledger or RunLedger()
         self.dispatcher = dispatcher or StoneDispatcher()
         self.resonance_composer = resonance_composer or ResonanceComposer()
+        self.carrier_store = carrier_store
 
     # -- helpers -------------------------------------------------------------
 
@@ -168,21 +176,23 @@ class WaveEngine:
         if any(item.run_id == run_id for item in self.ledger.runs):
             raise WaveEngineConfigurationError(f"run_id {run_id!r} already used")
         start_tick = self._tick()
-        # Initial event for traceability when none was supplied
-        if initial_stone is None:
+        if initial_stone is not None:
+            initial_event = initial_stone.model_copy(deep=True)
+            self._drop_stone(initial_event, budget=budget)
+        elif not self.dispatcher.pending:
             initial_event = StoneEvent(
                 event_id=f"{run_id}:init",
                 kind=StoneEventKind.QUERY,
                 issued_at_tick=start_tick,
                 payload={"auto": True},
             )
+            self._drop_stone(initial_event, budget=budget)
         else:
-            initial_event = initial_stone.model_copy(deep=True)
-        # Drop initial stone; engine consumes it as the first wave's trigger.
-        self.dispatcher.drop(initial_event)
+            initial_event = self.dispatcher.pending[0].model_copy(deep=True)
 
         initial_versions = self.sediment.version_map()
         activations_total = 0
+        stone_events_used = len(self.dispatcher.consumed)
         waves_emitted = 0
         decision_ids: list[str] = []
         consecutive_no_delta_waves = 0
@@ -204,6 +214,10 @@ class WaveEngine:
             if not self.dispatcher.pending:
                 stop_reason = FabricStopReason.NO_DELTA
                 outcome = FabricRunOutcome.SATURATED
+                break
+            if stone_events_used >= budget.max_stone_events:
+                stop_reason = FabricStopReason.BUDGET_EXHAUSTED
+                outcome = FabricRunOutcome.EXHAUSTED
                 break
 
             waves_emitted += 1
@@ -231,6 +245,10 @@ class WaveEngine:
             consumed_record = self.dispatcher.last_consumed()
             if consumed_record is not None:
                 self.ledger.append_event(consumed_record)
+                stone_events_used += 1
+
+            if trigger_event.kind is StoneEventKind.SOURCE_DELTA:
+                self._apply_source_delta(trigger_event)
 
             # The engine respects the budget on activations, not on waves.
             if activations_total >= budget.max_activations:
@@ -266,20 +284,19 @@ class WaveEngine:
                 carrier_id = trigger_event.target_carrier_id
                 if carrier_id is not None:
                     invalidate_cascade(carrier_id=carrier_id, sediment=self.sediment)
-                    affected = threads_woken_by_carrier_delta(
-                        carrier_id=carrier_id,
-                        thread_specs=self.thread_specs,
-                        propagation_laws=self.propagation_laws,
-                        sediment=self.sediment,
+                    affected_ids = set(
+                        threads_woken_by_carrier_delta(
+                            carrier_id=carrier_id,
+                            thread_specs=self.thread_specs,
+                            propagation_laws=self.propagation_laws,
+                            sediment=self.sediment,
+                        )
                     )
-                    allowed_ids = {item.thread_id for item in frontier}
                     frontier = tuple(
                         proposal
                         for proposal in frontier
-                        if proposal.thread_id in allowed_ids
+                        if proposal.thread_id in affected_ids
                     )
-                    if not affected:
-                        pass
 
             fired: list[str] = []
             no_delta: list[str] = []
@@ -287,14 +304,16 @@ class WaveEngine:
             blocked: list[str] = []
             wave_activations = 0
             for proposal in frontier:
-                if activations_total >= budget.max_activations:
-                    blocked.append(proposal.thread_id)
-                    continue
                 spec = self.thread_specs[proposal.thread_id]
                 if not spec.nodes:
                     skipped.append(proposal.thread_id)
                     continue
+                thread_blocked = False
                 for node in spec.nodes:
+                    if activations_total >= budget.max_activations:
+                        blocked.append(proposal.thread_id)
+                        thread_blocked = True
+                        break
                     activations_total += 1
                     wave_activations += 1
                     activation = self._invoke_node(
@@ -307,15 +326,25 @@ class WaveEngine:
                     self.ledger.append_activation(activation)
                     if activation.outcome is ActivationOutcome.FIRED:
                         fired.append(spec.thread_id)
+                        stone_events_used = self._enqueue_causal_events(
+                            run_id=run_id,
+                            wave_id=wave_record_id,
+                            activation=activation,
+                            budget=budget,
+                            stone_events_used=stone_events_used,
+                        )
                     elif activation.outcome is ActivationOutcome.SATURATED_NO_DELTA:
                         no_delta.append(spec.thread_id)
                     elif activation.outcome in (
                         ActivationOutcome.BLOCKED_SOURCE,
                         ActivationOutcome.BLOCKED_PROVIDER,
                     ):
-                        blocked.append(spec.thread_id)
+                        blocked.append(proposal.thread_id)
+                        thread_blocked = True
                     else:
                         skipped.append(spec.thread_id)
+                if thread_blocked:
+                    continue
 
             wave = wave.model_copy(
                 update={
@@ -394,6 +423,107 @@ class WaveEngine:
 
         return run_record
 
+    def _drop_stone(self, event: StoneEvent, *, budget: WaveBudget) -> None:
+        if len(self.dispatcher.consumed) + len(self.dispatcher.pending) >= budget.max_stone_events:
+            raise WaveEngineConfigurationError("max_stone_events budget exhausted before run")
+        self.dispatcher.drop(event)
+
+    def _apply_source_delta(self, event: StoneEvent) -> None:
+        carrier_id = event.target_carrier_id
+        if carrier_id is None or self.carrier_store is None:
+            return
+        payload = event.payload
+        new_version = str(payload.get("new_version", payload.get("new", "v2")))
+        new_text = str(payload.get("text", payload.get("new_text", "")))
+        self.carrier_store.apply_delta(
+            carrier_id,
+            new_version=new_version,
+            new_text=new_text,
+        )
+
+    def _enqueue_causal_events(
+        self,
+        *,
+        run_id: str,
+        wave_id: str,
+        activation: ActivationRecord,
+        budget: WaveBudget,
+        stone_events_used: int,
+    ) -> int:
+        tick = self._tick()
+        for sediment_id in activation.produced_sediment_ids:
+            record = self.sediment.views["working"].get(sediment_id)
+            if record is None:
+                record = self.sediment.views["candidate"].get(sediment_id)
+            if record is None:
+                continue
+            if stone_events_used >= budget.max_stone_events:
+                return stone_events_used
+            event = StoneEvent(
+                event_id=f"{run_id}:sediment:{sediment_id}:{record.version}",
+                kind=StoneEventKind.SEDIMENT_AVAILABLE,
+                issued_at_tick=tick,
+                payload={
+                    "sediment_id": sediment_id,
+                    "object_type": record.object_type,
+                    "version": record.version,
+                },
+            )
+            self.dispatcher.drop(event)
+            stone_events_used += 1
+            if record.object_type == "safe.repair_signal":
+                target = record.payload.get("target_thread_id")
+                if target and stone_events_used < budget.max_stone_events:
+                    repair = StoneEvent(
+                        event_id=f"{run_id}:repair:{sediment_id}",
+                        kind=StoneEventKind.RECONCILE_REQUEST,
+                        issued_at_tick=tick,
+                        target_thread_id=str(target),
+                        payload={"subject_sediment_id": sediment_id},
+                    )
+                    self.dispatcher.drop(repair)
+                    stone_events_used += 1
+        return stone_events_used
+
+    def _resolve_body_ref(
+        self, spec: WorkflowThreadSpec, node: ThreadNodeSpec
+    ) -> Any:
+        if node.method_body_ref is not None and self.bodies.has(node.method_body_ref):
+            return node.method_body_ref
+        for ref in spec.method_body_refs:
+            if ref.method_body_id.endswith(node.operation_id.split(".")[-1]) and self.bodies.has(ref):
+                return ref
+        return next(
+            (candidate for candidate in spec.method_body_refs if self.bodies.has(candidate)),
+            None,
+        )
+
+    def _validate_and_deposit(
+        self,
+        *,
+        node: ThreadNodeSpec,
+        record: SedimentRecord,
+        consumed_ids: tuple[str, ...],
+    ) -> SedimentRecord:
+        if record.object_type != node.output_sediment_type:
+            raise MethodBodyViolation(
+                f"object_type {record.object_type!r} != declared {node.output_sediment_type!r}"
+            )
+        if node.produces_sediment_id is not None and record.sediment_id != node.produces_sediment_id:
+            record = record.model_copy(update={"sediment_id": node.produces_sediment_id}, deep=True)
+        dep_versions = {
+            sid: self.sediment.version_map().get(sid, "")
+            for sid in consumed_ids
+            if sid in self.sediment.version_map()
+        }
+        if record.epistemic_level is EpistemicLevel.E1 and not record.source_carrier_refs:
+            record = record.model_copy(update={"epistemic_level": EpistemicLevel.E2}, deep=True)
+        record = record.model_copy(
+            update={"dependency_versions": dep_versions},
+            deep=True,
+        )
+        return record
+
     # -- per-node invocation -------------------------------------------------
 
     def _invoke_node(
@@ -405,11 +535,7 @@ class WaveEngine:
         node: ThreadNodeSpec,
         stone: StoneEvent,
     ) -> ActivationRecord:
-        # Resolve the first registered method-body ref for the thread
-        resolved_ref = next(
-            (candidate for candidate in spec.method_body_refs if self.bodies.has(candidate)),
-            None,
-        )
+        resolved_ref = self._resolve_body_ref(spec, node)
         if resolved_ref is None:
             return ActivationRecord(
                 activation_id=f"{wave_id}:{spec.thread_id}:{node.node_id}:bad",
@@ -437,14 +563,51 @@ class WaveEngine:
             # which sediments to consume; the engine hands over all working
             # records.  Bodies must filter by object_type themselves.
             candidate_sediments.extend(self.sediment.views["working"].values())
+        carriers = self._carriers_for_thread(spec, stone)
+        try:
+            if self.carrier_store is not None and carriers:
+                source_payload, manifest = self.carrier_store.resolve_payload(
+                    policy=spec.raw_access_policy,
+                    carrier_ids=carriers,
+                    stone_payload=stone.payload,
+                    operation_id=node.operation_id,
+                )
+            elif spec.raw_access_policy.value == "NEVER":
+                source_payload = {"text": "", "values": list(stone.payload.get("values", ()))}
+                manifest = None
+            else:
+                source_payload = {
+                    "text": stone.payload.get("text", ""),
+                    "values": list(stone.payload.get("values", ())),
+                }
+                manifest = None
+        except Exception as exc:  # noqa: BLE001
+            code, detail = sanitize_provider_error(
+                code="SOURCE_ACCESS_DENIED",
+                internal_message=str(exc),
+                activation_id=f"{wave_id}:{spec.thread_id}:{node.node_id}",
+            )
+            return ActivationRecord(
+                activation_id=f"{wave_id}:{spec.thread_id}:{node.node_id}:src",
+                run_id=run_id,
+                wave_id=wave_id,
+                thread_id=spec.thread_id,
+                started_at_tick=self._tick(),
+                ended_at_tick=self._tick(),
+                outcome=ActivationOutcome.BLOCKED_SOURCE,
+                stop_reason=FabricStopReason.SOURCE_DENIED.value,
+                receipts_hash=_material_hash({"code": code}),
+                error_code=code,
+                error_detail=detail,
+            )
         carried_payload = {
             "stone_payload": dict(stone.payload),
-            "research_object_id": stone.target_research_object_id
-            or spec.thread_id,
-            "carriers": self._carriers_for_thread(spec, stone),
-            "text": stone.payload.get("text", ""),
-            "values": stone.payload.get("values", []),
+            "research_object_id": stone.target_research_object_id or spec.thread_id,
+            "carriers": carriers,
+            "text": source_payload.get("text", ""),
+            "values": source_payload.get("values", []),
             "candidate_sediments": candidate_sediments,
+            "source_access_manifest": manifest,
         }
         invocation = BodyInvocation(
             thread_id=spec.thread_id,
@@ -459,6 +622,11 @@ class WaveEngine:
         try:
             result = body(invocation)
         except MethodBodyViolation as exc:
+            code, detail = sanitize_provider_error(
+                code="BODY_VIOLATION",
+                internal_message=str(exc),
+                activation_id=f"{wave_id}:{spec.thread_id}:{node.node_id}",
+            )
             return ActivationRecord(
                 activation_id=f"{wave_id}:{spec.thread_id}:{node.node_id}:err",
                 run_id=run_id,
@@ -468,12 +636,19 @@ class WaveEngine:
                 ended_at_tick=invocation.tick,
                 outcome=ActivationOutcome.ERROR,
                 stop_reason=FabricStopReason.PROVIDER_ERROR.value,
-                receipts_hash=_material_hash({"error": str(exc)}),
+                receipts_hash=_material_hash(
+                    sanitize_receipt_material({"error": str(exc)})
+                ),
                 method_body_refs=(resolved_ref,),
-                error_code="BODY_VIOLATION",
-                error_detail=str(exc),
+                error_code=code,
+                error_detail=detail,
             )
         except Exception as exc:  # noqa: BLE001 - bodies may raise on bad input
+            code, detail = sanitize_provider_error(
+                code="BODY_EXCEPTION",
+                internal_message=f"{type(exc).__name__}: {exc}",
+                activation_id=f"{wave_id}:{spec.thread_id}:{node.node_id}",
+            )
             return ActivationRecord(
                 activation_id=f"{wave_id}:{spec.thread_id}:{node.node_id}:exc",
                 run_id=run_id,
@@ -483,10 +658,12 @@ class WaveEngine:
                 ended_at_tick=invocation.tick,
                 outcome=ActivationOutcome.ERROR,
                 stop_reason=FabricStopReason.PROVIDER_ERROR.value,
-                receipts_hash=_material_hash({"error": str(exc)}),
+                receipts_hash=_material_hash(
+                    sanitize_receipt_material({"error": f"{type(exc).__name__}: {exc}"})
+                ),
                 method_body_refs=(resolved_ref,),
-                error_code="BODY_EXCEPTION",
-                error_detail=f"{type(exc).__name__}: {exc}",
+                error_code=code,
+                error_detail=detail,
             )
 
         if result.aporia is not None:
@@ -536,14 +713,42 @@ class WaveEngine:
                 raise MethodBodyViolation(
                     "body returned a sediment with empty payload_hash"
                 )
-            produced_sediment = record.model_copy(
+            try:
+                produced_sediment = self._validate_and_deposit(
+                    node=node,
+                    record=record,
+                    consumed_ids=consumed_ids,
+                )
+            except MethodBodyViolation as exc:
+                code, detail = sanitize_provider_error(
+                    code="SEDIMENT_CONTRACT_VIOLATION",
+                    internal_message=str(exc),
+                    activation_id=f"{wave_id}:{spec.thread_id}:{node.node_id}",
+                )
+                return ActivationRecord(
+                    activation_id=f"{wave_id}:{spec.thread_id}:{node.node_id}:contract",
+                    run_id=run_id,
+                    wave_id=wave_id,
+                    thread_id=spec.thread_id,
+                    started_at_tick=invocation.tick,
+                    ended_at_tick=invocation.tick,
+                    outcome=ActivationOutcome.ERROR,
+                    stop_reason=FabricStopReason.PROVIDER_ERROR.value,
+                    receipts_hash=_material_hash({"code": code}),
+                    error_code=code,
+                    error_detail=detail,
+                )
+            manifest = carried_payload.get("source_access_manifest")
+            produced_sediment = produced_sediment.model_copy(
                 update={
-                    "read_dependencies": record.read_dependencies + consumed_ids,
+                    "read_dependencies": produced_sediment.read_dependencies + consumed_ids,
                     "produced_by_thread": spec.thread_id,
                     "produced_at_tick": invocation.tick,
                     "produced_in_wave": invocation.wave_index,
                     "produced_by_stone_kind": stone.kind,
-                    "provenance": record.provenance + (
+                    "source_access_manifest": manifest,
+                    "provenance": produced_sediment.provenance
+                    + (
                         f"thread={spec.thread_id}",
                         f"node={node.node_id}",
                         f"wave={wave_id}",
@@ -639,7 +844,12 @@ class WaveEngine:
         accepts: Iterable[str] = (),
         rejects: Iterable[str] = (),
         tick: int | None = None,
+        attestation: TrustedDecisionAttestation | None = None,
     ) -> DecisionRecord:
+        if attestation is None:
+            raise WaveEngineConfigurationError(
+                "human acceptance requires a TrustedDecisionAttestation"
+            )
         if decision_id in {item.decision_id for item in self.ledger.decisions}:
             raise WaveEngineConfigurationError(
                 f"decision_id {decision_id!r} already used"
@@ -649,7 +859,7 @@ class WaveEngine:
             decision_id=decision_id,
             run_id=run_id,
             decided_at_tick=when,
-            decided_by=ACCEPTANCE_DECISION_RIGHT,
+            decided_by=attestation.decided_by,
             subject_sediment_id=subject_sediment_id,
             choice=choice,
             rationale=rationale,
@@ -657,10 +867,11 @@ class WaveEngine:
             rejects_sediment_ids=tuple(rejects),
         )
         self.ledger.append_decision(record)
-        for sid in record.accepts_sediment_ids:
-            self.sediment.accept(
-                sid, decision_id=decision_id, decided_at_tick=when
-            )
+        accept_with_attestation(
+            self.sediment,
+            attestation,
+            decided_at_tick=when,
+        )
         return record.model_copy(deep=True)
 
     # -- auto resonance for the demo CLI -------------------------------------
@@ -685,6 +896,7 @@ class WaveEngine:
             waves=waves,
         )
         self.resonance_composer.add(answer_record)
+        self.ledger.append_resonance(answer_record)
 
         nodes = [
             {"id": spec.thread_id, "label": spec.name}
@@ -694,33 +906,33 @@ class WaveEngine:
         for wave in waves:
             for thread_id in wave.fired_thread_ids:
                 edges.append({"from": f"event:{wave.triggering_event_id}", "to": thread_id})
-        self.resonance_composer.add(
-            map_view(
-                run_id=run_id,
-                resonance_id=f"{run_id}:resonance:map",
-                tick=run_record.ended_at_tick,
-                nodes=nodes,
-                edges=edges,
-                activations=activations,
-                sediments=sediments,
-            )
+        map_record = map_view(
+            run_id=run_id,
+            resonance_id=f"{run_id}:resonance:map",
+            tick=run_record.ended_at_tick,
+            nodes=nodes,
+            edges=edges,
+            activations=activations,
+            sediments=sediments,
         )
-        self.resonance_composer.add(
-            compose_report(
-                run_id=run_id,
-                resonance_id=f"{run_id}:resonance:report",
-                tick=run_record.ended_at_tick,
-                headline=f"SESHAT fabric run {run_id}",
-                sections=[
-                    {
-                        "outcome": run_record.outcome.value,
-                        "stop_reason": run_record.stop_reason.value,
-                        "waves_emitted": run_record.waves_emitted,
-                        "activations_total": run_record.activations_total,
-                    }
-                ],
-            )
+        self.resonance_composer.add(map_record)
+        self.ledger.append_resonance(map_record)
+        report_record = compose_report(
+            run_id=run_id,
+            resonance_id=f"{run_id}:resonance:report",
+            tick=run_record.ended_at_tick,
+            headline=f"SESHAT fabric run {run_id}",
+            sections=[
+                {
+                    "outcome": run_record.outcome.value,
+                    "stop_reason": run_record.stop_reason.value,
+                    "waves_emitted": run_record.waves_emitted,
+                    "activations_total": run_record.activations_total,
+                }
+            ],
         )
+        self.resonance_composer.add(report_record)
+        self.ledger.append_resonance(report_record)
 
 
 __all__ = [

@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
-seshat-fabric-demo = "scripts.fabric_waves_demo:main"
+seshat-fabric-demo = "seshat.fabric_waves.demo:main"
 
 [project.optional-dependencies]
 dev = [

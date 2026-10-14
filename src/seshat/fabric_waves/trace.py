@@ -126,7 +126,12 @@ def render_html(
         "<th>no_delta</th><th>skipped</th><th>blocked</th><th>budget</th></tr></thead>"
     )
     parts.append("<tbody>")
-    for wave in ledger.waves:
+    run_id = run_record.run_id
+    waves = tuple(wave for wave in ledger.waves if wave.run_id == run_id)
+    activations = tuple(
+        act for act in ledger.activations if act.run_id == run_id
+    )
+    for wave in waves:
         color = _color_for_stone_kind(wave.triggered_by)
         parts.append(
             "<tr>"
@@ -150,7 +155,7 @@ def render_html(
         "<thead><tr><th>activation</th><th>thread</th><th>outcome</th><th>produced</th><th>invalidated</th><th>read</th></tr></thead>"
     )
     parts.append("<tbody>")
-    for act in ledger.activations:
+    for act in activations:
         color = _color_for_outcome(act.outcome)
         parts.append(
             "<tr>"
@@ -200,7 +205,8 @@ def render_svg(
 ) -> str:
     """Render the wave timeline as inline SVG."""
 
-    waves = ledger.waves
+    run_id = run_record.run_id
+    waves = tuple(wave for wave in ledger.waves if wave.run_id == run_id)
     if not waves:
         return "<svg width=\"600\" height=\"80\"><text x=\"20\" y=\"40\">no waves emitted</text></svg>"
 

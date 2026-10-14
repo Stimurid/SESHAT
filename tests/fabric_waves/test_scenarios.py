@@ -53,7 +53,7 @@ def test_single_study_object_method_mutual_repair() -> None:
     )
     engine.run(
         run_id="r-repair",
-        budget=WaveBudget(max_waves=4, max_activations=8, max_stone_events=4),
+        budget=WaveBudget(max_waves=6, max_activations=12, max_stone_events=12),
         initial_stone=StoneEvent(
             event_id="r-repair:init",
             kind=StoneEventKind.QUERY,
@@ -92,7 +92,7 @@ def test_corpus_aggregation_reuses_sum_state() -> None:
     )
     engine.run(
         run_id="r-corpus",
-        budget=WaveBudget(max_waves=4, max_activations=8, max_stone_events=4),
+        budget=WaveBudget(max_waves=6, max_activations=12, max_stone_events=12),
         initial_stone=StoneEvent(
             event_id="r-corpus:init",
             kind=StoneEventKind.QUERY,
@@ -151,7 +151,7 @@ def test_source_revision_selectively_wakes_only_dependent_thread() -> None:
     )
     engine.run(
         run_id="r1-delta",
-        budget=WaveBudget(max_waves=4, max_activations=8, max_stone_events=4),
+        budget=WaveBudget(max_waves=6, max_activations=12, max_stone_events=12),
         auto_answer=False,
     )
     # The thread reading c-upper must have been eligible (and likely fired),
@@ -166,12 +166,15 @@ def test_source_revision_selectively_wakes_only_dependent_thread() -> None:
     # No delta should reach t-sum because it depends on c-other
     assert "t-sum" not in last_delta_wave.eligible_thread_ids
     # Sediment for t-upper must be STALE because its carrier was revised
-    upper_states = [
-        record.acceptance_state
+    upper_id = next(
+        record.sediment_id
         for record in engine.sediment.all_records()
         if record.object_type == "safe.uppercase_text"
+    )
+    history_states = [
+        record.acceptance_state for record in engine.sediment.history(upper_id)
     ]
-    assert AcceptanceState.STALE in upper_states
+    assert AcceptanceState.STALE in history_states
 
 
 # -- Scenario 4: Acceptance is human authority, never self-certified -------

@@ -66,7 +66,21 @@ def _thread_satisfies_conditions(
             return False
         if (
             event.target_carrier_id is not None
+            and law.wakes_on_carrier_ids
             and event.target_carrier_id not in law.wakes_on_carrier_ids
+        ):
+            return False
+        if event.kind is StoneEventKind.SEDIMENT_AVAILABLE:
+            sediment_id = event.payload.get("sediment_id")
+            object_type = event.payload.get("object_type")
+            if law.wakes_on_sediment_types and object_type not in law.wakes_on_sediment_types:
+                return False
+            if law.initial_state and sediment_id not in law.initial_state:
+                return False
+        if (
+            event.kind is StoneEventKind.RECONCILE_REQUEST
+            and event.target_thread_id is not None
+            and event.target_thread_id != spec.thread_id
         ):
             return False
 
@@ -228,6 +242,8 @@ def carriers_in_read_set(
 WAKEABLE_STONE_KINDS: tuple[StoneEventKind, ...] = (
     StoneEventKind.QUERY,
     StoneEventKind.SOURCE_DELTA,
+    StoneEventKind.SEDIMENT_AVAILABLE,
+    StoneEventKind.RECONCILE_REQUEST,
     StoneEventKind.APORIA,
     StoneEventKind.HUMAN_DECISION,
     StoneEventKind.FRONTIER_RETURN,
