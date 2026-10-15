@@ -69,6 +69,11 @@ See `docs/IMPLEMENTATION_CHARTER.md`.
 ## Corpus selections (F07 candidate)
 
 `seshat.corpus` provides versioned, metadata-only `CorpusSelectionSpec` and
-`CorpusSpaceSnapshot` contracts. Hosts must supply evidenced study/carrier
-records and a trusted entitlement authority. See
+`CorpusSpaceSnapshot` contracts (F07-2). Results are always PROVISIONAL,
+PENDING_HOST_ATTESTATION and UNVERIFIED_CURRENTNESS. Caller-supplied readers
+cannot establish evidence trust; authoritative cache reuse is disabled.
+Hosts must bind access policy outside their request boundary and rebuild
+provisional views explicitly. The private v4 evaluation contract compares
+actual selector sets to owner oracles in a separately authorized isolated runner;
+no real v4 run has been performed here. See
 `docs/S_P1_F07_RESULT.md` for the source-only engineering receipt and limits.

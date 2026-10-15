@@ -1,72 +1,227 @@
-# S-P1-F07 — P1 source repair receipt (2026-10-15)
+# F07 P1 confidentiality and evidence-trust repair — 2026-10-15
 
-## Repair boundary and execution truth
+Status: SOURCE_UNREVIEWED; TESTED=NO; REAL_V4_RUN=BLOCKED;
+HOST_ATTESTATION=BLOCKED; AUTHORITATIVE_CURRENTNESS=BLOCKED;
+SCIENCE_ACCEPTANCE=NO; RELEASE=NO. This replaces the prior receipt's incorrect
+claim that a caller-supplied coherent reader can establish EVIDENCE_VERIFIED.
+The previous receipt remains in Git history at the base below.
 
-This repair is authored against `022140bee725aec0e2987440ebfb7b382e36d655`
-on the delegated worktree. `SOURCE_UNREVIEWED`, `TESTED_NO`,
-`SCIENCE_ACCEPTANCE_NO`, `REAL_V4_CHECK=BLOCKED_SOURCE_ACCESS`. No project
-Python, pytest, Ruff, PDF, private v4 row, production runtime, PR or release was
-run or read on credentialed AORUS. The previous v4 aggregate test is SYNTHETIC.
-Issue #56, its latest comments, and the v0.12 owner document were read through
-connected read-only tools. The latest issue comment records the original F07
-author/reviewer chain, not an approval of this repair or a release gate.
+## Workspace and evidence
 
-## Scope and pins
+- WORKSPACE_MODE=HUB_ISOLATED_WORKTREE
+- WORKDIR_ABSOLUTE=C:\AI\llm\aiye-executor\worktrees\jx-68147a3c6447
+- ORIGIN_URL=https://github.com/Stimurid/SESHAT.git
+- CURRENT_BRANCH=aiye/exec-68147a3c6447
+- BASE_SHA=HEAD_SHA=d0b6e9585c3f0fa6a3afb87473452da3225dd90a
+- BASE_TREE=e293c0826c8819865de7851858b869d4ed368691
+- DIRTY_STATUS at entry=clean; final changes are working-tree files for Hub snapshot.
+- CURRENT_TASK=[#56](https://github.com/Stimurid/SESHAT/issues/56), delegated F07 P1 architecture repair.
+- CURRENT_PR=NONE; NEXT_GATE=Hub exact SHA/TREE, independent source review and isolated CI.
+- BLOCKERS=authenticated host source/epoch integration absent; private real oracle artifact and source files absent; no local execution authorization.
 
-- Base: `Stimurid/SESHAT` `origin/main@2ec1209dd2bb9c5a81e12e70725cad02de3087b1`.
-- Task: [#56](https://github.com/Stimurid/SESHAT/issues/56); coordination: [#6](https://github.com/Stimurid/SESHAT/issues/6).
-- Owner source: [authorabstract machine v0.12](https://docs.google.com/document/d/1ECGHtbYj1Az5WqNbMttX78RMxTq43iS5ZAGA3MSww4k/edit), read-only. Its four source regimes distinguish one work, a local corpus, additional internal data, and an external corpus. F07 only supplies pinned corpus metadata selections; it does not infer scientific meaning.
-- Changed paths: `src/seshat/corpus.py`, `src/seshat/corpus_adapters.py`, `src/seshat/__init__.py`, `tests/test_corpus_selection.py`, this receipt, and `README.md`.
+The explicit job passport authorizes this assigned worktree instead of writing
+C:\projects\seshat. The latter's root and canonical origin were verified read-only.
+Canonical main, RUG/fabric_waves, services and protected MethodBodies were not edited.
+No Git metadata mutation was attempted. Hub owns the later source snapshot;
+there is no new commit/test/CI/PR evidence from this worker.
 
-## API and semantics
+Read source: complete corpus.py, corpus_adapters.py, test_corpus_selection.py,
+prior F07 receipt, project AGENTS/Charter/Plan/Coordination, machine AGENTS and
+portable routing instructions; reviewer jx-ba8641d90e51 stdout and diagnostic log.
+Reviewer stdout explicitly FAILs the base for self-certification, hidden-only
+pin/version leakage and loss of private rights currentness. Some diagnostic-log
+outputs were truncated by the tool; no claim of complete untruncated log review.
+The routing Python/Proteus commands could not run: the documented Python314
+executable is unavailable in this sandbox. No actor or live mount was inferred.
 
-`CorpusSelectionSpec` pins a stable selector ID/version, source manifest ID/version/SHA-256, caller/view and `F07-1` semantics. Its `Predicate` is a closed typed DSL: exact study IDs, inclusive integer ranges on an explicitly named field, exact field values, AND, OR. `canonical_json` sorts set-like IDs/values and commutative children before hashing. No predicate text is evaluated as code. Source roles, specialty, year kinds, lab and supervisor are field names declared by an adapter and backed by `EvidenceField.evidence_ref`; missing values remain unknown. An undeclared field is not evaluable. Source roles are evidenced separately per carrier. The core has no medical or Sechenovka-specific branch.
+Read current issue #56 and #6 plus latest comments through connected GitHub:
+[#56 return](https://github.com/Stimurid/SESHAT/issues/56#issuecomment-6191534466),
+[#6 return](https://github.com/Stimurid/SESHAT/issues/6#issuecomment-6191538368).
+The initial web fetch failed and gh is unavailable; the connector succeeded.
+Read owner [v0.12](https://docs.google.com/document/d/1ECGHtbYj1Az5WqNbMttX78RMxTq43iS5ZAGA3MSww4k/edit)
+and the [real oracle return](https://docs.google.com/document/d/16MupFPKofY9MNxjdNtWqzzm0N8XuQ9TR5ixmx1O0ToM/edit)
+(modified 2026-10-15T12:02:45.005Z). The lead-sync mirror is older
+(2026-10-14T22:30:12.963Z); current assignment and latest issue return govern this repair.
+No external write or Drive synchronization was performed.
 
-`build_corpus_space` asks the trusted host `EntitlementAuthority` for study and carrier visibility, count rights, and a keyed selector seal. For a view without denied-count rights it emits neither denied counts nor a hidden-presence flag. The public seal and digests omit the full-population content SHA and global rights revision: hidden-only mutations do not alter the public receipt. Conflicting *visible* duplicates fail; conflicting denied duplicates are ignored. A visible study with a denied carrier is suppressed as a whole. The public receipt still includes exact sorted visible members and visible denominators. The host must keep the selection specification and callback failures in a rights-controlled scope, not a public log.
+Intake disposition: reviewer P1s and real oracle return = VERIFY_WITH_TEST on
+#56; donor imports and RUG/Witness findings = NOT_APPLICABLE to this bounded
+change; scientific methods/QA acceptance = BLOCKED_ON_SEMANTIC_DECISION, never
+inferred from metadata. No donor code or method body was imported.
 
-The default remains `METADATA_ONLY` and `PIN_ASSERTED_NOT_VERIFIED`. `EVIDENCE_VERIFIED` is available only with `require_verified=True` and an injected, host-owned `TrustedManifestAuthority`. The host reader first returns its independently predeclared `current_pin(manifest_id)`, then its authoritative manifest and canonical records. F07 verifies a domain-separated SHA-256 over the complete population, including field values, evidence references, carrier versions and SHA pins. Caller-supplied records and declared fields are ignored in this mode. A self-consistent forged request pin fails against `current_pin`. The host integration must protect this callback from caller substitution and must independently establish issuer rights, primary-source provenance, and file provenance; a Python protocol or SHA alone is not authentication. Neither mode claims readable source bytes, `FULL_REQUIRED`, runtime ingestion, accepted identity or scientific validity. `require_current` rebuilds the view and rejects visible drift. Hidden-only content drift is intentionally invisible to a no-count view; a new public manifest version or changed visible pin invalidates it.
+## Two planes and deliberate trust fallback
 
-## Private v4 metadata runner contract
+The public function is a library projection over supplied metadata and policy.
+It is NOT an authenticated server. Neither a Python protocol, a private
+attribute, a constructor, a field reference nor a SHA proves source authority.
+A service exposing private data must own its policy and source access outside
+the request boundary; allowing remote users to replace `authority` is unsafe.
 
-An owner-authorized runner **outside the public repository**, in an isolated
-environment, obtains SECH_MASTER_v4.json, SECH_INTAKE_v4.jsonl and SECH_QA_v4.json
-through its own private rights. It validates the source file SHA-256 against an
-independently approved pin and supplies per-row SHA-256 keyed by SHA-256 of
-study ID to `load_private_v4_metadata_fixture`. This adapter reads only intake
-JSONL metadata and never opens original PDFs or carrier URLs. Its records stay
-inside the rights-controlled runtime. The runner must bind them to the master
-manifest and QA records through its host-owned `TrustedManifestAuthority`,
-check 186/280/94 aggregate expectations only as diagnostics, and reject any
-unapproved row or manifest change. It must call F07 using the view's actual
-entitlements and export only that view's serialized receipt. No raw row, ID,
-path, PDF URL, callback exception or private provenance is a public CI artifact.
-The four pending first-page identity cases block identity certification;
-metadata-only year selection may proceed where independently pinned. If those
-private files are unavailable, report `REAL_V4_CHECK=BLOCKED_SOURCE_ACCESS`.
+There is no evidenced independent host verifier in this checkout. The repair
+therefore takes task P1-1 option (b): every selector result is METADATA_ONLY,
+PROVISIONAL, PENDING_HOST_ATTESTATION and UNVERIFIED_CURRENTNESS. Carrier pins
+remain PIN_ASSERTED_NOT_VERIFIED. EVIDENCE_VERIFIED and the verified carrier
+state are removed from the result schema and all construction paths. Legacy
+`trusted_manifest` and `require_verified` arguments are inert for migration:
+no reader method is called, even for an honest coherent source. Callers MUST
+inspect evidence_state; passing require_verified=True does not satisfy it.
+There is no substitute error about a supposedly nonexistent hash.
 
-Public CI should check out the exact Hub snapshot tree in an ephemeral runner
-with no secrets or private fixtures, then run `pytest -q tests/test_corpus_selection.py`
-and `git diff --check`. Synthetic tests may establish code behavior only. An
-independent source reviewer must inspect the exact tree, with special attention
-to callback ownership, cross-row visibility consistency, and no-count receipt
-noninterference. The human owner retains semantic and publication acceptance.
+The private plane retains the full request manifest pin, canonical request
+and content checksum helpers for host-controlled diagnostics. Those data must
+not be exported as a public receipt or used as a public cache key. The core
+makes no authenticity/currentness claim for those assertions.
 
-`evidenced_study` is a second-host neutral adapter. `sechenovka_v4_metadata_row` maps only an **already authorized** runtime row's intake `year`, optional nonempty `specialty_raw`, and abstract/dissertation identity pins. It does not fetch Drive data or infer lab/supervisor/school from `source_performed`, defense council, title or affiliation. The adapter's output contains private identifiers at runtime; hosts must not serialize it into public logs. This repository contains no private row IDs or PDF URLs.
+## Public noninterference contract (F07-2)
 
-The host must verify that field provenance and study/carrier pins belong to the pinned manifest before passing records to F07. `evidence_ref` is an address, not a self-authenticating proof. The host also owns the monotonic authorization revision: a policy change must advance it even when currently visible membership happens to remain the same.
+Fix the selector, visible records, public declared-field schema, caller/view,
+entitlements and seal key. Insertion/deletion of denied rows, conflicting denied
+duplicates, hidden source SHA/version mutation and full-manifest epoch/version
+rotation must leave the serialized receipt, digest, status and error unchanged.
+The tests compare whole JSON strings and exception type/text, with the SAME
+request pin in both worlds. They also cover a denied carrier candidate whose
+study ID collides with an admitted study.
 
-## Synthetic acceptance matrix
+`build_corpus_space` performs study/carrier visibility before copying,
+validating, fingerprinting or deduplicating content. Denied rows contribute to
+no visible input digest or denominator. Only admitted records can produce
+content-integrity errors. Hidden candidate collisions are not visible conflicts.
+Visible duplicate and shared-carrier pin conflicts still fail explicitly.
+Studies count by distinct study ID; carriers count by distinct carrier ID.
 
-The test module has invented study and carrier IDs. Its 186-study synthetic distribution reproduces the public aggregate oracles from [#56](https://github.com/Stimurid/SESHAT/issues/56#issuecomment-6153309817): 2021–2023 = 54 studies/31 pairs/51 known specialties; 2024–2026 = 132/63/31; 2025 = 93/38/4; 2026 = 12/12/0; whole = 186 studies/280 carriers. It also covers two distinct selectors on one manifest, input permutation, boundary inclusion, AND/OR overlap, missing metadata, unauthorized and revoked studies/carriers, changed source/provenance/version, duplicate conflict, second-host arbitrary fields, and historical versus current acceptance. These are mechanical source tests, not a blind holdout. All 186 real v4 records were development-exposed; four PDF file records need identity review and are not asserted to represent four distinct studies.
+The seal excludes the ENTIRE population pin, not just its SHA. Public
+`manifest_digest` now identifies the declared public schema, NOT full-population
+integrity. `input_digest` binds the visible record content. `snapshot_digest`
+binds every public result field other than itself, including all statuses.
+No policy epoch is queried, hashed or exposed in the public path. Count rights
+grant only the exact unique denied-study count (excluding IDs already admitted),
+never hidden IDs, global epoch or full-manifest digest. No-count output always
+has denied_studies=null and suppressed_remainder=false.
 
-## Gate and limits
+The host's seal service must be deterministic over its supplied arguments and a
+stable per-view secret, independent of source/policy epochs. Policy decisions
+must come from one consistent immutable host policy view. Public schema must
+be predeclared, not inferred from hidden rows. Host callback failure is a generic
+entitlement error; this library cannot guarantee noninterference for a malicious
+or inconsistent policy/seal callback, arbitrary executable Python objects,
+concurrent mutation, timing, memory usage or a transport exposing tracebacks and
+locals. The contract covers typed metadata, deterministic policy and serialized
+projection/error. Server transport must export only the safe exception type/code,
+not exception contexts or private validation diagnostics. No formal security
+proof or executed negative-test evidence is claimed by this source-only pass.
 
-**Status: SOURCE_UNREVIEWED, TESTED_NO, SCIENCE_ACCEPTANCE_NO.** The delegated worker did not run project Python, pytest, Ruff, unreviewed demo code or a privileged Git publisher on credentialed Windows. Test assertions are source authored, not test results. The Hub snapshot publisher, independent reviewer and truly isolated exact-tree CI must supply commit/tree, test outcome and review verdict before engineering acceptance. No Drive sync, PR, merge, F06/F08/F09 function, R01–R09 reports, scientific validity or product release is claimed. Rollback is restoration of the four changed F07 files to the pinned parent snapshot; accepted S1/S2 runtime behavior was not edited.
+## Currentness and cache migration
 
-The explicit delegated job passport is the authorization used for this isolated F07 authoring pass. The latest read-only #6/#56 comments describe a separate RUG author/review chain, but do not establish its terminal runtime state; the Hub must verify the sole-writer gate before publishing this snapshot. `git diff --check` passed; local Python/AST, pytest and Ruff were unavailable or intentionally not run in this credentialed sandbox.
+Task P1-3 explicitly permits disabling authoritative currentness when trusted
+host support is missing. This repair takes that fallback. It does NOT implement
+or claim a trusted private-epoch cache. A constant public digest can never
+establish cache currentness. `require_current` now always raises the exported
+UnverifiedCurrentnessError("UNVERIFIED_CURRENTNESS"), a StaleCorpusSpaceError
+subclass, before reading any records, reader, rights or prior snapshot. This
+refusal is identical for unchanged data, hidden-only rotation and visible drift.
+There is no stale-cache success path.
 
-## Open engineering questions and defaults
+For useful provisional results, explicitly call build_corpus_space again.
+It always rebuilds, rechecks policy and creates a new result. Instrumented tests
+assert fresh per-record policy checks across unchanged-membership epoch
+rotations and byte-identical public projections. Those are rebuild tests, NOT
+proof of an authenticated epoch mechanism. Historical snapshots remain history.
+Existing blackboard accepted-current/stale ambiguity behavior is unchanged.
 
-- Which private host metadata fields beyond intake year and specialty are authorized? Default: none; lab/supervisor and alternate year roles remain unknown/not evaluable until independently evidenced.
-- May a specific caller learn denied population counts? Default: no; only the trusted host authority can grant it.
-- Is the v4 manifest already runtime ingested and identity verified? Default: no; F07's default emits `METADATA_ONLY`, while its trusted mode verifies metadata binding only and makes no full-source or semantic claim.
+Future host integration must own source trust roots and an independent private
+cache key (source epoch, monotonic policy epoch, principal/entitlement scope,
+selector/schema semantics). It must invalidate before reuse even if membership
+is unchanged; acquire an atomic source+policy snapshot or retry privately;
+keep source-admission failures and epoch transitions out of public responses;
+and never accept these authority values from the requesting caller. It requires
+separate review and cannot be enabled through this patch's public arguments.
+
+## Private real v4 evaluation contract
+
+`corpus_evaluation.py` provides executable comparison functions for an owner-
+authorized isolated runner with an OUT-OF-TREE private fixture directory.
+It is intentionally not a CLI that fetches data or runs on credentialed AORUS.
+The operator supplies these independently obtained artifacts:
+
+1. Exact SECH_MASTER_v4.json and SECH_INTAKE_v4.jsonl bytes.
+2. A private PrivateV4Contract: exact master JSON pointers for each carrier's
+   Drive ID, SHA, year, specialty and source card; the intake card pointer;
+   expected study/carrier/pair/unknown counts; fourteen selector cases.
+3. Each case contains the exact original oracle predicate JSON, a typed F07
+   Predicate translation, private expected study_key/source_shas members,
+   membership SHA and counts. Do not substitute a list reconstructed from F07
+   results. The original oracle artifact is the independent comparison source.
+4. Host policy for a private evaluator entitled to the complete comparison set.
+
+`compare_real_v4_metadata` requires the owner-published MASTER/INTAKE SHA,
+population pin and all 14 exact count/digest targets before reading files.
+`compare_private_v4_metadata` is the generic synthetic/declared-contract route:
+matching caller-selected hashes there is NEVER real-v4 or source authority.
+The actual comparison checks file bytes, unique study IDs, unique carrier joins,
+carrier ID AND SHA, year/specialty/card equality against master primary-record
+pointers, full binding coverage, aggregates, each oracle's internal digest,
+actual F07 exact member sets, digest and per-selector counts. It does not just
+compare aggregate totals. The canonical membership algorithm matches the
+published sorted-key, compact UTF-8 JSON algorithm; the owner population pin is
+a separate opaque oracle identifier, not the F07 population checksum algorithm.
+
+MASTER pointer mapping and exact oracle predicate objects were not available in
+this run, so they are REQUIRED private contract inputs rather than guessed
+schema or selector syntax. Readiness is CONTRACT_AUTHORED, REAL_SCHEMA_BINDING
+and REAL_V4_RUN remain BLOCKED until the safe runner supplies/reviews them.
+The synthetic tests exercise this mapping and the actual selector call path.
+
+The adapter maps intake year as cohort_year (defense year OR fallback, never
+proof of defense), optional specialty, explicit source roles, and structural
+pair_status/specialty_status. Missing specialty remains UNKNOWN, not a fabricated
+specialty. No lab, supervisor, institution or scientific quality is inferred.
+
+All runtime rows/IDs/pointers and oracle membership digests stay private by
+default. The comparison returns only MATCHED_DECLARED_ORACLES and number of
+cases, plus pending evidence/currentness and NOT_CLEARED_BY_METADATA QA status.
+It never exports member sets or file paths. Missing files or mismatches share
+a constant error. The four real first-page QA flags remain unresolved; all 186
+records are development-exposed, not blind. QA and private MethodBody access
+are outside this function. No source PDFs, raw access, FULL_REQUIRED,
+E1/scientific acceptance, method ownership or release rights follow from a match.
+
+## Verification and handoff
+
+Authored adversarial tests include coherent forged reader+pin+year/specialty/
+references, honest-but-unattested source, unused exploding readers, fixed-query
+hidden worlds and corrupted payloads, carrier-denied collisions, same typed
+error in equivalent worlds, no authoritative reuse, fresh rebuilds, permitted
+count-only disclosure, visible source drift and shared-carrier deduplication.
+Private comparison tests cover exact sets, permutation, known/UNKNOWN/pairs,
+recomputed-file-hash mutations, forged IDs, master joins, changed selectors,
+wrong expected digest, duplicate/missing rows, policy denial and missing files.
+Original typed query, second-host and accepted-history tests remain present.
+
+Executed: read-only Git identity/status/diffs, file/connector reads, source edits,
+and git diff --check. No project Python import, AST parser, pytest, Ruff, wheel,
+PDF or private v4 metadata execution. Python/py/python3 commands were not found
+in this sandbox; the preflight's documented external Python path also failed.
+No tests or CI were run and no science acceptance was made.
+
+Changed paths: src/seshat/corpus.py, corpus_adapters.py, corpus_evaluation.py,
+__init__.py; tests/test_corpus_selection.py, test_corpus_confidentiality.py,
+test_corpus_evaluation.py; README.md and this receipt.
+
+Next isolated exact-tree checks (NOT EXECUTED HERE):
+`python -m pytest -q -o pythonpath=src` and `ruff check .`; independent source
+review must evaluate both fallback semantics and API compatibility. Safe real
+v4 comparison is a separate authorized run, not part of public synthetic CI.
+Rollback: discard this job's named file delta or restore it from BASE_SHA in a
+new review branch; do not reset canonical main or recover the old verified path
+as an accepted trust implementation. No publication or deployment is authorized.
+
+## OPEN QUESTIONS
+
+- Is there an independently authenticated host source verifier? Default: none;
+  all selectors remain PENDING_HOST_ATTESTATION.
+- Is an independently owned atomic private policy-epoch cache available?
+  Default: none; authoritative reuse disabled and currentness UNVERIFIED.
+- Are private MASTER mapping and exact oracle artifact available to a safe
+  runner? Default: unavailable here; REAL_V4_RUN=BLOCKED, synthetic tests only.
+- Are method, PDF identity QA or scientific acceptance rights granted?
+  Default: no; four identity flags remain unresolved and no methods execute.

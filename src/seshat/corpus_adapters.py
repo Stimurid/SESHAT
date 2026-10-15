@@ -61,7 +61,8 @@ def sechenovka_v4_metadata_row(
     for role, source in entries:
         carrier_id = source.get("drive_file_id")
         digest = source.get("sha256")
-        if not isinstance(carrier_id, str) or not isinstance(digest, str):
+        if (not isinstance(carrier_id, str) or not carrier_id.strip()
+                or not isinstance(digest, str)):
             raise ValueError("carrier identity pin is missing")
         carriers.append(SourceCarrier(
             carrier_id=carrier_id, source_identity=f"v4:{role}", version=record_version,
@@ -72,9 +73,20 @@ def sechenovka_v4_metadata_row(
     roles = [EvidenceField(name="source_role", value=role,
                            evidence_ref=f"{row_evidence_ref}:{role}") for role, _ in entries]
     specialty = row.get("specialty_raw")
+    if specialty is not None and not isinstance(specialty, str):
+        raise ValueError("invalid specialty metadata")
     if isinstance(specialty, str) and specialty.strip():
         fields.append(EvidenceField(name="specialty", value=specialty,
                                     evidence_ref=f"{row_evidence_ref}:specialty_raw"))
+    # Explicit structural classifications permit known/unknown and pair
+    # selectors without turning absent specialty into a fabricated value.
+    fields.extend((
+        EvidenceField(name="specialty_status",
+                      value="known" if isinstance(specialty, str) and specialty.strip()
+                      else "UNKNOWN", evidence_ref=f"{row_evidence_ref}:specialty_raw"),
+        EvidenceField(name="pair_status", value="paired" if dissertation is not None
+                      else "abstract-only", evidence_ref=f"{row_evidence_ref}:dissertation"),
+    ))
     return evidenced_study(object_id=study_id, version=record_version,
                            object_type="study", carriers=carriers, fields=fields, roles=roles)
 

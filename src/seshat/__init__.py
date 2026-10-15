@@ -30,6 +30,7 @@ from .corpus import (
     PopulationManifest,
     Predicate,
     StudyRecord,
+    UnverifiedCurrentnessError,
     build_corpus_space,
     require_current,
 )
@@ -62,6 +63,7 @@ __all__ = [
     "PopulationManifest",
     "Predicate",
     "StudyRecord",
+    "UnverifiedCurrentnessError",
     "build_corpus_space",
     "require_current",
 ]

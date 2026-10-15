@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from enum import StrEnum
-from typing import Literal, Protocol
+from typing import Literal, NoReturn, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -136,7 +136,7 @@ class CorpusSelectionSpec(FrozenModel):
     predicate: Predicate
     caller_id: str = Field(min_length=1)
     view_id: str = Field(min_length=1)
-    semantics_version: Literal["F07-1"] = "F07-1"
+    semantics_version: Literal["F07-2"] = "F07-2"
 
     @property
     def canonical_json(self) -> str:
@@ -162,7 +162,14 @@ class Visibility(StrEnum):
 
 
 class EntitlementAuthority(Protocol):
-    """Implemented by the trusted host, outside untrusted record metadata."""
+    """Projection policy supplied by the embedding host, NOT authenticated here.
+
+    A server must bind this outside its request boundary before exposing private
+    records. Decisions must be consistent for one immutable policy snapshot.
+    seal_selection must depend only on its arguments and a stable per-view key,
+    never on population or policy epochs. revision is private host bookkeeping;
+    public projection does not read it or claim authoritative currentness.
+    """
 
     def revision(self, caller_id: str, view_id: str) -> str: ...
 
@@ -178,12 +185,10 @@ class EntitlementAuthority(Protocol):
 
 
 class TrustedManifestAuthority(Protocol):
-    """Host-owned reader, injected by the trusted runtime, never by a request body.
+    """Legacy reader shape, retained for migration only; NEVER called by selectors.
 
-    The implementation must read its own authoritative manifest and return its
-    canonical records, including primary-source field references and carrier
-    pins. It must check issuer rights before returning them. This interface is
-    a trust boundary, not a signature or a claim that source bytes were read.
+    A Python object implementing this protocol establishes no source authority.
+    There is no authenticated host integration in this package.
     """
 
     def current_pin(self, manifest_id: str) -> ManifestPin: ...
@@ -195,7 +200,10 @@ def canonical_population_digest(
     manifest_id: str, version: str, declared_fields: frozenset[str],
     records: tuple[StudyRecord, ...] | list[StudyRecord],
 ) -> str:
-    """Domain-separated content pin over the complete authoritative population."""
+    """Private content checksum, never proof of source authenticity.
+
+    Do not expose this full-population checksum through public projections.
+    """
     payloads = [_record_payload(record) for record in records]
     payloads.sort(key=lambda value: json.dumps(value, ensure_ascii=False,
                                                sort_keys=True, separators=(",", ":")))
@@ -208,8 +216,7 @@ class CarrierPin(FrozenModel):
     carrier_id: str
     version: str
     sha256: str
-    identity_state: Literal["PIN_ASSERTED_NOT_VERIFIED", "METADATA_PIN_VERIFIED_BY_HOST"] = (
-        "PIN_ASSERTED_NOT_VERIFIED")
+    identity_state: Literal["PIN_ASSERTED_NOT_VERIFIED"] = "PIN_ASSERTED_NOT_VERIFIED"
 
 
 class MemberPin(FrozenModel):
@@ -221,7 +228,7 @@ class MemberPin(FrozenModel):
 class CorpusSpaceSnapshot(FrozenModel):
     selection_digest: str
     manifest_digest: str
-    semantics_version: Literal["F07-1"] = "F07-1"
+    semantics_version: Literal["F07-2"] = "F07-2"
     authorization_revision: str
     members: tuple[MemberPin, ...]
     eligible_studies: int
@@ -235,7 +242,10 @@ class CorpusSpaceSnapshot(FrozenModel):
     suppressed_remainder: bool
     input_digest: str
     snapshot_digest: str
-    source_state: Literal["METADATA_ONLY", "EVIDENCE_VERIFIED"] = "METADATA_ONLY"
+    source_state: Literal["METADATA_ONLY"] = "METADATA_ONLY"
+    selection_state: Literal["PROVISIONAL"] = "PROVISIONAL"
+    evidence_state: Literal["PENDING_HOST_ATTESTATION"] = "PENDING_HOST_ATTESTATION"
+    currentness_state: Literal["UNVERIFIED_CURRENTNESS"] = "UNVERIFIED_CURRENTNESS"
     runtime_ingestion_state: Literal["NOT_ASSERTED"] = "NOT_ASSERTED"
     semantic_acceptance_state: Literal["NOT_ASSERTED"] = "NOT_ASSERTED"
 
@@ -276,15 +286,14 @@ def _match(predicate: Predicate, record: StudyRecord, declared: frozenset[str]) 
     return Match.TRUE if predicate.lower <= value <= predicate.upper else Match.FALSE
 
 
-def _safe_member(record: StudyRecord, *, verified: bool = False) -> MemberPin:
+def _safe_member(record: StudyRecord) -> MemberPin:
     obj = record.research_object
     return MemberPin(
         object_id=obj.object_id,
         version=obj.version,
         carriers=tuple(sorted((CarrierPin(
             carrier_id=c.carrier_id, version=c.version, sha256=c.content_sha256,
-            identity_state=("METADATA_PIN_VERIFIED_BY_HOST" if verified
-                            else "PIN_ASSERTED_NOT_VERIFIED")) for c in record.carriers),
+        ) for c in record.carriers),
                               key=lambda c: c.carrier_id)),
     )
 
@@ -297,44 +306,23 @@ def build_corpus_space(
     *, trusted_manifest: TrustedManifestAuthority | None = None,
     require_verified: bool = False,
 ) -> CorpusSpaceSnapshot:
-    """Re-evaluate rights before touching metadata; no denied IDs enter a receipt.
+    """Build a fresh PROVISIONAL projection, never evidence or cache authority.
 
-    A denied study contributes to no visible denominator. Its count is emitted
-    only if the host authority explicitly grants that aggregate right.
+    Legacy verification arguments are deliberately inert. In particular no
+    caller-supplied reader is invoked, even to check its pin. Full-population
+    pins are private assertions; comparing them here would reveal hidden-only
+    updates through errors. Host source admission belongs outside this API.
+
+    Noninterference assumes identical visible records, public schema, selector,
+    entitlements and stable seal service. Denied content is neither validated
+    nor fingerprinted. This function is not an in-process security sandbox.
     """
-    if spec.manifest != manifest.pin:
-        raise ValueError("population manifest mismatch")
-    if require_verified:
-        if trusted_manifest is None:
-            raise ValueError("trusted manifest authority required")
-        try:
-            if trusted_manifest.current_pin(spec.manifest.manifest_id) != spec.manifest:
-                raise ValueError("unrecognized authority pin")
-            authoritative_manifest, authoritative_records = trusted_manifest.resolve(spec.manifest)
-            if authoritative_manifest.pin != spec.manifest:
-                raise ValueError("authority pin mismatch")
-            actual = canonical_population_digest(
-                authoritative_manifest.pin.manifest_id,
-                authoritative_manifest.pin.version,
-                authoritative_manifest.declared_fields, authoritative_records,
-            )
-            if actual != spec.manifest.sha256:
-                raise ValueError("authority content mismatch")
-        except Exception:
-            raise ValueError("trusted manifest verification failed") from None
-        # The request's records and declared fields have no authority in this mode.
-        manifest = authoritative_manifest
-        records = authoritative_records
     try:
-        revision = authority.revision(spec.caller_id, spec.view_id)
         may_count = authority.may_count_denied(spec.caller_id, spec.view_id)
-        # Host-keyed digest prevents a public snapshot from becoming an oracle
-        # for low-entropy hidden IDs in an exact-ID predicate.
-        # The full population SHA and rights revision may change solely because
-        # of hidden rows. Neither may influence a public view without count rights.
-        public_spec = json.loads(spec.canonical_json)
-        if not may_count:
-            public_spec["manifest"].pop("sha256", None)
+        # No full-population identifier/version/hash or policy epoch is a
+        # public selector input. Even count permission grants only a count.
+        public_spec = spec.model_dump(mode="json", exclude={"manifest", "predicate"})
+        public_spec["predicate"] = spec.predicate.canonical()
         sealed_selection = authority.seal_selection(
             spec.caller_id, spec.view_id,
             json.dumps(public_spec, ensure_ascii=False, sort_keys=True,
@@ -342,62 +330,63 @@ def build_corpus_space(
         )
     except Exception:
         raise ValueError("entitlement check failed") from None
-    if not isinstance(revision, str) or not revision:
-        raise ValueError("authorization revision is required")
     if not isinstance(may_count, bool):
         raise ValueError("invalid denied-count entitlement")
-    # The unkeyed spec.digest is for rights-controlled internal storage only.
     if (not isinstance(sealed_selection, str) or len(sealed_selection) != 64
             or any(ch not in "0123456789abcdef" for ch in sealed_selection)):
         raise ValueError("selection seal is required")
+
     visible: dict[str, StudyRecord] = {}
     seen: dict[str, str] = {}
     denied_ids: set[str] = set()
     for supplied in records:
-        # Copy before the host callback can mutate the caller's input.
-        record = supplied.model_copy(deep=True)
-        object_id = record.research_object.object_id
+        # Only routing identities are inspected before policy. In particular,
+        # do not deep-copy/serialize/hash/validate the denied payload first.
         try:
+            object_id = supplied.research_object.object_id
             decision = authority.visibility(spec.caller_id, spec.view_id, object_id)
             if decision is Visibility.VISIBLE:
-                carrier_decisions = [authority.carrier_visibility(
-                    spec.caller_id, spec.view_id, object_id, carrier.carrier_id
-                ) for carrier in record.carriers]
-                if any(item is Visibility.DENIED for item in carrier_decisions):
-                    decision = Visibility.DENIED
-                elif any(item is not Visibility.VISIBLE for item in carrier_decisions):
-                    raise ValueError("invalid entitlement decision")
+                for carrier in supplied.carriers:
+                    carrier_decision = authority.carrier_visibility(
+                        spec.caller_id, spec.view_id, object_id, carrier.carrier_id
+                    )
+                    if carrier_decision is Visibility.DENIED:
+                        decision = Visibility.DENIED
+                        break
+                    if carrier_decision is not Visibility.VISIBLE:
+                        raise ValueError
+            if decision is not Visibility.VISIBLE and decision is not Visibility.DENIED:
+                raise ValueError
         except Exception:
             raise ValueError("entitlement check failed") from None
         if decision is Visibility.DENIED:
-            denied_ids.add(object_id)
+            if may_count:
+                denied_ids.add(object_id)
             continue
-        if decision is not Visibility.VISIBLE:
-            raise ValueError("invalid entitlement decision")
         try:
+            # Revalidation catches model_copy/model_construct drift, but only
+            # after ALL carrier and study visibility checks have succeeded.
+            record = StudyRecord.model_validate(supplied.model_dump(mode="python"))
             fingerprint = _digest(_record_payload(record))
         except Exception:
             raise ValueError("invalid study pin") from None
         prior_fingerprint = seen.setdefault(object_id, fingerprint)
         if prior_fingerprint != fingerprint:
             raise ValueError("conflicting duplicate study")
-        previous = visible.get(object_id)
-        if previous is not None:
-            continue
-        visible[object_id] = record
-    # A changing decision for the same object is an entitlement failure. Do not
-    # reveal whether that object was denied in an error sent to the caller.
-    if denied_ids.intersection(visible):
-        raise ValueError("entitlement check failed")
-    denied = len(denied_ids)
-    # The manifest SHA is a host-pinned source identity. This additional digest
-    # binds the exact visible study/carrier/field contents used for this view.
+        visible.setdefault(object_id, record)
+
+    # A denied candidate colliding with a visible study must not turn into an
+    # exception oracle. Only admitted records participate in deduplication.
     ordered = [visible[key] for key in sorted(visible)]
-    public_pin = manifest.pin.model_dump(mode="json")
-    if not may_count:
-        public_pin.pop("sha256", None)
-    input_digest = _digest({"manifest": {"pin": public_pin,
-                                         "declared_fields": sorted(manifest.declared_fields)},
+    carrier_pins: dict[str, tuple[str, str]] = {}
+    for record in ordered:
+        for carrier in record.carriers:
+            pin = (carrier.version, carrier.content_sha256)
+            if carrier_pins.setdefault(carrier.carrier_id, pin) != pin:
+                raise ValueError("conflicting visible carrier pin")
+    public_schema = {"domain": "seshat.f07.public-schema.v2",
+                     "declared_fields": sorted(manifest.declared_fields)}
+    input_digest = _digest({"schema": public_schema,
                             "records": [_record_payload(item) for item in ordered]})
     members: list[MemberPin] = []
     outcomes = {match: 0 for match in Match}
@@ -405,36 +394,32 @@ def build_corpus_space(
         outcome = _match(spec.predicate, record, manifest.declared_fields)
         outcomes[outcome] += 1
         if outcome is Match.TRUE:
-            members.append(_safe_member(record, verified=require_verified))
-    payload = {
-        "selection_digest": sealed_selection,
-        "authorization_revision": revision if may_count else "VISIBLE_PROJECTION",
-        "input_digest": input_digest,
-        "members": [member.model_dump(mode="json") for member in members],
-        "outcomes": {key.value: value for key, value in outcomes.items()},
-        "denied": denied if may_count else None,
-        "suppressed_remainder": False,
-    }
-    return CorpusSpaceSnapshot(
+            members.append(_safe_member(record))
+    payload = dict(
         selection_digest=sealed_selection,
-        manifest_digest=_digest(public_pin),
-        authorization_revision=revision if may_count else "VISIBLE_PROJECTION",
+        manifest_digest=_digest(public_schema),
+        semantics_version="F07-2",
+        authorization_revision="UNVERIFIED_CURRENTNESS",
         members=tuple(members),
         eligible_studies=len(ordered),
-        eligible_carriers=sum(len(record.carriers) for record in ordered),
+        eligible_carriers=len({c.carrier_id for record in ordered for c in record.carriers}),
         selected_studies=len(members),
-        selected_carriers=sum(len(member.carriers) for member in members),
+        selected_carriers=len({c.carrier_id for member in members for c in member.carriers}),
         predicate_false=outcomes[Match.FALSE], unknown_metadata=outcomes[Match.UNKNOWN],
         not_evaluable=outcomes[Match.NOT_EVALUABLE],
-        denied_studies=denied if may_count else None,
+        # An ID that also has an admitted record is already in visible studies.
+        denied_studies=len(denied_ids - visible.keys()) if may_count else None,
         suppressed_remainder=False,
-        input_digest=input_digest, snapshot_digest=_digest(payload),
-        source_state="EVIDENCE_VERIFIED" if require_verified else "METADATA_ONLY",
+        input_digest=input_digest,
     )
+    snapshot = CorpusSpaceSnapshot(snapshot_digest="", **payload)
+    return snapshot.model_copy(update={
+        "snapshot_digest": _digest(snapshot.model_dump(mode="json", exclude={"snapshot_digest"}))
+    })
 
 
 def _record_payload(record: StudyRecord) -> dict:
-    """Canonical input identity; raw locators only affect a private digest."""
+    """Canonical record identity; call only for admitted or private records."""
     member = _safe_member(record)
     return {"member": member.model_dump(mode="json"),
             "object_type": record.research_object.object_type,
@@ -460,21 +445,23 @@ def require_current(
     authority: EntitlementAuthority,
     *, trusted_manifest: TrustedManifestAuthority | None = None,
     require_verified: bool = False,
-) -> CorpusSpaceSnapshot:
-    """Fail closed when manifest, visible inputs, or entitlement has changed."""
-    try:
-        current = build_corpus_space(spec, manifest, records, authority,
-                                     trusted_manifest=trusted_manifest,
-                                     require_verified=require_verified)
-    except ValueError:
-        raise StaleCorpusSpaceError("corpus view is stale") from None
-    if current.snapshot_digest != prior.snapshot_digest or current.source_state != prior.source_state:
-        raise StaleCorpusSpaceError("corpus view is stale")
-    return current
+) -> NoReturn:
+    """Reject authoritative reuse until a separately authenticated host exists.
+
+    Equality of public projections cannot prove current private policy/source
+    epochs. Do not even inspect those inputs here: the same typed refusal must
+    apply to unchanged, rotated, stale and forged snapshots. For useful fresh
+    metadata selection call build_corpus_space and retain its UNVERIFIED status.
+    """
+    raise UnverifiedCurrentnessError("UNVERIFIED_CURRENTNESS")
 
 
 class StaleCorpusSpaceError(ValueError):
-    pass
+    """Compatibility base for callers that previously caught stale views."""
+
+
+class UnverifiedCurrentnessError(StaleCorpusSpaceError):
+    """No authenticated private epoch check is available; reuse is blocked."""
 
 
 def current_accepted(
