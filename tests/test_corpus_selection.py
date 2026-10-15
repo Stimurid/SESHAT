@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 
 import pytest
 
@@ -12,9 +13,10 @@ from seshat.contracts import AcceptanceState, DependencyEdge, DerivedObject, Sou
 from seshat.corpus import (
     CorpusSelectionSpec, EvidenceField, ManifestPin, PopulationManifest, Predicate,
     StaleCorpusSpaceError, Visibility, build_corpus_space, current_accepted,
-    accepted_current_one, require_current,
+    accepted_current_one, canonical_population_digest, require_current,
 )
-from seshat.corpus_adapters import evidenced_study, sechenovka_v4_metadata_row
+from seshat.corpus_adapters import (evidenced_study, load_private_v4_metadata_fixture,
+                                    sechenovka_v4_metadata_row)
 
 
 class Rights:
@@ -143,7 +145,7 @@ def test_denial_revocation_and_no_hidden_identity_or_count():
     view = build_corpus_space(spec(year(2025, 2025)), MANIFEST, records, rights)
     encoded = view.model_dump_json()
     assert ids(view) == ["public"] and view.eligible_studies == 1
-    assert view.denied_studies is None and view.suppressed_remainder
+    assert view.denied_studies is None and not view.suppressed_remainder
     assert "SECRET-ROW-9" not in encoded and "SECRET-ROW-9" not in view.snapshot_digest
     exact = spec(Predicate(op="ids", ids=("public", "SECRET-ROW-9")), "exact")
     exact_view = build_corpus_space(exact, MANIFEST, records, rights)
@@ -180,10 +182,10 @@ def test_duplicate_conflict_and_source_version_or_provenance_drift():
         build_corpus_space(spec(year(2024, 2024)), MANIFEST, [a, changed], Rights())
     secret_v1 = study("SECRET-STUDY", 2024)
     secret_v2 = study("SECRET-STUDY", 2024, version="2")
-    with pytest.raises(ValueError, match="conflicting duplicate study") as hidden_error:
-        build_corpus_space(spec(year(2024, 2024)), MANIFEST, [secret_v1, secret_v2],
-                           Rights(denied={"SECRET-STUDY"}))
-    assert "SECRET-STUDY" not in str(hidden_error.value)
+    hidden_view = build_corpus_space(spec(year(2024, 2024)), MANIFEST,
+                                    [a, secret_v1, secret_v2],
+                                    Rights(denied={"SECRET-STUDY"}))
+    assert hidden_view.model_dump_json() == prior.model_dump_json()
     assert build_corpus_space(spec(year(2024, 2024)), MANIFEST, [changed],
                               Rights()).snapshot_digest != prior.snapshot_digest
     carrier = a.carriers[0].model_copy(update={"content_sha256": "f" * 64})
@@ -222,7 +224,7 @@ def test_invalid_predicate_and_incomplete_carrier_cannot_certify_full_read():
                                 [study("x", 2025, paired=True)],
                                 Rights(denied_carriers={"x-full"}))
     assert denied.selected_studies == 0 and denied.selected_carriers == 0
-    assert denied.denied_studies is None and denied.suppressed_remainder
+    assert denied.denied_studies is None and not denied.suppressed_remainder
 
 
 def test_second_host_arbitrary_fields_and_v4_adapter_no_fabricated_lab():
@@ -299,3 +301,133 @@ def test_synthetic_v4_aggregate_oracles_are_study_based():
         assert view.selected_carriers == studies + pair_count
         assert specialty.selected_studies == known_count
         assert specialty.unknown_metadata == unknown_count
+
+
+def test_denied_population_is_byte_identical_to_absence_in_public_receipt():
+    visible = study("visible", 2025)
+    base = spec(Predicate(op="ids", ids=("visible", "hidden-1", "hidden-2")))
+    rights = Rights(denied={"hidden-1", "hidden-2"})
+    expected = build_corpus_space(base, MANIFEST, [visible], rights).model_dump_json()
+    first = study("hidden-1", 2024)
+    second = study("hidden-2", 2025, paired=True)
+    mutation = second.model_copy(update={"carriers": (
+        second.carriers[0].model_copy(update={"content_sha256": "f" * 64}),
+        *second.carriers[1:],
+    )})
+    worlds = ([visible, first], [visible, first, second],
+              [visible, first, mutation],
+              [visible, first, first.model_copy(update={
+                  "fields": (EvidenceField(name="cohort_year", value=2026,
+                                           evidence_ref="forged:hidden"),)
+              })], [visible, second])
+    for world in worlds:
+        assert build_corpus_space(base, MANIFEST, world, rights).model_dump_json() == expected
+        assert require_current(build_corpus_space(base, MANIFEST, [visible], rights),
+                               base, MANIFEST, world, rights).model_dump_json() == expected
+
+
+def test_verified_mode_requires_host_pin_and_uses_host_records_not_request_records():
+    original = study("visible", 2025, "A")
+    digest = canonical_population_digest("host-manifest", "1", MANIFEST.declared_fields,
+                                         [original])
+    pin = ManifestPin(manifest_id="host-manifest", version="1", sha256=digest)
+    trusted = PopulationManifest(pin=pin, declared_fields=MANIFEST.declared_fields)
+
+    class Reader:
+        def current_pin(self, manifest_id):
+            return pin
+
+        def resolve(self, requested):
+            return trusted, (original,)
+
+    query = spec(year(2025, 2025), manifest=pin)
+    forged = study("visible", 2026, "A")
+    with pytest.raises(ValueError, match="trusted manifest authority required"):
+        build_corpus_space(query, trusted, [forged], Rights(), require_verified=True)
+    verified = build_corpus_space(query, trusted, [forged], Rights(),
+                                  trusted_manifest=Reader(), require_verified=True)
+    assert ids(verified) == ["visible"]
+    assert verified.source_state == "EVIDENCE_VERIFIED"
+    assert verified.runtime_ingestion_state == "NOT_ASSERTED"
+    assert verified.semantic_acceptance_state == "NOT_ASSERTED"
+
+    class ForgedReader(Reader):
+        def resolve(self, requested):
+            return trusted, (forged,)
+
+    with pytest.raises(ValueError, match="trusted manifest verification failed"):
+        build_corpus_space(query, trusted, [forged], Rights(),
+                           trusted_manifest=ForgedReader(), require_verified=True)
+    fake_ref = original.model_copy(update={"fields": (
+        EvidenceField(name="cohort_year", value=2025, evidence_ref="fake:year"),
+        original.fields[1],
+    )})
+
+    class FakeRefReader(Reader):
+        def resolve(self, requested):
+            return trusted, (fake_ref,)
+
+    with pytest.raises(ValueError, match="trusted manifest verification failed"):
+        build_corpus_space(query, trusted, [original], Rights(),
+                           trusted_manifest=FakeRefReader(), require_verified=True)
+    forged_pin = pin.model_copy(update={"sha256": canonical_population_digest(
+        "host-manifest", "1", MANIFEST.declared_fields, [forged])})
+    forged_query = spec(year(2025, 2025), manifest=forged_pin)
+    with pytest.raises(ValueError, match="trusted manifest verification failed"):
+        build_corpus_space(forged_query,
+                           trusted.model_copy(update={"pin": forged_pin}), [forged], Rights(),
+                           trusted_manifest=Reader(), require_verified=True)
+    replay = build_corpus_space(query, trusted, [], Rights(),
+                                trusted_manifest=Reader(), require_verified=True)
+    assert replay.model_dump_json() == verified.model_dump_json()
+
+
+def test_private_fixture_loader_checks_file_and_row_pins_without_pdf_access(tmp_path):
+    row = {"study_id": "invented-only", "year": 2025,
+           "abstract": {"drive_file_id": "invented-carrier", "sha256": "a" * 64}}
+    line = json.dumps(row, separators=(",", ":")).encode()
+    path = tmp_path / "invented-intake.jsonl"
+    path.write_bytes(line + b"\n")
+    file_pin = hashlib.sha256(line + b"\n").hexdigest()
+    id_hash = hashlib.sha256(b"invented-only").hexdigest()
+    row_pin = hashlib.sha256(line).hexdigest()
+    records = load_private_v4_metadata_fixture(
+        path, expected_file_sha256=file_pin,
+        expected_row_sha256_by_id_hash={id_hash: row_pin}, record_version="v4")
+    assert len(records) == 1 and records[0].research_object.object_id == "invented-only"
+    with pytest.raises(ValueError, match="private v4 metadata fixture verification failed"):
+        load_private_v4_metadata_fixture(
+            path, expected_file_sha256=file_pin,
+            expected_row_sha256_by_id_hash={id_hash: "f" * 64}, record_version="v4")
+
+
+def test_verified_hidden_only_population_digest_does_not_change_no_count_receipt():
+    visible = study("public", 2025)
+    hidden = study("hidden", 2024)
+    rights = Rights(denied={"hidden"})
+    declared = frozenset({"cohort_year"})
+
+    def view_for(records):
+        pin = ManifestPin(manifest_id="private-source", version="1",
+                          sha256=canonical_population_digest(
+                              "private-source", "1", declared, records))
+        manifest = PopulationManifest(pin=pin, declared_fields=declared)
+
+        class HostReader:
+            def current_pin(self, manifest_id):
+                return pin
+
+            def resolve(self, requested):
+                return manifest, tuple(records)
+
+        return build_corpus_space(spec(year(2025, 2025), manifest=pin),
+                                  manifest, [], rights, trusted_manifest=HostReader(),
+                                  require_verified=True)
+
+    baseline = view_for([visible])
+    with_hidden = view_for([visible, hidden])
+    mutated = view_for([visible, hidden.model_copy(update={"fields": (
+        EvidenceField(name="cohort_year", value=2026, evidence_ref="changed"),
+    )})])
+    assert baseline.model_dump_json() == with_hidden.model_dump_json()
+    assert baseline.model_dump_json() == mutated.model_dump_json()

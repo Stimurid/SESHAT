@@ -6,7 +6,10 @@ source bytes, guess affiliations, or treat row metadata as a rights grant.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 from seshat.contracts import ResearchObject, SourceCarrier
 from seshat.corpus import EvidenceField, StudyRecord
@@ -74,3 +77,43 @@ def sechenovka_v4_metadata_row(
                                     evidence_ref=f"{row_evidence_ref}:specialty_raw"))
     return evidenced_study(object_id=study_id, version=record_version,
                            object_type="study", carriers=carriers, fields=fields, roles=roles)
+
+
+def load_private_v4_metadata_fixture(
+    intake_path: Path, *, expected_file_sha256: str,
+    expected_row_sha256_by_id_hash: Mapping[str, str], record_version: str,
+) -> tuple[StudyRecord, ...]:
+    """Read a private JSONL metadata fixture in an isolated, authorized runner.
+
+    The caller owns the private path, expected digests and entitlements. This
+    function never reads carrier/PDF bytes, never logs rows, and returns private
+    records only to that caller. Do not call it from public CI or AORUS.
+    """
+    try:
+        raw = intake_path.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != expected_file_sha256:
+            raise ValueError
+        output = []
+        seen = set()
+        for line in raw.splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if not isinstance(row, dict) or not isinstance(row.get("study_id"), str):
+                raise ValueError
+            identity_hash = hashlib.sha256(row["study_id"].encode("utf-8")).hexdigest()
+            if (identity_hash in seen or
+                    expected_row_sha256_by_id_hash.get(identity_hash)
+                    != hashlib.sha256(line).hexdigest()):
+                raise ValueError
+            seen.add(identity_hash)
+            output.append(sechenovka_v4_metadata_row(
+                row, row_evidence_ref=f"intake-sha256:{hashlib.sha256(line).hexdigest()}",
+                record_version=record_version,
+            ))
+        if seen != set(expected_row_sha256_by_id_hash):
+            raise ValueError
+        return tuple(output)
+    except Exception:
+        # Exception text must never contain private path, ID, or row content.
+        raise ValueError("private v4 metadata fixture verification failed") from None
