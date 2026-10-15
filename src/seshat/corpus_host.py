@@ -15,12 +15,17 @@ from pathlib import Path
 from threading import RLock
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from seshat.corpus import (
-    CorpusSelectionSpec, CorpusSpaceSnapshot, FrozenModel, ManifestPin,
-    PopulationManifest, StudyRecord, Visibility, _digest, build_corpus_space,
+    CorpusSelectionSpec, CorpusSpaceSnapshot, EvidenceField, FrozenModel, ManifestPin,
+    PopulationManifest, StudyRecord, TemporalProvenance, Visibility, _digest, build_corpus_space,
 )
+
+
+TemporalField = Literal["defended_on", "defense_date", "abstract_published"]
+_TEMPORAL_FIELDS = frozenset({"defended_on", "defense_date", "abstract_published"})
+_TEMPORAL_NAMES = _TEMPORAL_FIELDS | frozenset(f"{n}_year" for n in _TEMPORAL_FIELDS)
 
 
 class FilePin(FrozenModel):
@@ -40,6 +45,20 @@ class HostConfiguration(FrozenModel):
     host_id: str = Field(min_length=1)
     primary: FilePin
     rights: FilePin
+    # Owner bootstrap only. Never inferred from a request or from primary rows.
+    temporal: FilePin | None = None
+
+    @model_validator(mode="after")
+    def absolute_temporal_path(self):
+        if self.temporal is not None and not self.temporal.path.is_absolute():
+            raise ValueError("HOST_INPUT_UNAVAILABLE")
+        return self
+
+
+class TemporalSourcePackage(FrozenModel):
+    host_id: str = Field(min_length=1)
+    # As with primary rows, denied temporal values are not semantically parsed.
+    records: tuple[object, ...]
 
 
 class SourcePackage(FrozenModel):
@@ -57,6 +76,62 @@ class Grant(FrozenModel):
     view_id: str
     object_ids: frozenset[str]
     carrier_ids: frozenset[str]
+    temporal_fields: dict[str, frozenset[TemporalField]] = Field(default_factory=dict)
+
+
+def _temporal_binding(record: StudyRecord) -> dict:
+    """Stable join to the admitted intake identity, version and all carriers."""
+    return {
+        "study_id": record.research_object.object_id,
+        "record_version": record.research_object.version,
+        "carriers": [{"carrier_id": c.carrier_id, "source_identity": c.source_identity,
+                      "version": c.version, "sha256": c.content_sha256}
+                     for c in sorted(record.carriers, key=lambda c: c.carrier_id)],
+    }
+
+
+def _attach_owner_temporal(record, package, grant):
+    """Internal control-plane step, after pinned reads and record/carrier rights.
+
+    This function and its Python arguments are NOT an authentication boundary.
+    Only the owner process calls it; public transport exposes select alone.
+    """
+    # Primary package provenance labels cannot smuggle temporal authority.
+    fields = [f for f in record.fields if f.name not in _TEMPORAL_NAMES]
+    allowed = grant.temporal_fields.get(record.research_object.object_id, ()) if grant else ()
+    if package is not None and allowed:
+        try:
+            matches = [r for r in package.records if isinstance(r, dict)
+                       and r.get("study_id") == record.research_object.object_id]
+            if len(matches) > 1:
+                raise ValueError
+            if matches:
+                row = matches[0]
+                binding = _temporal_binding(record)
+                if any(row.get(k) != v for k, v in binding.items()):
+                    raise ValueError
+                # Each field is sourced independently. A denied sibling field
+                # or another study cannot change this public evidence digest.
+                for name in sorted(allowed):
+                    value = row.get(name)
+                    if value is None:
+                        continue
+                    digest = _digest({"host_id": package.host_id, **binding,
+                                      "source_field": name, "source_value": value})
+                    evidence = TemporalProvenance(
+                        source_field=name, source_value=value, source_sha256=digest,
+                        source_version=f"content:{digest}",
+                        precision="YEAR" if type(value) is int else "DATE")
+                    ref = f"temporal-sha256:{digest}:{name}"
+                    fields.extend((
+                        EvidenceField(name=name, value=value, evidence_ref=ref,
+                                      temporal_provenance=evidence),
+                        EvidenceField(name=f"{name}_year", value=evidence.year,
+                                      evidence_ref=ref, temporal_provenance=evidence),
+                    ))
+        except Exception:
+            raise ValueError("HOST_TEMPORAL_UNAVAILABLE") from None
+    return record.model_copy(update={"fields": tuple(fields)})
 
 
 class RightsPackage(FrozenModel):
@@ -120,11 +195,15 @@ class HostRuntime:
         try:
             source = SourcePackage.model_validate_json(read_pinned(configuration.primary))
             rights = RightsPackage.model_validate_json(read_pinned(configuration.rights))
+            temporal = (TemporalSourcePackage.model_validate_json(
+                read_pinned(configuration.temporal)) if configuration.temporal else None)
             if source.host_id != configuration.host_id or rights.host_id != configuration.host_id:
+                raise ValueError
+            if temporal is not None and temporal.host_id != configuration.host_id:
                 raise ValueError
             if len({(g.caller_id, g.view_id) for g in rights.grants}) != len(rights.grants):
                 raise ValueError
-            return source, rights
+            return source, rights, temporal
         except Exception:
             raise ValueError("HOST_INPUT_UNAVAILABLE") from None
 
@@ -139,9 +218,11 @@ class HostRuntime:
             if (request.caller_id, request.view_id) != (authenticated_caller, authorized_view):
                 raise ValueError("SESSION_SCOPE_MISMATCH")
             with self._lock:
-                source, rights = self._load(self._configuration)
+                source, rights, temporal = self._load(self._configuration)
                 epoch = (self._configuration.host_id, self._configuration.primary.sha256,
-                         self._configuration.rights.sha256, rights.epoch)
+                         self._configuration.rights.sha256, rights.epoch,
+                         self._configuration.temporal.sha256
+                         if self._configuration.temporal else None)
                 if epoch != self._epoch:
                     self._cache.clear()
                     self._epoch = epoch
@@ -183,9 +264,17 @@ class HostRuntime:
                         try:
                             # Phase 2 validates only rows without known denial.
                             # Malformed visible rows remain errors, not absences.
-                            record = StudyRecord.model_validate(row)
+                            # Temporal labels in primary are never a source:
+                            # discard them before parsing unauthorized values.
+                            clean_row = dict(row)
+                            if isinstance(row.get("fields"), (list, tuple)):
+                                clean_row["fields"] = [f for f in row["fields"]
+                                                       if not isinstance(f, dict)
+                                                       or f.get("name") not in _TEMPORAL_NAMES]
+                            record = StudyRecord.model_validate(clean_row)
                         except Exception:
                             raise ValueError("invalid study pin") from None
+                        record = _attach_owner_temporal(record, temporal, grant)
                         # Bind every field to its actual pinned source record.
                         # Full file SHA/row ordinal stay PRIVATE: hidden row
                         # insertion or rotation cannot alter public evidence refs.

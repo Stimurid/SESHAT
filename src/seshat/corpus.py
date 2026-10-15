@@ -39,11 +39,13 @@ class ManifestPin(FrozenModel):
 
 
 class TemporalProvenance(FrozenModel):
-    """Explicit host-authorized metadata, not proof of defense or degree award.
+    """Temporal data shape, NOT an authorization or proof of defense/degree award.
 
     The SHA pins a per-study evidence envelope, never a whole private population.
     ISO calendar dates and integer years retain different precision. No cohort,
     publication or alternate date can stand in for the defended_on source field.
+    Constructing this model does not authenticate bytes, owner pins or rights;
+    the separate owner runtime must establish those before source admission.
     """
 
     source_field: Literal["defended_on", "defense_date", "abstract_published"]

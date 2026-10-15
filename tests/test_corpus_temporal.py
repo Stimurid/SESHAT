@@ -7,6 +7,9 @@ import pytest
 
 from seshat.corpus import EvidenceField, PopulationManifest, Predicate, build_corpus_space
 from seshat.corpus_adapters import pinned_temporal_metadata, sechenovka_v4_metadata_row
+from seshat.corpus_host import (
+    Grant, TemporalSourcePackage, _attach_owner_temporal, _temporal_binding,
+)
 from seshat.corpus_report_input import CorpusReportInput
 from test_corpus_selection import PIN, Rights, spec
 
@@ -24,9 +27,19 @@ def evidence(**values):
 
 
 def adapt(cohort=2025, temporal=None, **extra):
-    return sechenovka_v4_metadata_row(
-        intake(cohort, **extra), row_evidence_ref="invented:intake", record_version="v4",
-        temporal_metadata=temporal)
+    record = sechenovka_v4_metadata_row(
+        intake(cohort, **extra), row_evidence_ref="invented:intake", record_version="v4")
+    if temporal is None:
+        return record
+    # Pure semantic fixture, NOT an authorization test. Actual pinned-file and
+    # process-boundary acceptance is exercised in test_corpus_temporal_authority.
+    package = TemporalSourcePackage(host_id="synthetic", records=({
+        **_temporal_binding(record),
+        **{e.source_field: e.source_value for e in temporal.evidence}},))
+    grant = Grant(caller_id="reader", view_id="research", object_ids={temporal.object_id},
+                  carrier_ids={"invented-abstract"}, temporal_fields={temporal.object_id:
+                  {"defended_on", "defense_date", "abstract_published"}})
+    return _attach_owner_temporal(record, package, grant)
 
 
 def selection(record, field, year, declared=True):
@@ -99,8 +112,10 @@ def test_sha_identity_version_and_join_are_checked():
         with pytest.raises(ValueError, match="^invalid host temporal metadata$"):
             pinned_temporal_metadata(raw, expected_sha256=digest,
                                      expected_object_id=identity, source_version=version)
-    with pytest.raises(ValueError, match="temporal metadata study mismatch"):
-        adapt(temporal=evidence(defended_on=2026).model_copy(update={"object_id": "other"}))
+    with pytest.raises(ValueError, match="UNTRUSTED_TEMPORAL_METADATA"):
+        sechenovka_v4_metadata_row(
+            intake(), row_evidence_ref="invented", record_version="v4",
+            temporal_metadata=evidence(defended_on=2026).model_copy(update={"object_id": "other"}))
 
 
 def test_temporal_fields_cannot_be_relabelled_or_forged():
@@ -145,6 +160,14 @@ def test_host_admission_keeps_temporal_provenance_and_private_epochs_separate(tm
     source["declared_fields"].append("defended_on_year")
     configuration = configuration.model_copy(update={
         "primary": pin_file(configuration.primary.path, source)})
+    rights = json.loads(configuration.rights.path.read_bytes())
+    rights["grants"][0]["temporal_fields"] = {"invented-temporal": ["defended_on"]}
+    configuration = configuration.model_copy(update={
+        "rights": pin_file(configuration.rights.path, rights),
+        "temporal": pin_file(tmp_path / "temporal.json", {
+            "host_id": configuration.host_id,
+            "records": [{**_temporal_binding(record), "defended_on": "2026-01-17"}]}),
+    })
     runtime = HostRuntime(configuration)
     select = runtime.session(authenticated_caller="reader", authorized_view="research")
     query = spec(Predicate(op="range", field="defended_on_year", lower=2026, upper=2026))

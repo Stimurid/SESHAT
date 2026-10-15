@@ -1,0 +1,41 @@
+{
+    "schema":  "F07_TEMPORAL_WORKTREE_RECEIPT_V1",
+    "base_sha":  "b1183b5f6ff5fde6d0f75ebe52340857072fd0cf",
+    "branch":  "aiye/exec-3585a6ff0736",
+    "status":  "ENGINEERED_UNREVIEWED",
+    "tests":  "NOT_EXECUTED_HOST_EXECUTION_FORBIDDEN",
+    "diff_check":  "PASS",
+    "external_temporal_harness":  "BLOCKED_HARNESS_UNCONDITIONAL_ACCEPTANCE_ASSERTION",
+    "files":  [
+                  {
+                      "path":  "src/seshat/corpus.py",
+                      "sha256":  "6e50659d6dcfdfbab1a93c4571775633b3d36cf1d7d47e43be2697f2cf213cba",
+                      "bytes":  23826
+                  },
+                  {
+                      "path":  "src/seshat/corpus_adapters.py",
+                      "sha256":  "7b6ce2fee1ea29700d46df1a94e6ad9f212bf856ddee3406e7d535c2e05e31aa",
+                      "bytes":  9197
+                  },
+                  {
+                      "path":  "src/seshat/corpus_host.py",
+                      "sha256":  "6ac3bbe90ee848e1d32665e7098d9dd99af141dd0f2973b9c4ccaca859fa8e8d",
+                      "bytes":  16688
+                  },
+                  {
+                      "path":  "tests/test_corpus_temporal.py",
+                      "sha256":  "bf1a628e23985ab469b916ffd82f480ef1b72b34ee7467d878bc092db58e4eb5",
+                      "bytes":  10364
+                  },
+                  {
+                      "path":  "tests/test_corpus_temporal_authority.py",
+                      "sha256":  "b41aa6419fed33103c00a1192b27f73d35e3d66e2bd1f7431f1a86eccc993b76",
+                      "bytes":  13828
+                  },
+                  {
+                      "path":  "docs/S_P1_F07_TRUSTED_TEMPORAL_REPAIR.md",
+                      "sha256":  "49864124473df1e7bde587ed506d2813eae8a46925dd3365bd72301ff3f191da",
+                      "bytes":  9512
+                  }
+              ]
+}

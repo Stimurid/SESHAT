@@ -18,7 +18,7 @@ from seshat.corpus import EvidenceField, FrozenModel, StudyRecord, TemporalProve
 
 
 class HostTemporalMetadata(FrozenModel):
-    """Private host join result; constructing this model grants no access rights."""
+    """Untrusted decoded data; neither construction nor parsing grants rights."""
 
     object_id: str = Field(min_length=1)
     evidence: tuple[TemporalProvenance, ...]
@@ -34,11 +34,13 @@ class HostTemporalMetadata(FrozenModel):
 def pinned_temporal_metadata(
     raw: bytes, *, expected_sha256: str, expected_object_id: str, source_version: str,
 ) -> HostTemporalMetadata:
-    """Decode one independently authorized, pinned per-study JSON envelope.
+    """Decode an UNTRUSTED per-study JSON envelope; this grants no authority.
 
-    Host-only: the host must authorize the master/intake join AND these fields,
-    verify study identity against the master, and pin the resulting bytes outside
-    reader control. source_version is per-study, not a private population epoch.
+    Retained for data validation/backward imports, NOT source admission.
+    A caller choosing raw and expected_sha256 proves only self-consistency.
+    The v4 adapter rejects this result just like a manually constructed model.
+    Owner source admission lives exclusively in corpus_host.HostRuntime.
+    source_version is per-study, not a private population epoch.
     Shape: {study_id, defended_on?, defense_date?, abstract_published?}.
     Null/absent means unknown; only ISO dates or integer years are accepted.
     Never pass a whole master-file digest into public per-study provenance.
@@ -90,10 +92,15 @@ def sechenovka_v4_metadata_row(
     The host must supply this row under its own access controls. Its study_id
     and carrier IDs remain in the rights-controlled runtime, never fixtures.
     Intake year is a cohort label ONLY. Explicit temporal fields require the
-    separate host-authorized pinned channel; similarly named intake keys are
+    separate HostRuntime file/rights channel; temporal_metadata is retained
+    solely to fail closed for legacy callers. Similarly named intake keys are
     ignored. Missing fields stay missing (UNKNOWN_METADATA for declared fields,
     NOT_EVALUABLE if not declared). No degree-award assertion is produced.
     """
+    if temporal_metadata is not None:
+        # Neither a typed model nor a caller-computed matching SHA is an
+        # owner authorization. Only the separate HostRuntime may attach dates.
+        raise ValueError("UNTRUSTED_TEMPORAL_METADATA")
     study_id = row.get("study_id")
     year = row.get("year")
     abstract = row.get("abstract")
@@ -121,18 +128,6 @@ def sechenovka_v4_metadata_row(
         ))
     fields = [EvidenceField(name="cohort_year", value=year,
                             evidence_ref=f"{row_evidence_ref}:year")]
-    if temporal_metadata is not None:
-        temporal_metadata = HostTemporalMetadata.model_validate(temporal_metadata.model_dump())
-        if temporal_metadata.object_id != study_id:
-            raise ValueError("temporal metadata study mismatch")
-        for evidence in temporal_metadata.evidence:
-            ref = f"temporal-sha256:{evidence.source_sha256}:{evidence.source_field}"
-            fields.extend((
-                EvidenceField(name=evidence.source_field, value=evidence.source_value,
-                              evidence_ref=ref, temporal_provenance=evidence),
-                EvidenceField(name=f"{evidence.source_field}_year", value=evidence.year,
-                              evidence_ref=ref, temporal_provenance=evidence),
-            ))
     roles = [EvidenceField(name="source_role", value=role,
                            evidence_ref=f"{row_evidence_ref}:{role}") for role, _ in entries]
     specialty = row.get("specialty_raw")
