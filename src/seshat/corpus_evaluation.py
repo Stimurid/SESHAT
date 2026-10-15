@@ -93,6 +93,8 @@ class PrivateV4Comparison(FrozenModel):
     evidence_state: Literal["PENDING_HOST_ATTESTATION"] = "PENDING_HOST_ATTESTATION"
     currentness_state: Literal["UNVERIFIED_CURRENTNESS"] = "UNVERIFIED_CURRENTNESS"
     identity_qa_state: Literal["NOT_CLEARED_BY_METADATA"] = "NOT_CLEARED_BY_METADATA"
+    # Source QA is independent of successful metadata joins/oracle comparisons.
+    identity_qa_pending: Literal[4] | None = None
     semantic_acceptance_state: Literal["NOT_ASSERTED"] = "NOT_ASSERTED"
     selectors_compared: int
 
@@ -242,5 +244,6 @@ def compare_real_v4_metadata(
             != (186, 280, 94, 104)
             or len(contract.selectors) != 14 or expected != REAL_V4_ORACLES):
         raise PrivateV4EvaluationError("PRIVATE_V4_COMPARISON_BLOCKED_OR_MISMATCH")
-    return compare_private_v4_metadata(master_path, intake_path, contract, authority,
-                                       caller_id=caller_id, view_id=view_id)
+    result = compare_private_v4_metadata(master_path, intake_path, contract, authority,
+                                         caller_id=caller_id, view_id=view_id)
+    return result.model_copy(update={"identity_qa_pending": 4})

@@ -156,6 +156,13 @@ class Match(StrEnum):
     NOT_EVALUABLE = "NOT_EVALUABLE"
 
 
+def public_selection_digest(spec: CorpusSelectionSpec) -> str:
+    """Canonical public request identity, independent of callbacks/private epochs."""
+    public_spec = spec.model_dump(mode="json", exclude={"manifest", "predicate"})
+    public_spec["predicate"] = spec.predicate.canonical()
+    return _digest({"domain": "seshat.f07.public-selection.v3", "selection": public_spec})
+
+
 class Visibility(StrEnum):
     VISIBLE = "VISIBLE"
     DENIED = "DENIED"
@@ -166,8 +173,8 @@ class EntitlementAuthority(Protocol):
 
     A server must bind this outside its request boundary before exposing private
     records. Decisions must be consistent for one immutable policy snapshot.
-    seal_selection must depend only on its arguments and a stable per-view key,
-    never on population or policy epochs. revision is private host bookkeeping;
+    Legacy seal_selection is ignored: the public digest is computed internally.
+    revision is private host bookkeeping;
     public projection does not read it or claim authoritative currentness.
     """
 
@@ -188,7 +195,8 @@ class TrustedManifestAuthority(Protocol):
     """Legacy reader shape, retained for migration only; NEVER called by selectors.
 
     A Python object implementing this protocol establishes no source authority.
-    There is no authenticated host integration in this package.
+    This public API has no authenticated host integration. Owner-side bootstrap
+    is separate in corpus_host; it never accepts this reader protocol.
     """
 
     def current_pin(self, manifest_id: str) -> ManifestPin: ...
@@ -313,28 +321,19 @@ def build_corpus_space(
     pins are private assertions; comparing them here would reveal hidden-only
     updates through errors. Host source admission belongs outside this API.
 
-    Noninterference assumes identical visible records, public schema, selector,
-    entitlements and stable seal service. Denied content is neither validated
+    Noninterference assumes identical visible records, public schema, selector
+    and entitlement decisions. Denied content is neither validated
     nor fingerprinted. This function is not an in-process security sandbox.
     """
     try:
         may_count = authority.may_count_denied(spec.caller_id, spec.view_id)
         # No full-population identifier/version/hash or policy epoch is a
         # public selector input. Even count permission grants only a count.
-        public_spec = spec.model_dump(mode="json", exclude={"manifest", "predicate"})
-        public_spec["predicate"] = spec.predicate.canonical()
-        sealed_selection = authority.seal_selection(
-            spec.caller_id, spec.view_id,
-            json.dumps(public_spec, ensure_ascii=False, sort_keys=True,
-                       separators=(",", ":")),
-        )
+        sealed_selection = public_selection_digest(spec)
     except Exception:
         raise ValueError("entitlement check failed") from None
     if not isinstance(may_count, bool):
         raise ValueError("invalid denied-count entitlement")
-    if (not isinstance(sealed_selection, str) or len(sealed_selection) != 64
-            or any(ch not in "0123456789abcdef" for ch in sealed_selection)):
-        raise ValueError("selection seal is required")
 
     visible: dict[str, StudyRecord] = {}
     seen: dict[str, str] = {}

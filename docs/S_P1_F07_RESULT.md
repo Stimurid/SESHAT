@@ -225,3 +225,10 @@ as an accepted trust implementation. No publication or deployment is authorized.
   runner? Default: unavailable here; REAL_V4_RUN=BLOCKED, synthetic tests only.
 - Are method, PDF identity QA or scientific acceptance rights granted?
   Default: no; four identity flags remain unresolved and no methods execute.
+# Superseding host-boundary author delta
+
+The subsequent bounded job jx-a08fbc3306cf is documented in
+[S_P1_F07_HOST_BOUNDARY_RECEIPT.md](S_P1_F07_HOST_BOUNDARY_RECEIPT.md).
+The older receipt above describes the provisional-only predecessor. Its claims
+that no host cache or owner evaluation CLI is authored are superseded by that
+delta; neither receipt certifies a deployment or current-tree test PASS.
