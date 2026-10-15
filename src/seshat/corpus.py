@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import date
 from enum import StrEnum
 from typing import Literal, NoReturn, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, model_validator
 
 from seshat.blackboard import AmbiguousStateError, Blackboard
 from seshat.contracts import ResearchObject, SourceCarrier
@@ -37,12 +38,67 @@ class ManifestPin(FrozenModel):
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class TemporalProvenance(FrozenModel):
+    """Explicit host-authorized metadata, not proof of defense or degree award.
+
+    The SHA pins a per-study evidence envelope, never a whole private population.
+    ISO calendar dates and integer years retain different precision. No cohort,
+    publication or alternate date can stand in for the defended_on source field.
+    """
+
+    source_field: Literal["defended_on", "defense_date", "abstract_published"]
+    source_value: StrictStr | StrictInt
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_version: str = Field(min_length=1)
+    precision: Literal["DATE", "YEAR"]
+
+    @model_validator(mode="after")
+    def explicit_value(self):
+        value = self.source_value
+        if self.precision == "YEAR":
+            if type(value) is not int or not 1 <= value <= 9999:
+                raise ValueError("invalid explicit temporal year")
+        else:
+            if not isinstance(value, str):
+                raise ValueError("invalid explicit temporal date")
+            try:
+                parsed = date.fromisoformat(value)
+            except ValueError:
+                raise ValueError("invalid explicit temporal date") from None
+            if parsed.isoformat() != value:
+                raise ValueError("temporal dates require YYYY-MM-DD")
+        return self
+
+    @property
+    def year(self) -> int:
+        return (self.source_value if self.precision == "YEAR"
+                else date.fromisoformat(self.source_value).year)
+
+
 class EvidenceField(FrozenModel):
     """A host-declared field with a source-specific provenance token."""
 
     name: str = Field(min_length=1)
-    value: str | int
+    value: StrictStr | StrictInt
     evidence_ref: str = Field(min_length=1)
+    temporal_provenance: TemporalProvenance | None = None
+
+    @model_validator(mode="after")
+    def temporal_binding(self):
+        temporal_names = {name for base in ("defended_on", "defense_date", "abstract_published")
+                          for name in (base, f"{base}_year")}
+        provenance = self.temporal_provenance
+        if self.name in temporal_names:
+            if provenance is None:
+                raise ValueError("temporal field requires explicit source provenance")
+            expected = (provenance.year if self.name.endswith("_year")
+                        else provenance.source_value)
+            if (self.name not in {provenance.source_field, f"{provenance.source_field}_year"}
+                    or type(self.value) is not type(expected) or self.value != expected):
+                raise ValueError("temporal field does not match its source")
+        elif provenance is not None:
+            raise ValueError("temporal provenance cannot relabel another field")
+        return self
 
 
 class StudyRecord(FrozenModel):
@@ -67,6 +123,13 @@ class StudyRecord(FrozenModel):
         names = [field.name for field in self.fields]
         if len(names) != len(set(names)):
             raise ValueError("duplicate evidenced field")
+        temporal_sources = {}
+        for field in self.fields:
+            provenance = field.temporal_provenance
+            if provenance is not None:
+                prior = temporal_sources.setdefault(provenance.source_field, provenance)
+                if prior != provenance:
+                    raise ValueError("conflicting temporal source provenance")
         if any(role.name != "source_role" for role in self.roles):
             raise ValueError("source roles require explicit source_role evidence")
         return self
@@ -430,9 +493,11 @@ def _record_payload(record: StudyRecord) -> dict:
                 "uri": carrier.uri,
                 "byte_length": carrier.byte_length,
             } for carrier in record.carriers), key=lambda value: value["carrier_id"]),
-            "fields": sorted((field.model_dump(mode="json") for field in record.fields),
+            "fields": sorted((field.model_dump(mode="json", exclude_none=True)
+                              for field in record.fields),
                              key=lambda value: value["name"]),
-            "roles": sorted((role.model_dump(mode="json") for role in record.roles),
+            "roles": sorted((role.model_dump(mode="json", exclude_none=True)
+                             for role in record.roles),
                             key=lambda value: (str(value["value"]), value["evidence_ref"]))}
 
 

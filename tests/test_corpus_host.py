@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from itertools import permutations
 
 import pytest
 
@@ -17,6 +18,93 @@ def pin_file(path, payload):
     raw = json.dumps(payload, sort_keys=True).encode()
     path.write_bytes(raw)
     return FilePin(path=path, sha256=hashlib.sha256(raw).hexdigest())
+
+
+@pytest.mark.parametrize("garbage", [None, [], "malformed", {}, {"carrier_id": []},
+                                     {"carrier_id": ""}, {"carrier_id": "   "}, 42])
+def test_denied_carrier_permutations_and_conflicting_duplicates_are_invisible(tmp_path, garbage):
+    """Regression for the executed external FAIL_NONINTERFERENCE witness."""
+    visible = study("visible", 2025)
+    configuration = config(tmp_path, [visible])
+    runtime = HostRuntime(configuration)
+    select = runtime.session(authenticated_caller="reader", authorized_view="research")
+    query = spec(year(2025, 2025))
+    baseline = outcome(lambda: select(query))
+    assert baseline[0] == "receipt"
+    source = json.loads(configuration.primary.path.read_bytes())
+    rights = json.loads(configuration.rights.path.read_bytes())
+    admitted = source["records"][0]
+    for revision in ("1", "2"):
+        denied = {"carrier_id": "denied-carrier", "version": revision,
+                  "content_sha256": ("a" if revision == "1" else "f") * 64}
+        for carriers in permutations([garbage, denied, admitted["carriers"][0]]):
+            hidden = {**admitted, "carriers": list(carriers), "fields": "do not parse"}
+            conflict = {**hidden, "research_object": {
+                **admitted["research_object"], "version": "conflicting-private-version"}}
+            for rows in ([admitted, hidden, conflict], [conflict, hidden, admitted]):
+                source.update(records=rows, version=f"private-{revision}")
+                rights["epoch"] = f"private-rights-{revision}"
+                changed = configuration.model_copy(update={
+                    "primary": pin_file(configuration.primary.path, source),
+                    "rights": pin_file(configuration.rights.path, rights)})
+                runtime.install(changed)
+                assert outcome(lambda: select(query)) == baseline
+
+
+@pytest.mark.parametrize("garbage", [None, [], "malformed", {}, {"carrier_id": []},
+                                     {"carrier_id": ""}, {"carrier_id": "   "}, 42])
+def test_malformed_visible_carriers_fail_closed_without_known_denial(tmp_path, garbage):
+    configuration = config(tmp_path, [study("visible", 2025)])
+    source = json.loads(configuration.primary.path.read_bytes())
+    source["records"][0]["carriers"].append(garbage)
+    configuration = configuration.model_copy(update={
+        "primary": pin_file(configuration.primary.path, source)})
+    runtime = HostRuntime(configuration)
+    select = runtime.session(authenticated_caller="reader", authorized_view="research")
+    assert outcome(lambda: select(spec(year(2025, 2025)))) == (
+        "error", "ValueError", "invalid study pin")
+
+
+def test_denied_reference_precedes_validation_of_malformed_carrier_container(tmp_path):
+    configuration = config(tmp_path, [study("visible", 2025)])
+    source = json.loads(configuration.primary.path.read_bytes())
+    runtime = HostRuntime(configuration)
+    select = runtime.session(authenticated_caller="reader", authorized_view="research")
+    query = spec(year(2025, 2025))
+    baseline = outcome(lambda: select(query))
+    admitted = source["records"][0]
+    for malformed in (None, "private", {}, 42):
+        hidden = {**admitted, "research_object": {
+            **admitted["research_object"], "carrier_ids": [None, "denied-carrier"]},
+            "carriers": malformed}
+        source["records"] = [hidden, admitted]
+        runtime.install(configuration.model_copy(update={
+            "primary": pin_file(configuration.primary.path, source)}))
+        assert outcome(lambda: select(query)) == baseline
+
+
+@pytest.mark.parametrize("malformed", [None, "private", {}, 42])
+def test_unrouteable_source_container_has_sanitized_host_error(tmp_path, malformed):
+    configuration = config(tmp_path, [study("visible", 2025)])
+    source = json.loads(configuration.primary.path.read_bytes())
+    source["records"] = malformed
+    changed = configuration.model_copy(update={
+        "primary": pin_file(configuration.primary.path, source)})
+    assert outcome(lambda: HostRuntime(changed)) == (
+        "error", "ValueError", "HOST_INPUT_UNAVAILABLE")
+
+
+@pytest.mark.parametrize("malformed", [None, "private", [], 42, {}])
+def test_unrouteable_row_does_not_silently_become_missing(tmp_path, malformed):
+    configuration = config(tmp_path, [study("visible", 2025)])
+    source = json.loads(configuration.primary.path.read_bytes())
+    source["records"].append(malformed)
+    changed = configuration.model_copy(update={
+        "primary": pin_file(configuration.primary.path, source)})
+    runtime = HostRuntime(changed)
+    select = runtime.session(authenticated_caller="reader", authorized_view="research")
+    assert outcome(lambda: select(spec(year(2025, 2025)))) == (
+        "error", "ValueError", "invalid study pin")
 
 
 def config(tmp_path, rows, *, epoch="1", allowed=("visible",), host="archive-host"):

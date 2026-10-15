@@ -14,6 +14,8 @@ class CorpusReportInput(FrozenModel):
     selection: CorpusSelectionSpec
     corpus: CorpusSpaceSnapshot
     source_regime: Literal["SRC-B"] = "SRC-B"
+    temporal_semantics: Literal["EXPLICIT_FIELDS_ONLY_NO_COHORT_DEFENSE_FALLBACK"] = (
+        "EXPLICIT_FIELDS_ONLY_NO_COHORT_DEFENSE_FALLBACK")
     content_state: Literal["METADATA_ONLY_NOT_REPORT_EVIDENCE"] = (
         "METADATA_ONLY_NOT_REPORT_EVIDENCE")
 

@@ -11,8 +11,56 @@ import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from pydantic import Field, model_validator
+
 from seshat.contracts import ResearchObject, SourceCarrier
-from seshat.corpus import EvidenceField, StudyRecord
+from seshat.corpus import EvidenceField, FrozenModel, StudyRecord, TemporalProvenance
+
+
+class HostTemporalMetadata(FrozenModel):
+    """Private host join result; constructing this model grants no access rights."""
+
+    object_id: str = Field(min_length=1)
+    evidence: tuple[TemporalProvenance, ...]
+
+    @model_validator(mode="after")
+    def unique_fields(self):
+        names = [item.source_field for item in self.evidence]
+        if len(names) != len(set(names)):
+            raise ValueError("duplicate temporal source field")
+        return self
+
+
+def pinned_temporal_metadata(
+    raw: bytes, *, expected_sha256: str, expected_object_id: str, source_version: str,
+) -> HostTemporalMetadata:
+    """Decode one independently authorized, pinned per-study JSON envelope.
+
+    Host-only: the host must authorize the master/intake join AND these fields,
+    verify study identity against the master, and pin the resulting bytes outside
+    reader control. source_version is per-study, not a private population epoch.
+    Shape: {study_id, defended_on?, defense_date?, abstract_published?}.
+    Null/absent means unknown; only ISO dates or integer years are accepted.
+    Never pass a whole master-file digest into public per-study provenance.
+    This verifies envelope integrity, not original scientific facts or authority.
+    """
+    try:
+        digest = hashlib.sha256(raw).hexdigest()
+        if digest != expected_sha256:
+            raise ValueError
+        row = json.loads(raw)
+        names = {"defended_on", "defense_date", "abstract_published"}
+        if (not isinstance(row, dict) or set(row) - (names | {"study_id"})
+                or row.get("study_id") != expected_object_id):
+            raise ValueError
+        evidence = tuple(TemporalProvenance(
+            source_field=name, source_value=row[name], source_sha256=digest,
+            source_version=source_version,
+            precision="YEAR" if type(row[name]) is int else "DATE",
+        ) for name in sorted(names) if row.get(name) is not None)
+        return HostTemporalMetadata(object_id=expected_object_id, evidence=evidence)
+    except Exception:
+        raise ValueError("invalid host temporal metadata") from None
 
 
 def evidenced_study(
@@ -35,13 +83,16 @@ def evidenced_study(
 
 def sechenovka_v4_metadata_row(
     row: Mapping[str, object], *, row_evidence_ref: str, record_version: str,
+    temporal_metadata: HostTemporalMetadata | None = None,
 ) -> StudyRecord:
     """Map an already authorized v4 intake row; no Drive fetch or raw PDF read.
 
     The host must supply this row under its own access controls. Its study_id
     and carrier IDs remain in the rights-controlled runtime, never fixtures.
-    Only intake year and nonempty specialty_raw are mapped. Lab, supervisor,
-    performing institution, and alternate year roles require separate evidence.
+    Intake year is a cohort label ONLY. Explicit temporal fields require the
+    separate host-authorized pinned channel; similarly named intake keys are
+    ignored. Missing fields stay missing (UNKNOWN_METADATA for declared fields,
+    NOT_EVALUABLE if not declared). No degree-award assertion is produced.
     """
     study_id = row.get("study_id")
     year = row.get("year")
@@ -70,6 +121,18 @@ def sechenovka_v4_metadata_row(
         ))
     fields = [EvidenceField(name="cohort_year", value=year,
                             evidence_ref=f"{row_evidence_ref}:year")]
+    if temporal_metadata is not None:
+        temporal_metadata = HostTemporalMetadata.model_validate(temporal_metadata.model_dump())
+        if temporal_metadata.object_id != study_id:
+            raise ValueError("temporal metadata study mismatch")
+        for evidence in temporal_metadata.evidence:
+            ref = f"temporal-sha256:{evidence.source_sha256}:{evidence.source_field}"
+            fields.extend((
+                EvidenceField(name=evidence.source_field, value=evidence.source_value,
+                              evidence_ref=ref, temporal_provenance=evidence),
+                EvidenceField(name=f"{evidence.source_field}_year", value=evidence.year,
+                              evidence_ref=ref, temporal_provenance=evidence),
+            ))
     roles = [EvidenceField(name="source_role", value=role,
                            evidence_ref=f"{row_evidence_ref}:{role}") for role, _ in entries]
     specialty = row.get("specialty_raw")

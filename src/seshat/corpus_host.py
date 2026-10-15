@@ -49,7 +49,7 @@ class SourcePackage(FrozenModel):
     declared_fields: frozenset[str]
     # Decode denied rows without semantic validation: invalid hidden metadata
     # must not become a public exception oracle. Admission validates visible rows.
-    records: tuple[dict, ...]
+    records: tuple[object, ...]
 
 
 class Grant(FrozenModel):
@@ -154,17 +154,35 @@ class HostRuntime:
                     records = []
                     policy = _Rights(grant)
                     for row in source.records:
+                        if not isinstance(row, dict):
+                            # No routing identity: visibility cannot be decided.
+                            raise ValueError("invalid study pin")
                         identity = row.get("research_object")
                         object_id = identity.get("object_id") if isinstance(identity, dict) else None
                         if not isinstance(object_id, str):
-                            continue
+                            raise ValueError("invalid study pin")
                         if policy.visibility(None, None, object_id) is Visibility.DENIED:
                             continue
+                        # Phase 1 inspects ONLY recognizable routing IDs. Scan
+                        # all entries without parsing malformed neighbours; a
+                        # known denial wins regardless of order or duplicates.
+                        carriers = row.get("carriers")
+                        routing_ids = []
+                        if isinstance(carriers, list):
+                            routing_ids.extend(c.get("carrier_id") for c in carriers
+                                               if isinstance(c, dict)
+                                               and isinstance(c.get("carrier_id"), str)
+                                               and c["carrier_id"].strip())
+                        references = identity.get("carrier_ids")
+                        if isinstance(references, list):
+                            routing_ids.extend(c for c in references
+                                               if isinstance(c, str) and c.strip())
+                        if any(policy.carrier_visibility(None, None, object_id, carrier_id)
+                               is Visibility.DENIED for carrier_id in routing_ids):
+                            continue
                         try:
-                            if any(policy.carrier_visibility(None, None, object_id,
-                                                             c.get("carrier_id"))
-                                   is Visibility.DENIED for c in row.get("carriers", [])):
-                                continue
+                            # Phase 2 validates only rows without known denial.
+                            # Malformed visible rows remain errors, not absences.
                             record = StudyRecord.model_validate(row)
                         except Exception:
                             raise ValueError("invalid study pin") from None
