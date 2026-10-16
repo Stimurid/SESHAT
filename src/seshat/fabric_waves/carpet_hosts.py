@@ -26,6 +26,19 @@ def _read_carrier(inv: BodyInvocation, *, branch: str) -> BodyResult:
 
 def _question(inv: BodyInvocation, *, default_topic: str) -> BodyResult:
     payload = inv.carried_payload
+    admitted = payload.get("operator_query")
+    if admitted:
+        topic = admitted.get("topic", default_topic)
+        query = admitted.get("query", "synthesize divergent operational readings")
+        body: dict = {
+            "topic": topic,
+            "query": query,
+            "operator_intent_hash": admitted.get("intent_hash"),
+            "epistemic_level": admitted.get("epistemic_level", "E5"),
+        }
+        if admitted.get("context_note"):
+            body["context_note"] = admitted["context_note"]
+        return output(inv, body)
     return output(
         inv,
         {
@@ -148,6 +161,7 @@ def _host_engine(
         bundle(
             f"question-{host_id}",
             lambda inv: _question(inv, default_topic=default_topic),
+            accepts_operator_query=True,
         ),
         bundle(
             f"concepts-{host_id}",

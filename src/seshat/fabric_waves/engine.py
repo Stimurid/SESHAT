@@ -61,6 +61,12 @@ from seshat.fabric_waves.method_body import (
     MethodBodyRegistry,
     MethodBodyViolation,
 )
+from seshat.fabric_waves.operator_ingress import (
+    AdmittedOperatorQuery,
+    OperatorAdmissionError,
+    admit_aporia_context_note,
+    admit_operator_query,
+)
 from seshat.fabric_waves.propagation import (
     invalidate_cascade,
     threads_woken_by_carrier_delta,
@@ -154,6 +160,8 @@ class WaveEngine:
         self._snapshots: dict[str, Any] = {}
         self._event_limit_hit = False
         self._governance_hold = False
+        self._operator_query_by_event: dict[tuple[str, str], AdmittedOperatorQuery] = {}
+        self._run_aporia_context: dict[str, str] = {}
 
     # -- helpers -------------------------------------------------------------
 
@@ -301,6 +309,24 @@ class WaveEngine:
 
             if trigger_event.kind is StoneEventKind.APORIA:
                 self._governance_hold = True
+                try:
+                    note = admit_aporia_context_note(trigger_event.payload)
+                    if note:
+                        self._run_aporia_context[run_id] = note
+                except OperatorAdmissionError:
+                    stop_reason = FabricStopReason.INVALID_STONE
+                    outcome = FabricRunOutcome.BLOCKED
+                    self.ledger.append_wave(
+                        WaveRecord(
+                            wave_id=f"{run_id}:wave:{waves_emitted}",
+                            run_id=run_id,
+                            wave_index=waves_emitted,
+                            triggered_by=trigger_event.kind,
+                            triggering_event_id=trigger_event.event_id,
+                            sediment_versions_after=self.sediment.version_map(),
+                        )
+                    )
+                    break
                 self.ledger.append_wave(
                     WaveRecord(
                         wave_id=f"{run_id}:wave:{waves_emitted}",
@@ -331,6 +357,40 @@ class WaveEngine:
                     )
                 )
                 continue
+
+            admits_operator_query = any(
+                spec.accepts_operator_query for spec in self.thread_specs.values()
+            )
+            if (
+                admits_operator_query
+                and trigger_event.kind is StoneEventKind.QUERY
+                and trigger_event.payload != {"auto": True}
+            ):
+                try:
+                    admitted = admit_operator_query(
+                        run_id=run_id,
+                        event=trigger_event,
+                        context_note=self._run_aporia_context.pop(run_id, None),
+                    )
+                    if admitted.scope_thread_id is not None:
+                        scope_spec = self.thread_specs.get(admitted.scope_thread_id)
+                        if scope_spec is None or not scope_spec.accepts_operator_query:
+                            raise OperatorAdmissionError("OPERATOR_QUERY_SCOPE_DENIED")
+                except OperatorAdmissionError:
+                    stop_reason = FabricStopReason.INVALID_STONE
+                    outcome = FabricRunOutcome.BLOCKED
+                    self.ledger.append_wave(
+                        WaveRecord(
+                            wave_id=f"{run_id}:wave:{waves_emitted}",
+                            run_id=run_id,
+                            wave_index=waves_emitted,
+                            triggered_by=trigger_event.kind,
+                            triggering_event_id=trigger_event.event_id,
+                            sediment_versions_after=self.sediment.version_map(),
+                        )
+                    )
+                    break
+                self._operator_query_by_event[(run_id, trigger_event.event_id)] = admitted
 
             # The engine respects the budget on activations, not on waves.
             if activations_total >= budget.max_activations:
@@ -728,6 +788,14 @@ class WaveEngine:
             "source_access_manifest": manifest,
             "governance_hold": self._governance_hold,
         }
+        if spec.accepts_operator_query and stone.kind is StoneEventKind.QUERY:
+            admitted = self._operator_query_by_event.get((run_id, stone.event_id))
+            if admitted is not None and (
+                admitted.scope_thread_id is None or admitted.scope_thread_id == spec.thread_id
+            ):
+                carried_payload["operator_query"] = admitted.model_dump(mode="python")
+                carried_payload["topic"] = admitted.topic
+                carried_payload["query"] = admitted.query
         invocation = BodyInvocation(
             thread_id=spec.thread_id,
             node_id=node.node_id,

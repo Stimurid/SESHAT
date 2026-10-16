@@ -169,6 +169,7 @@ class WorkflowThreadSpec(BaseModel):
     # (3) admissible sources
     admissible_source_carriers: tuple[str, ...] = Field(default_factory=tuple)
     raw_access_policy: RawAccessPolicy = RawAccessPolicy.DRILLBACK
+    accepts_operator_query: bool = False
     # (4) distinctions / operations
     method_body_refs: tuple[MethodBodyRef, ...] = Field(default_factory=tuple)
     # (5) carriers / nodes

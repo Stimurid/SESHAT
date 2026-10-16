@@ -26,7 +26,18 @@ from seshat.fabric_waves.carpet_hosts import (
 from seshat.fabric_waves.contracts import StoneEvent, StoneEventKind, WaveBudget
 from seshat.fabric_waves.engine import WaveEngine
 from seshat.fabric_waves.scenarios import revision_engine
+from seshat.fabric_waves.source_module_manifest import build_source_module_manifest
 from seshat.fabric_waves.trace import render_html
+
+PORTFOLIO_HASHED_ARTIFACTS: tuple[str, ...] = (
+    "stones.json",
+    "events.jsonl",
+    "waves.jsonl",
+    "activations.jsonl",
+    "sediment.json",
+    "resonances.json",
+    "carpet.html",
+)
 
 
 @dataclass(frozen=True)
@@ -169,11 +180,27 @@ def _git_meta() -> dict[str, str | None]:
             return None
 
     root = Path(__file__).resolve().parents[3]
+    head_sha = _run(["git", "-C", str(root), "rev-parse", "HEAD"])
+    tree_sha = _run(["git", "-C", str(root), "rev-parse", "HEAD^{tree}"])
+    branch = _run(["git", "-C", str(root), "branch", "--show-current"])
+    attestation = "GIT_ATTESTED" if head_sha and tree_sha else "GIT_NOT_ATTESTED"
     return {
-        "head_sha": _run(["git", "-C", str(root), "rev-parse", "HEAD"]),
-        "tree_sha": _run(["git", "-C", str(root), "rev-parse", "HEAD^{tree}"]),
-        "branch": _run(["git", "-C", str(root), "branch", "--show-current"]),
+        "attestation": attestation,
+        "head_sha": head_sha,
+        "tree_sha": tree_sha,
+        "branch": branch,
     }
+
+
+def artifact_file_digests(output_dir: Path) -> dict[str, dict[str, int | str]]:
+    digests: dict[str, dict[str, int | str]] = {}
+    for name in PORTFOLIO_HASHED_ARTIFACTS:
+        data = (output_dir / name).read_bytes()
+        digests[name] = {
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "byte_length": len(data),
+        }
+    return digests
 
 
 def export_artifacts(
@@ -261,8 +288,12 @@ def export_artifacts(
         (output_dir / "activations.jsonl").read_bytes()
         + (output_dir / "waves.jsonl").read_bytes()
     ).hexdigest()
+    file_digests = artifact_file_digests(output_dir)
+    source_modules = build_source_module_manifest()
     receipt = {
         "portfolio_digest_sha256": portfolio_digest,
+        "artifact_file_digests": file_digests,
+        "source_modules": source_modules,
         "runs": [
             {
                 "label": item.label,
@@ -289,6 +320,8 @@ def export_artifacts(
             "Synthetic public fixtures only; F07 CorpusSelection host path unchanged.",
             "T3 uses campus governance gate with APORIA + unauthenticated HUMAN_DECISION REJECT.",
             "Independent Docker review and merge not performed in this executor run.",
+            "Portable receipt uses SOURCE_MODULE_BYTES_VERIFIED; git head/tree may be GIT_NOT_ATTESTED in no-git CI.",
+            "Strict external Git string gates require coordinator sidecar attestation bound to source_modules.",
         ],
     }
     (output_dir / "receipt.json").write_text(
