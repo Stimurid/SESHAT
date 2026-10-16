@@ -35,6 +35,18 @@ class StoneEventKind(StrEnum):
     FRONTIER_RETURN = "FRONTIER_RETURN"
 
 
+OPERATOR_STONE_KINDS: frozenset[StoneEventKind] = frozenset(
+    {
+        StoneEventKind.QUERY,
+        StoneEventKind.SOURCE_DELTA,
+        StoneEventKind.APORIA,
+        StoneEventKind.HUMAN_DECISION,
+        StoneEventKind.FRONTIER_RETURN,
+    }
+)
+"""External operator ingress kinds; internal causal kinds belong in events.jsonl only."""
+
+
 class EpistemicLevel(StrEnum):
     """E1 is source-witnessed; E5 is projective proposal, never accepted canon."""
 

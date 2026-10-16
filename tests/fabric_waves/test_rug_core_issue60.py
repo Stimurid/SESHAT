@@ -6,7 +6,8 @@ from seshat.contracts import AcceptanceState
 from seshat.fabric_waves.carpet_hosts import campus_host_engine, meteorology_host_engine
 from seshat.fabric_waves.carpet_portfolio import execute_portfolio, export_artifacts
 from seshat.fabric_waves.contracts import FabricRunOutcome, StoneEvent, StoneEventKind, WaveBudget
-from seshat.fabric_waves.scenarios import repair_engine
+from seshat.fabric_waves.carpet_portfolio import _run_t3_aporia_human_gate
+from seshat.fabric_waves.carpet_hosts import campus_decision_host_engine
 
 BUDGET = WaveBudget(max_waves=40, max_activations=60, max_stone_events=60)
 
@@ -61,10 +62,18 @@ def test_t2_source_delta_recomputes_dependent_branch_only():
 
 
 def test_t3_aporia_without_self_accepted_promotion():
-    engine = repair_engine()
-    run = engine.run(run_id="t3", budget=BUDGET)
+    engine = campus_decision_host_engine()
+    _run_t3_aporia_human_gate(engine)
+    run = next(item for item in engine.ledger.runs if item.run_id == "t3-aporia-human-gate")
     assert run.outcome is FabricRunOutcome.APORIA
     assert not engine.sediment.views["accepted"]
+    kinds = {event.kind for event in engine.ledger.events if event.run_id == run.run_id}
+    assert StoneEventKind.HUMAN_DECISION in kinds
+    assert StoneEventKind.APORIA in kinds
+    assert not any(
+        record.kind.value == "ANSWER"
+        for record in engine.ledger.resonances_for_run(run.run_id)
+    )
 
 
 def test_t4_meteorology_host_reuses_framework():
@@ -82,6 +91,7 @@ def test_portfolio_cli_writes_required_artifact_names(tmp_path):
     receipt = export_artifacts(runs, tmp_path)
     for name in receipt["artifact_files"]:
         assert (tmp_path / name).is_file()
+    assert (tmp_path / "events.jsonl").is_file()
     activations = [
         json.loads(line)
         for line in (tmp_path / "activations.jsonl").read_text(encoding="utf-8").splitlines()

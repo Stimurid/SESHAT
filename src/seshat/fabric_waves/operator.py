@@ -45,8 +45,21 @@ def load_stone_events(payload: object) -> tuple[StoneEvent, ...]:
 
 
 def build_engine(profile: str) -> WaveEngine:
+    from seshat.fabric_waves.carpet_hosts import (
+        campus_decision_host_engine,
+        campus_host_engine,
+        meteorology_host_engine,
+    )
     from seshat.fabric_waves.scenarios import corpus_engine, repair_engine, revision_engine
-    factories = {"repair": repair_engine, "corpus": corpus_engine, "invalidation": revision_engine}
+
+    factories = {
+        "repair": repair_engine,
+        "corpus": corpus_engine,
+        "invalidation": revision_engine,
+        "campus": campus_host_engine,
+        "meteorology": meteorology_host_engine,
+        "campus_decision": campus_decision_host_engine,
+    }
     if profile not in factories:
         raise ValueError("UNKNOWN_SYNTHETIC_PROFILE")
     return factories[profile]()
@@ -58,17 +71,19 @@ def run_operator(
     run_id: str,
     budget: WaveBudget,
     output_dir: Path | None,
+    engine: WaveEngine | None = None,
 ) -> dict[str, Any]:
-    engine = build_engine(profile)
+    active = engine if engine is not None else build_engine(profile)
     for event in events:
-        engine.dispatcher.drop(event)
-    run = engine.run(run_id=run_id, budget=budget, auto_answer=True)
+        active.dispatcher.drop(event)
+    run = active.run(run_id=run_id, budget=budget, auto_answer=True)
     trace = {
         "run": run.model_dump(mode="python"),
-        "ledger": engine.ledger.serialize(),
-        "sediment": [record.model_dump(mode="python") for record in engine.sediment.all_records()],
+        "ledger": active.ledger.serialize(),
+        "sediment": [record.model_dump(mode="python") for record in active.sediment.all_records()],
         "resonances": [
-            record.model_dump(mode="python") for record in engine.resonance_composer.values()
+            record.model_dump(mode="python")
+            for record in active.ledger.resonances_for_run(run_id)
         ],
         "stone_kinds_observed": sorted({event.kind.value for event in events}),
     }
@@ -81,15 +96,15 @@ def run_operator(
         )
         html_doc = render_html(
             run_record=run,
-            ledger=engine.ledger,
-            sediment=engine.sediment,
-            resonances=engine.resonance_composer,
-            thread_specs=engine.thread_specs,
+            ledger=active.ledger,
+            sediment=active.sediment,
+            resonances=active.resonance_composer,
+            thread_specs=active.thread_specs,
             title=f"SESHAT fabric operator trace — {run_id}",
         )
         (output_dir / f"{run_id}.html").write_text(html_doc, encoding="utf-8")
         (output_dir / f"{run_id}.svg").write_text(
-            render_svg(run_record=run, ledger=engine.ledger),
+            render_svg(run_record=run, ledger=active.ledger),
             encoding="utf-8",
         )
     return trace
@@ -107,7 +122,14 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--profile",
-        choices=("repair", "corpus", "invalidation"),
+        choices=(
+            "repair",
+            "corpus",
+            "invalidation",
+            "campus",
+            "meteorology",
+            "campus_decision",
+        ),
         default="repair",
         help="Fixture thread bundle (default: repair = Object/Method mutual repair).",
     )

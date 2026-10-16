@@ -12,10 +12,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from seshat.fabric_waves.carpet_hosts import campus_host_engine, meteorology_host_engine
+from seshat.fabric_waves.carpet_export import (
+    all_run_events,
+    operator_stone_events,
+    run_ledger_head_hash,
+    sediment_records_for_run,
+)
+from seshat.fabric_waves.carpet_hosts import (
+    campus_decision_host_engine,
+    campus_host_engine,
+    meteorology_host_engine,
+)
 from seshat.fabric_waves.contracts import StoneEvent, StoneEventKind, WaveBudget
 from seshat.fabric_waves.engine import WaveEngine
-from seshat.fabric_waves.scenarios import repair_engine, revision_engine
+from seshat.fabric_waves.scenarios import revision_engine
 from seshat.fabric_waves.trace import render_html
 
 
@@ -24,6 +34,14 @@ class PortfolioRun:
     label: str
     run_id: str
     engine: WaveEngine
+
+
+PORTFOLIO_EXPORT_RUNS: tuple[str, ...] = (
+    "t1-campus-query",
+    "t2-campus-source-delta",
+    "t3-aporia-human-gate",
+    "t4-meteorology-query",
+)
 
 
 def _budget() -> WaveBudget:
@@ -45,6 +63,33 @@ def _query_stone(event_id: str, *, topic: str) -> StoneEvent:
             "query": "reconcile divergent branches with versioned sediment",
         },
     )
+
+
+def _run_t3_aporia_human_gate(engine: WaveEngine) -> None:
+    engine.dispatcher.drop(
+        StoneEvent(
+            event_id="t3-aporia-hold",
+            kind=StoneEventKind.APORIA,
+            issued_at_tick=0,
+            payload={"note": "operator holds promotion until governance review"},
+        )
+    )
+    engine.dispatcher.drop(
+        _query_stone("t3-query", topic="campus-governance-aporia"),
+    )
+    engine.dispatcher.drop(
+        StoneEvent(
+            event_id="t3-human-reject",
+            kind=StoneEventKind.HUMAN_DECISION,
+            issued_at_tick=2,
+            payload={
+                "choice": "REJECT",
+                "subject_sediment_id": "reconcile-campus",
+                "rationale": "unauthenticated operator reject must not promote",
+            },
+        ),
+    )
+    engine.run(run_id="t3-aporia-human-gate", budget=_budget())
 
 
 def execute_portfolio() -> tuple[PortfolioRun, ...]:
@@ -73,8 +118,8 @@ def execute_portfolio() -> tuple[PortfolioRun, ...]:
         ),
     )
 
-    repair = repair_engine()
-    repair.run(run_id="t3-aporia-human-gate", budget=_budget())
+    t3_engine = campus_decision_host_engine()
+    _run_t3_aporia_human_gate(t3_engine)
 
     met = meteorology_host_engine()
     met.run(
@@ -83,7 +128,6 @@ def execute_portfolio() -> tuple[PortfolioRun, ...]:
         initial_stone=_query_stone("t4-query", topic="winter-operations-wind-icing"),
     )
 
-    # Baseline invalidation trace (shared revision fixture, independent of campus host).
     invalidation = revision_engine()
     invalidation.run(run_id="t2-baseline-init", budget=_budget())
     invalidation.run(
@@ -105,7 +149,7 @@ def execute_portfolio() -> tuple[PortfolioRun, ...]:
     return (
         PortfolioRun("T1", "t1-campus-query", campus),
         PortfolioRun("T2", "t2-campus-source-delta", campus),
-        PortfolioRun("T3", "t3-aporia-human-gate", repair),
+        PortfolioRun("T3", "t3-aporia-human-gate", t3_engine),
         PortfolioRun("T4", "t4-meteorology-query", met),
         PortfolioRun("T2_BASELINE", "t2-baseline-revision", invalidation),
     )
@@ -140,18 +184,23 @@ def export_artifacts(
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     stones: list[dict[str, Any]] = []
+    event_lines: list[str] = []
     waves_lines: list[str] = []
     activation_lines: list[str] = []
     sediment_records: list[dict[str, Any]] = []
     resonance_records: list[dict[str, Any]] = []
+    seen_resonance_ids: set[str] = set()
 
+    export_runs = [item for item in runs if item.run_id in PORTFOLIO_EXPORT_RUNS]
     engines_by_run: dict[str, WaveEngine] = {}
-    for item in runs:
+    for item in export_runs:
         engines_by_run[item.run_id] = item.engine
-        ledger, sediment, resonances = item.engine.snapshot(item.run_id)
-        for event in ledger.events:
-            if event.run_id == item.run_id:
-                stones.append(event.model_dump(mode="python"))
+        ledger, sediment, _composer = item.engine.snapshot(item.run_id)
+        stones.extend(operator_stone_events(ledger, item.run_id))
+        for event in all_run_events(ledger, item.run_id):
+            event_lines.append(
+                json.dumps(event, ensure_ascii=False, sort_keys=True)
+            )
         for wave in ledger.waves:
             if wave.run_id == item.run_id:
                 waves_lines.append(
@@ -166,9 +215,11 @@ def export_artifacts(
                         sort_keys=True,
                     )
                 )
-        for record in sediment.all_records():
-            sediment_records.append(record.model_dump(mode="python"))
-        for record in resonances.values():
+        sediment_records.extend(sediment_records_for_run(ledger, sediment, item.run_id))
+        for record in ledger.resonances_for_run(item.run_id):
+            if record.resonance_id in seen_resonance_ids:
+                continue
+            seen_resonance_ids.add(record.resonance_id)
             resonance_records.append(record.model_dump(mode="python"))
 
     primary = engines_by_run[primary_run_id]
@@ -185,6 +236,10 @@ def export_artifacts(
 
     (output_dir / "stones.json").write_text(
         json.dumps(stones, ensure_ascii=False, sort_keys=True, indent=2),
+        encoding="utf-8",
+    )
+    (output_dir / "events.jsonl").write_text(
+        "\n".join(event_lines) + ("\n" if event_lines else ""),
         encoding="utf-8",
     )
     (output_dir / "waves.jsonl").write_text("\n".join(waves_lines) + ("\n" if waves_lines else ""), encoding="utf-8")
@@ -212,14 +267,16 @@ def export_artifacts(
             {
                 "label": item.label,
                 "run_id": item.run_id,
-                "ledger_head_hash": item.engine.ledger.runs[-1].ledger_head_hash
-                if item.engine.ledger.runs
-                else None,
+                "ledger_head_hash": run_ledger_head_hash(
+                    item.engine.snapshot(item.run_id)[0],
+                    item.run_id,
+                ),
             }
-            for item in runs
+            for item in export_runs
         ],
         "artifact_files": [
             "stones.json",
+            "events.jsonl",
             "waves.jsonl",
             "activations.jsonl",
             "sediment.json",
@@ -230,7 +287,7 @@ def export_artifacts(
         "git": _git_meta(),
         "known_limits": [
             "Synthetic public fixtures only; F07 CorpusSelection host path unchanged.",
-            "T3 uses repair_engine APORIA gate; human DecisionRight via decision_gate API in tests.",
+            "T3 uses campus governance gate with APORIA + unauthenticated HUMAN_DECISION REJECT.",
             "Independent Docker review and merge not performed in this executor run.",
         ],
     }

@@ -103,6 +103,21 @@ def _answer(inv: BodyInvocation) -> BodyResult:
     )
 
 
+def _human_governance_gate(inv: BodyInvocation) -> BodyResult:
+    reconciliation = inv.carried_payload["candidate_sediments"][0]
+    if inv.carried_payload.get("governance_hold") and reconciliation.payload.get("divergent"):
+        return BodyResult(aporia="OPERATOR_GOVERNANCE_REQUIRED")
+    return output(
+        inv,
+        {
+            "alpha_signal": reconciliation.payload["alpha_signal"],
+            "beta_signal": reconciliation.payload["beta_signal"],
+            "divergent": reconciliation.payload["divergent"],
+            "reconcile_version": reconciliation.version,
+        },
+    )
+
+
 def _host_engine(
     *,
     host_id: str,
@@ -114,6 +129,8 @@ def _host_engine(
     beta_signal: str,
     default_topic: str,
     revisions: dict | None = None,
+    with_human_governance_gate: bool = False,
+    decision_verifier=None,
 ) -> WaveEngine:
     obs_a = f"obs-{host_id}-alpha"
     obs_b = f"obs-{host_id}-beta"
@@ -152,17 +169,38 @@ def _host_engine(
             _reconcile,
             reads=(f"evidence-alpha-{host_id}", f"evidence-beta-{host_id}"),
         ),
-        bundle(
-            f"answer-{host_id}",
-            _answer,
-            reads=(f"reconcile-{host_id}",),
-        ),
     ]
+    if with_human_governance_gate:
+        bundles.append(
+            bundle(
+                f"governance-{host_id}",
+                _human_governance_gate,
+                reads=(f"reconcile-{host_id}",),
+            )
+        )
+        bundles.append(
+            bundle(
+                f"answer-{host_id}",
+                _answer,
+                reads=(f"governance-{host_id}",),
+            )
+        )
+    else:
+        bundles.append(
+            bundle(
+                f"answer-{host_id}",
+                _answer,
+                reads=(f"reconcile-{host_id}",),
+            )
+        )
     store = source_store(
         {carrier_alpha: alpha_text, carrier_beta: beta_text},
         revisions=revisions,
     )
-    return engine_for(bundles, store)
+    engine = engine_for(bundles, store)
+    if decision_verifier is not None:
+        engine.decision_verifier = decision_verifier
+    return engine
 
 
 def campus_host_engine() -> WaveEngine:
@@ -184,6 +222,30 @@ def campus_host_engine() -> WaveEngine:
         revisions={
             ("campus-branch-alpha", "1", "2"): revision,
         },
+    )
+
+
+def campus_decision_host_engine() -> WaveEngine:
+    """Campus host with governance gate for T3 APORIA + HUMAN_DECISION portfolio path."""
+    from seshat.fabric_waves.decision_gate import host_fixture_verifier
+
+    revision = carrier(
+        carrier_id="campus-branch-alpha",
+        version="2",
+        text="revised lab telemetry: utilization index 79%",
+    )
+    return _host_engine(
+        host_id="campus",
+        carrier_alpha="campus-branch-alpha",
+        carrier_beta="campus-branch-beta",
+        alpha_text="lab telemetry: utilization index 82%",
+        beta_text="facilities audit memo: utilization index 64%",
+        alpha_signal="82",
+        beta_signal="64",
+        default_topic="campus-governance-aporia",
+        revisions={("campus-branch-alpha", "1", "2"): revision},
+        with_human_governance_gate=True,
+        decision_verifier=host_fixture_verifier,
     )
 
 

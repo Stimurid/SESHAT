@@ -74,6 +74,12 @@ from seshat.fabric_waves.resonance import (
     answer as compose_answer,
 )
 from seshat.fabric_waves.resonance import (
+    decision_request as compose_decision_request,
+)
+from seshat.fabric_waves.resonance import (
+    question as compose_question,
+)
+from seshat.fabric_waves.resonance import (
     report as compose_report,
 )
 from seshat.fabric_waves.sediment import SedimentRecord, SedimentState, payload_hash
@@ -147,6 +153,7 @@ class WaveEngine:
         self._decision_nonces: set[tuple[str, str]] = set()
         self._snapshots: dict[str, Any] = {}
         self._event_limit_hit = False
+        self._governance_hold = False
 
     # -- helpers -------------------------------------------------------------
 
@@ -184,6 +191,7 @@ class WaveEngine:
     ) -> RunRecord:
         self._validate_specs()
         self._event_limit_hit = False
+        self._governance_hold = False
         if any(item.run_id == run_id for item in self.ledger.runs):
             raise WaveEngineConfigurationError(f"run_id {run_id!r} already used")
         start_tick = self._tick()
@@ -248,22 +256,27 @@ class WaveEngine:
                 break
 
             waves_emitted += 1
+            if not self.dispatcher.pending:
+                stop_reason = FabricStopReason.NO_DELTA
+                outcome = FabricRunOutcome.SATURATED
+                break
+            next_stone = self.dispatcher.pending[0]
             trigger_event = self.dispatcher.consume_next(
                 run_id=run_id,
                 wave=WaveRecord(
                     wave_id=f"{run_id}:wave:{waves_emitted}",
                     run_id=run_id,
                     wave_index=waves_emitted,
-                    triggered_by=initial_event.kind,
-                    triggering_event_id=initial_event.event_id,
+                    triggered_by=next_stone.kind,
+                    triggering_event_id=next_stone.event_id,
                     eligible_thread_ids=(),
-                        fired_thread_ids=(),
-                        no_delta_thread_ids=(),
-                        skipped_thread_ids=(),
-                        blocked_thread_ids=(),
-                        budget_used=0,
-                        sediment_versions_after={},
-                    ),
+                    fired_thread_ids=(),
+                    no_delta_thread_ids=(),
+                    skipped_thread_ids=(),
+                    blocked_thread_ids=(),
+                    budget_used=0,
+                    sediment_versions_after={},
+                ),
             )
             if trigger_event is None:
                 stop_reason = FabricStopReason.NO_DELTA
@@ -285,6 +298,39 @@ class WaveEngine:
                         triggering_event_id=trigger_event.event_id,
                         sediment_versions_after=self.sediment.version_map()))
                     break
+
+            if trigger_event.kind is StoneEventKind.APORIA:
+                self._governance_hold = True
+                self.ledger.append_wave(
+                    WaveRecord(
+                        wave_id=f"{run_id}:wave:{waves_emitted}",
+                        run_id=run_id,
+                        wave_index=waves_emitted,
+                        triggered_by=trigger_event.kind,
+                        triggering_event_id=trigger_event.event_id,
+                        sediment_versions_after=self.sediment.version_map(),
+                    )
+                )
+                continue
+
+            if trigger_event.kind is StoneEventKind.HUMAN_DECISION:
+                self._apply_human_decision_stone(
+                    run_id=run_id,
+                    event=trigger_event,
+                    decision_ids=decision_ids,
+                    ended_tick=self._tick(),
+                )
+                self.ledger.append_wave(
+                    WaveRecord(
+                        wave_id=f"{run_id}:wave:{waves_emitted}",
+                        run_id=run_id,
+                        wave_index=waves_emitted,
+                        triggered_by=trigger_event.kind,
+                        triggering_event_id=trigger_event.event_id,
+                        sediment_versions_after=self.sediment.version_map(),
+                    )
+                )
+                continue
 
             # The engine respects the budget on activations, not on waves.
             if activations_total >= budget.max_activations:
@@ -680,6 +726,7 @@ class WaveEngine:
             "values": source_payload.get("values", []),
             "candidate_sediments": candidate_sediments,
             "source_access_manifest": manifest,
+            "governance_hold": self._governance_hold,
         }
         invocation = BodyInvocation(
             thread_id=spec.thread_id,
@@ -994,29 +1041,108 @@ class WaveEngine:
         self._decision_nonces.add((attestation.issuer, attestation.nonce))
         return record.model_copy(deep=True)
 
+    def _apply_human_decision_stone(
+        self,
+        *,
+        run_id: str,
+        event: StoneEvent,
+        decision_ids: list[str],
+        ended_tick: int,
+    ) -> None:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        choice = str(payload.get("choice", "REJECT"))
+        subject_sediment_id = str(
+            payload.get("subject_sediment_id", event.target_research_object_id or "")
+        )
+        attestation_raw = payload.get("attestation")
+        if not isinstance(attestation_raw, dict) or not subject_sediment_id:
+            blocked = compose_decision_request(
+                run_id=run_id,
+                resonance_id=f"{run_id}:resonance:decision-blocked:{event.event_id}",
+                tick=ended_tick,
+                subject_sediment_id=subject_sediment_id or "unknown",
+                reason="HUMAN_DECISION rejected: missing authenticated attestation envelope",
+                sediments=self.sediment.all_records(),
+            )
+            self.resonance_composer.add(blocked)
+            self.ledger.append_resonance(blocked)
+            return
+        attestation = TrustedDecisionAttestation.model_validate(attestation_raw)
+        try:
+            record = self.record_human_decision(
+                run_id=run_id,
+                decision_id=attestation.decision_id,
+                subject_sediment_id=subject_sediment_id,
+                choice=choice,
+                rationale=str(payload.get("rationale", "operator_stone")),
+                attestation=attestation,
+                tick=ended_tick,
+            )
+            decision_ids.append(record.decision_id)
+        except WaveEngineConfigurationError:
+            blocked = compose_decision_request(
+                run_id=run_id,
+                resonance_id=f"{run_id}:resonance:decision-blocked:{event.event_id}",
+                tick=ended_tick,
+                subject_sediment_id=subject_sediment_id,
+                reason="HUMAN_DECISION rejected: attestation failed host verification",
+                sediments=self.sediment.all_records(),
+            )
+            self.resonance_composer.add(blocked)
+            self.ledger.append_resonance(blocked)
+
     # -- auto resonance for the demo CLI -------------------------------------
 
     def _autoresonance(self, run_id: str, run_record: RunRecord) -> None:
         activations = self.ledger.activations_for_run(run_id)
         waves = tuple(item for item in self.ledger.waves if item.run_id == run_id)
         events = tuple(item for item in self.ledger.events if item.run_id == run_id)
-        sediments = self.sediment.all_records()
+        produced_ids = {
+            sediment_id
+            for activation in activations
+            for sediment_id in activation.produced_sediment_ids
+        }
+        sediments = tuple(
+            record
+            for record in self.sediment.all_records()
+            if record.sediment_id in produced_ids
+        )
         summary = (
             f"Run {run_id} finished as {run_record.outcome.value} after "
             f"{run_record.waves_emitted} wave(s) and {run_record.activations_total} activation(s)."
         )
-        answer_record = compose_answer(
-            run_id=run_id,
-            resonance_id=f"{run_id}:resonance:answer",
-            tick=run_record.ended_at_tick,
-            summary=summary,
-            activations=activations,
-            sediments=sediments,
-            events=events,
-            waves=waves,
-        )
-        self.resonance_composer.add(answer_record)
-        self.ledger.append_resonance(answer_record)
+        blocked_outcomes = {
+            FabricRunOutcome.APORIA,
+            FabricRunOutcome.BLOCKED,
+            FabricRunOutcome.EXHAUSTED,
+        }
+        if run_record.outcome in blocked_outcomes:
+            question_record = compose_question(
+                run_id=run_id,
+                resonance_id=f"{run_id}:resonance:question",
+                tick=run_record.ended_at_tick,
+                question_text=summary,
+                blocked_thread_ids=tuple(
+                    sorted({act.thread_id for act in activations if act.error_code == "BODY_APORIA"})
+                ),
+                events=events,
+                activations=activations,
+            )
+            self.resonance_composer.add(question_record)
+            self.ledger.append_resonance(question_record)
+        else:
+            answer_record = compose_answer(
+                run_id=run_id,
+                resonance_id=f"{run_id}:resonance:answer",
+                tick=run_record.ended_at_tick,
+                summary=summary,
+                activations=activations,
+                sediments=sediments,
+                events=events,
+                waves=waves,
+            )
+            self.resonance_composer.add(answer_record)
+            self.ledger.append_resonance(answer_record)
 
         nodes = [
             {"id": spec.thread_id, "label": spec.name}

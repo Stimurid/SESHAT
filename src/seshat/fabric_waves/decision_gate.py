@@ -60,3 +60,37 @@ def synthetic_test_attestation(decision_id: str, subject_sediment_id: str) -> Tr
         subject_sediment_id=subject_sediment_id, subject_version="unverified",
         choice="ACCEPT", issuer="synthetic-untrusted", decision_right=ACCEPTANCE_DECISION_RIGHT,
         nonce=decision_id, attestation_token="UNTRUSTED", decided_by="synthetic-untrusted")
+
+
+HOST_FIXTURE_ISSUER = "campus-host-fixture"
+HOST_FIXTURE_TOKEN = "HOST_SIGNED_TEST"
+
+
+def host_fixture_attestation(
+    *,
+    decision_id: str,
+    subject_sediment_id: str,
+    subject_version: str,
+    choice: Literal["ACCEPT", "REJECT"],
+    nonce: str,
+) -> TrustedDecisionAttestation:
+    """Synthetic host-signed envelope for bounded positive portfolio paths only."""
+    return TrustedDecisionAttestation(
+        decision_id=decision_id,
+        subject_sediment_id=subject_sediment_id,
+        subject_version=subject_version,
+        choice=choice,
+        issuer=HOST_FIXTURE_ISSUER,
+        decision_right=ACCEPTANCE_DECISION_RIGHT,
+        nonce=nonce,
+        attestation_token=HOST_FIXTURE_TOKEN,
+        decided_by="host-fixture-operator",
+    )
+
+
+def host_fixture_verifier(attestation: TrustedDecisionAttestation) -> bool:
+    return (
+        attestation.issuer == HOST_FIXTURE_ISSUER
+        and attestation.attestation_token == HOST_FIXTURE_TOKEN
+        and attestation.decision_right == ACCEPTANCE_DECISION_RIGHT
+    )

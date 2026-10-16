@@ -265,10 +265,22 @@ def render_html(
         "<thead><tr><th>kind</th><th>payload_hash</th><th>traced events</th><th>traced activations</th></tr></thead>"
     )
     parts.append("<tbody>")
+    blocked_run = run_record.outcome.value in ("APORIA", "BLOCKED", "EXHAUSTED")
     for record in resonances.values():
+        if record.run_id != run_id:
+            continue
+        if record.kind is ResonanceKind.ANSWER and blocked_run:
+            continue
+        chip = "#1a7f37"
+        if record.kind is ResonanceKind.ANSWER:
+            chip = "#1a7f37"
+        elif record.kind in (ResonanceKind.QUESTION, ResonanceKind.DECISION_REQUEST):
+            chip = "#9a6700"
+        elif record.kind is ResonanceKind.FRONTIER_GAP:
+            chip = "#cf222e"
         parts.append(
             "<tr>"
-            f"<td>{html.escape(record.kind.value)}</td>"
+            f"<td><span class=\"chip\" style=\"background:{chip}\">{html.escape(record.kind.value)}</span></td>"
             f"<td><code>{html.escape(record.payload_hash[:16])}…</code></td>"
             f"<td>{len(record.trace_event_ids)}</td>"
             f"<td>{len(record.trace_activation_ids)}</td>"
