@@ -36,8 +36,12 @@ def _question(inv: BodyInvocation, *, default_topic: str) -> BodyResult:
             "operator_intent_hash": admitted.get("intent_hash"),
             "epistemic_level": admitted.get("epistemic_level", "E5"),
         }
-        if admitted.get("context_note"):
-            body["context_note"] = admitted["context_note"]
+        marker = admitted.get("aporia_occurrence_marker")
+        if marker:
+            body["aporia_occurrence_marker"] = marker
+        fingerprint = admitted.get("aporia_context_sha256")
+        if fingerprint:
+            body["aporia_context_sha256"] = fingerprint
         return output(inv, body)
     return output(
         inv,

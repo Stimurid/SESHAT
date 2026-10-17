@@ -7,7 +7,7 @@ import hashlib
 import json
 import subprocess
 import sys
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,10 +23,10 @@ from seshat.fabric_waves.carpet_hosts import (
     campus_host_engine,
     meteorology_host_engine,
 )
+from seshat.fabric_waves.source_module_manifest import build_source_module_manifest
 from seshat.fabric_waves.contracts import StoneEvent, StoneEventKind, WaveBudget
 from seshat.fabric_waves.engine import WaveEngine
 from seshat.fabric_waves.scenarios import revision_engine
-from seshat.fabric_waves.source_module_manifest import build_source_module_manifest
 from seshat.fabric_waves.trace import render_html
 
 PORTFOLIO_HASHED_ARTIFACTS: tuple[str, ...] = (
@@ -166,24 +166,72 @@ def execute_portfolio() -> tuple[PortfolioRun, ...]:
     )
 
 
-def _git_meta() -> dict[str, str | None]:
-    def _run(args: Sequence[str]) -> str | None:
+def _git_run(root: Path, args: Sequence[str], *, text: bool = True) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), *args],
+            check=True,
+            capture_output=True,
+            text=text,
+        )
+        if text:
+            return result.stdout.strip()
+        return result.stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _git_module_paths_dirty(root: Path, entries: Sequence[Mapping[str, Any]]) -> bool:
+    for entry in entries:
+        rel = str(entry["relative_path"])
         try:
-            result = subprocess.run(
-                args,
+            subprocess.run(
+                ["git", "-C", str(root), "diff", "--quiet", "HEAD", "--", rel],
                 check=True,
                 capture_output=True,
-                text=True,
             )
-            return result.stdout.strip()
         except (OSError, subprocess.CalledProcessError):
-            return None
+            return True
+        tracked = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "--error-unmatch", rel],
+            capture_output=True,
+        )
+        if tracked.returncode != 0:
+            return True
+    return False
 
+
+def _git_modules_match_head(root: Path, entries: Sequence[Mapping[str, Any]]) -> bool:
+    for entry in entries:
+        rel = str(entry["relative_path"])
+        if ".." in Path(rel).parts:
+            return False
+        blob = _git_run(root, ["show", f"HEAD:{rel}"], text=False)
+        if blob is None:
+            return False
+        if len(blob) != int(entry["byte_length"]):
+            return False
+        if hashlib.sha256(blob).hexdigest() != str(entry["sha256"]):
+            return False
+    return True
+
+
+def _git_meta() -> dict[str, str | None]:
     root = Path(__file__).resolve().parents[3]
-    head_sha = _run(["git", "-C", str(root), "rev-parse", "HEAD"])
-    tree_sha = _run(["git", "-C", str(root), "rev-parse", "HEAD^{tree}"])
-    branch = _run(["git", "-C", str(root), "branch", "--show-current"])
-    attestation = "GIT_ATTESTED" if head_sha and tree_sha else "GIT_NOT_ATTESTED"
+    head_sha = _git_run(root, ["rev-parse", "HEAD"])
+    tree_sha = _git_run(root, ["rev-parse", "HEAD^{tree}"])
+    branch = _git_run(root, ["branch", "--show-current"])
+    modules = build_source_module_manifest()["modules"]
+
+    attestation = "GIT_NOT_ATTESTED"
+    if head_sha and tree_sha:
+        dirty = _git_module_paths_dirty(root, modules)
+        matches = _git_modules_match_head(root, modules)
+        if not dirty and matches:
+            attestation = "GIT_ATTESTED"
+        else:
+            attestation = "GIT_REPORTED_UNVERIFIED"
+
     return {
         "attestation": attestation,
         "head_sha": head_sha,
@@ -320,8 +368,8 @@ def export_artifacts(
             "Synthetic public fixtures only; F07 CorpusSelection host path unchanged.",
             "T3 uses campus governance gate with APORIA + unauthenticated HUMAN_DECISION REJECT.",
             "Independent Docker review and merge not performed in this executor run.",
-            "Portable receipt uses SOURCE_MODULE_BYTES_VERIFIED; git head/tree may be GIT_NOT_ATTESTED in no-git CI.",
-            "Strict external Git string gates require coordinator sidecar attestation bound to source_modules.",
+            "Portable receipt uses SOURCE_MODULE_BYTES_VERIFIED; git attestation is conservative (GIT_ATTESTED only when HEAD bytes match all listed modules and worktree is clean).",
+            "GIT_REPORTED_UNVERIFIED / GIT_NOT_ATTESTED are honest self-reports; TRUSTED_EXTERNAL review must pin exact SHA/TREE + module digest independently.",
         ],
     }
     (output_dir / "receipt.json").write_text(
