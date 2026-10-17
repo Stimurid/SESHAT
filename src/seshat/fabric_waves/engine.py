@@ -93,6 +93,7 @@ from seshat.fabric_waves.sediment import SedimentRecord, SedimentState, payload_
 from seshat.fabric_waves.source_access import FabricCarrierStore
 from seshat.fabric_waves.stone import StoneDispatcher, StoneQueueFull
 from seshat.fabric_waves.external_carrier.contracts import (
+    AgentTaskRequest,
     ExternalResumeReceipt,
     material_hash,
 )
@@ -116,6 +117,7 @@ class _WaitingRunState:
     start_tick: int
     decision_ids: list[str]
     request_id: str
+    dispatch_snapshot: AgentTaskRequest | None = None
 
 
 class WaveEngineConfigurationError(ValueError):
@@ -633,6 +635,14 @@ class WaveEngine:
             "ledger_head_hash": self.ledger.head_hash,
         }, deep=True)
         if outcome is FabricRunOutcome.WAITING_EXTERNAL:
+            active_need = next(
+                (
+                    need
+                    for need in reversed(self.external_ledger.research_needs)
+                    if need.run_id == run_id
+                ),
+                None,
+            )
             self._waiting_runs[run_id] = _WaitingRunState(
                 budget=budget,
                 waves_emitted=waves_emitted,
@@ -643,13 +653,9 @@ class WaveEngine:
                 initial_versions=initial_versions,
                 start_tick=start_tick,
                 decision_ids=decision_ids,
-                request_id=next(
-                    (
-                        need.request_id
-                        for need in reversed(self.external_ledger.research_needs)
-                        if need.run_id == run_id
-                    ),
-                    "",
+                request_id=active_need.request_id if active_need is not None else "",
+                dispatch_snapshot=(
+                    active_need.model_copy(deep=True) if active_need is not None else None
                 ),
             )
             self._snapshots[run_id] = deepcopy(
@@ -1247,7 +1253,13 @@ class WaveEngine:
             research_object_id=run_id,
             payload=payload,
             payload_hash=digest,
-            provenance=("HOST_VERIFIED_EXTERNAL_RETURN",),
+            provenance=(
+                "HOST_VERIFIED_EXTERNAL_RETURN",
+                f"request:{evidence_return.request_id}",
+                f"job:{evidence_return.host_receipt.host_job.job_id}",
+                f"worker:{evidence_return.worker_ref.carrier_id}",
+                f"method:{evidence_return.method_call_receipt_hash[:16]}",
+            ),
             method_body_refs=(),
             source_carrier_refs=tuple(evidence_return.source_claim_refs),
             epistemic_level=EpistemicLevel.E5,
@@ -1262,6 +1274,42 @@ class WaveEngine:
         self.sediment.deposit(record)
         return record
 
+    def _verify_pinned_sources_current(self, need: AgentTaskRequest) -> None:
+        if self.carrier_store is None:
+            raise ExternalAdmissionError("SOURCE_AUTHORITY_UNAVAILABLE")
+        for carrier_id in need.source_carrier_ids:
+            carriers = self.carrier_store.carriers_for((carrier_id,))
+            if not carriers:
+                raise ExternalAdmissionError("SOURCE_CARRIER_UNKNOWN")
+            pinned = need.source_versions.get(carrier_id)
+            if pinned is None or carriers[0].version != pinned:
+                self.external_ledger.mark_stale(need.request_id)
+                raise ExternalAdmissionError("SOURCE_VERSION_STALE")
+
+    def _assert_active_external_wait(
+        self,
+        run_id: str,
+        receipt: ExternalResumeReceipt,
+    ) -> AgentTaskRequest:
+        wait = self._waiting_runs[run_id]
+        if receipt.request_id != wait.request_id:
+            raise WaveEngineConfigurationError("ACTIVE_WAIT_REQUEST_MISMATCH")
+        need = self.external_ledger.need_by_id(wait.request_id)
+        if need is None:
+            raise WaveEngineConfigurationError("ACTIVE_WAIT_REQUEST_UNKNOWN")
+        snap = wait.dispatch_snapshot
+        if snap is not None:
+            if receipt.evidence_return.worker_ref != snap.worker_ref:
+                raise WaveEngineConfigurationError("ACTIVE_WAIT_WORKER_MISMATCH")
+            if (
+                need.thread_id != snap.thread_id
+                or need.node_id != snap.node_id
+                or need.wave_id != snap.wave_id
+                or need.method_body_ref != snap.method_body_ref
+            ):
+                raise WaveEngineConfigurationError("ACTIVE_WAIT_THREAD_MISMATCH")
+        return need
+
     def resume_external_evidence(
         self,
         *,
@@ -1272,7 +1320,9 @@ class WaveEngine:
         run_id = receipt.run_id
         if run_id not in self._waiting_runs:
             raise WaveEngineConfigurationError(f"run {run_id!r} is not waiting for external evidence")
+        active_need = self._assert_active_external_wait(run_id, receipt)
         try:
+            self._verify_pinned_sources_current(active_need)
             evidence = verify_resume_receipt(
                 ledger=self.external_ledger,
                 receipt=receipt,

@@ -106,6 +106,13 @@ def compute_host_binding_hash(
         {
             "request_id": request.request_id,
             "run_id": request.run_id,
+            "wave_id": request.wave_id,
+            "thread_id": request.thread_id,
+            "node_id": request.node_id,
+            "method_body_ref": request.method_body_ref.model_dump(mode="python"),
+            "source_carrier_ids": list(request.source_carrier_ids),
+            "source_versions": dict(request.source_versions),
+            "source_rights": request.source_rights.value,
             "worker_ref": worker_ref.model_dump(mode="python"),
             "host_job": host_job.model_dump(mode="python"),
             "canonical_input_hash": request.canonical_input_hash,
@@ -113,4 +120,30 @@ def compute_host_binding_hash(
     )
 
 
-__all__ = ["ExternalCarrierLedger", "compute_host_binding_hash"]
+def dispatch_pins_match(
+    ledger_need: AgentTaskRequest,
+    host_need: AgentTaskRequest,
+) -> bool:
+    """Host dispatch snapshot is authoritative; ledger row must not drift after dispatch."""
+
+    return (
+        ledger_need.request_id == host_need.request_id
+        and ledger_need.idempotency_key == host_need.idempotency_key
+        and ledger_need.run_id == host_need.run_id
+        and ledger_need.wave_id == host_need.wave_id
+        and ledger_need.thread_id == host_need.thread_id
+        and ledger_need.node_id == host_need.node_id
+        and ledger_need.method_body_ref == host_need.method_body_ref
+        and ledger_need.worker_ref == host_need.worker_ref
+        and ledger_need.source_carrier_ids == host_need.source_carrier_ids
+        and ledger_need.source_versions == host_need.source_versions
+        and ledger_need.canonical_input_hash == host_need.canonical_input_hash
+        and ledger_need.source_rights == host_need.source_rights
+    )
+
+
+__all__ = [
+    "ExternalCarrierLedger",
+    "compute_host_binding_hash",
+    "dispatch_pins_match",
+]

@@ -14,6 +14,7 @@ from seshat.fabric_waves.external_carrier.contracts import (
 from seshat.fabric_waves.external_carrier.ledger import (
     ExternalCarrierLedger,
     compute_host_binding_hash,
+    dispatch_pins_match,
 )
 
 
@@ -24,6 +25,9 @@ class ExternalAdmissionError(ValueError):
 class ExecutorPort(Protocol):
     def dispatch(self, need: AgentTaskRequest) -> str:
         """Return opaque host job_id (may be recorded in agent_jobs.jsonl)."""
+
+    def authoritative_dispatch(self, *, job_id: str) -> AgentTaskRequest:
+        """Immutable host-held dispatch snapshot for an issued job_id."""
 
     def verify_return(
         self,
@@ -55,34 +59,41 @@ def verify_resume_receipt(
         raise ExternalAdmissionError("REQUEST_STALE")
     if need.status.value == "STALE":
         raise ExternalAdmissionError("REQUEST_STALE")
+    if port is None:
+        raise ExternalAdmissionError("EXECUTOR_PORT_REQUIRED")
+    host_job = receipt.evidence_return.host_receipt.host_job
+    authoritative = port.authoritative_dispatch(job_id=host_job.job_id)
+    if not dispatch_pins_match(need, authoritative):
+        raise ExternalAdmissionError("LEDGER_DISPATCH_PIN_MISMATCH")
+    if host_job.request_id != authoritative.request_id:
+        raise ExternalAdmissionError("JOB_REQUEST_ID_MISMATCH")
+    if host_job.host_scope != authoritative.worker_ref.host_scope:
+        raise ExternalAdmissionError("HOST_SCOPE_MISMATCH")
+    if host_job.result_digest != receipt.evidence_return.result_digest:
+        raise ExternalAdmissionError("JOB_RESULT_DIGEST_MISMATCH")
+    if authoritative.source_carrier_ids:
+        missing = [
+            cid
+            for cid in authoritative.source_carrier_ids
+            if cid not in authoritative.source_versions
+        ]
+        if missing:
+            raise ExternalAdmissionError("SOURCE_VERSION_PIN_MISSING")
+        for cid in authoritative.source_versions:
+            if cid not in authoritative.source_carrier_ids:
+                raise ExternalAdmissionError("SOURCE_SCOPE_MISMATCH")
+    port.verify_return(need=authoritative, evidence=receipt.evidence_return)
     expected_binding = compute_host_binding_hash(
-        request=need,
-        host_job=receipt.evidence_return.host_receipt.host_job,
+        request=authoritative,
+        host_job=host_job,
         worker_ref=receipt.evidence_return.worker_ref,
     )
     if receipt.evidence_return.host_receipt.binding_hash != expected_binding:
         raise ExternalAdmissionError("BINDING_HASH_INVALID")
-    host_job = receipt.evidence_return.host_receipt.host_job
-    if host_job.request_id != need.request_id:
-        raise ExternalAdmissionError("JOB_REQUEST_ID_MISMATCH")
-    if host_job.host_scope != need.worker_ref.host_scope:
-        raise ExternalAdmissionError("HOST_SCOPE_MISMATCH")
-    if host_job.result_digest != receipt.evidence_return.result_digest:
-        raise ExternalAdmissionError("JOB_RESULT_DIGEST_MISMATCH")
-    if need.source_carrier_ids:
-        missing = [
-            cid
-            for cid in need.source_carrier_ids
-            if cid not in need.source_versions
-        ]
-        if missing:
-            raise ExternalAdmissionError("SOURCE_VERSION_PIN_MISSING")
-        for cid in need.source_versions:
-            if cid not in need.source_carrier_ids:
-                raise ExternalAdmissionError("SOURCE_SCOPE_MISMATCH")
-    if port is None:
-        raise ExternalAdmissionError("EXECUTOR_PORT_REQUIRED")
-    port.verify_return(need=need, evidence=receipt.evidence_return)
+    allowed_sources = set(authoritative.source_carrier_ids)
+    for claim in receipt.evidence_return.source_claim_refs:
+        if claim not in allowed_sources:
+            raise ExternalAdmissionError("E5_SOURCE_CLAIM_OUTSIDE_REQUEST_SCOPE")
     if receipt.evidence_return.forged_human_decision:
         raise ExternalAdmissionError("FORGED_HUMAN_DECISION_REJECTED")
     if receipt.evidence_return.epistemic_level.value == "E1":
@@ -90,8 +101,10 @@ def verify_resume_receipt(
     digest_material = material_hash(receipt.evidence_return.proposal_payload)
     if digest_material != receipt.evidence_return.result_digest:
         raise ExternalAdmissionError("RESULT_DIGEST_MISMATCH")
-    if receipt.evidence_return.run_id != need.run_id:
+    if receipt.evidence_return.run_id != authoritative.run_id:
         raise ExternalAdmissionError("EVIDENCE_RUN_ID_MISMATCH")
+    if receipt.evidence_return.worker_ref != authoritative.worker_ref:
+        raise ExternalAdmissionError("WORKER_REF_MISMATCH")
     try:
         ledger.admit_return(receipt.evidence_return)
     except ValueError as exc:

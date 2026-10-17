@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from seshat.fabric_waves.contracts import FabricRunOutcome, StoneEvent, StoneEventKind, WaveBudget
+from seshat.fabric_waves.contracts import FabricRunOutcome, MethodBodyRef, StoneEvent, StoneEventKind, WaveBudget
 from seshat.fabric_waves.engine import WaveEngineConfigurationError
 from seshat.fabric_waves.external_carrier.contracts import (
     EpistemicLevel,
@@ -91,7 +91,7 @@ def test_unissued_job_with_empty_host_registry_rejected():
             )
         }
     )
-    with pytest.raises(ExternalAdmissionError, match="UNISSUED_HOST_JOB"):
+    with pytest.raises(ExternalAdmissionError, match="UNKNOWN_JOB_ID"):
         verify_resume_receipt(
             ledger=engine.external_ledger,
             receipt=ExternalResumeReceipt(
@@ -244,6 +244,158 @@ def test_e5_cannot_present_as_e1():
             ),
             port=fake,
         )
+
+
+def test_ledger_source_pin_tamper_after_dispatch_denied():
+    engine = campus_external_host_engine()
+    engine.run(run_id="tamper", budget=BUDGET, initial_stone=_query("campus-facility-utilization"))
+    need = engine.external_ledger.research_needs[-1]
+    fake = FakeHostExecutor(host_scope=need.worker_ref.host_scope)
+    job_id = fake.dispatch(need)
+    evidence = fake.synthesize_return(need=need, job_id=job_id, proposal={"hypothesis": "x"})
+    engine.external_ledger.research_needs[-1] = need.model_copy(
+        update={"source_versions": {"campus-branch-alpha": "FORGED-LATER-VERSION"}}
+    )
+    tampered_need = engine.external_ledger.research_needs[-1]
+    forged_binding = compute_host_binding_hash(
+        request=tampered_need,
+        host_job=evidence.host_receipt.host_job,
+        worker_ref=tampered_need.worker_ref,
+    )
+    evidence = evidence.model_copy(
+        update={
+            "host_receipt": evidence.host_receipt.model_copy(
+                update={"binding_hash": forged_binding}
+            )
+        }
+    )
+    with pytest.raises(ExternalAdmissionError, match="LEDGER_DISPATCH_PIN_MISMATCH"):
+        verify_resume_receipt(
+            ledger=engine.external_ledger,
+            receipt=ExternalResumeReceipt(
+                request_id=need.request_id, run_id="tamper", evidence_return=evidence
+            ),
+            port=fake,
+        )
+
+
+def test_method_pin_tamper_after_dispatch_denied():
+    engine = campus_external_host_engine()
+    engine.run(run_id="mtamper", budget=BUDGET, initial_stone=_query("campus-facility-utilization"))
+    need = engine.external_ledger.research_needs[-1]
+    fake = FakeHostExecutor(host_scope=need.worker_ref.host_scope)
+    job_id = fake.dispatch(need)
+    evidence = fake.synthesize_return(need=need, job_id=job_id, proposal={"hypothesis": "x"})
+    forged_method = MethodBodyRef(method_body_id="synthetic.external", version="FORGED-LATER")
+    engine.external_ledger.research_needs[-1] = need.model_copy(update={"method_body_ref": forged_method})
+    tampered_need = engine.external_ledger.research_needs[-1]
+    forged_binding = compute_host_binding_hash(
+        request=tampered_need,
+        host_job=evidence.host_receipt.host_job,
+        worker_ref=tampered_need.worker_ref,
+    )
+    evidence = evidence.model_copy(
+        update={
+            "host_receipt": evidence.host_receipt.model_copy(
+                update={"binding_hash": forged_binding}
+            )
+        }
+    )
+    with pytest.raises(ExternalAdmissionError, match="LEDGER_DISPATCH_PIN_MISMATCH"):
+        verify_resume_receipt(
+            ledger=engine.external_ledger,
+            receipt=ExternalResumeReceipt(
+                request_id=need.request_id, run_id="mtamper", evidence_return=evidence
+            ),
+            port=fake,
+        )
+
+
+def test_e5_extra_source_claim_denied():
+    engine = campus_external_host_engine()
+    engine.run(run_id="scope", budget=BUDGET, initial_stone=_query("campus-facility-utilization"))
+    need = engine.external_ledger.research_needs[-1]
+    fake = FakeHostExecutor(host_scope=need.worker_ref.host_scope)
+    job_id = fake.dispatch(need)
+    evidence = fake.synthesize_return(need=need, job_id=job_id, proposal={"hypothesis": "x"})
+    evidence = evidence.model_copy(
+        update={"source_claim_refs": (*need.source_carrier_ids, "UNAUTHORIZED-OTHER-CARRIER")}
+    )
+    with pytest.raises(ExternalAdmissionError, match="E5_SOURCE_CLAIM_OUTSIDE_REQUEST_SCOPE"):
+        verify_resume_receipt(
+            ledger=engine.external_ledger,
+            receipt=ExternalResumeReceipt(
+                request_id=need.request_id, run_id="scope", evidence_return=evidence
+            ),
+            port=fake,
+        )
+
+
+def test_active_wait_rejects_stale_request_id():
+    engine = campus_external_host_engine()
+    engine.run(run_id="active", budget=BUDGET, initial_stone=_query("campus-facility-utilization"))
+    need = engine.external_ledger.research_needs[-1]
+    fake = FakeHostExecutor(host_scope=need.worker_ref.host_scope)
+    job_id = fake.dispatch(need)
+    evidence = fake.synthesize_return(need=need, job_id=job_id, proposal={"hypothesis": "x"})
+    engine._waiting_runs["active"].request_id = "rn:other-active-need"
+    with pytest.raises(WaveEngineConfigurationError, match="ACTIVE_WAIT_REQUEST_MISMATCH"):
+        engine.resume_external_evidence(
+            receipt=ExternalResumeReceipt(
+                request_id=need.request_id, run_id="active", evidence_return=evidence
+            ),
+            budget=BUDGET,
+            port=fake,
+        )
+
+
+def test_source_delta_during_wait_fails_closed():
+    engine = campus_external_host_engine()
+    engine.run(run_id="delta-wait", budget=BUDGET, initial_stone=_query("campus-facility-utilization"))
+    need = engine.external_ledger.research_needs[-1]
+    fake = FakeHostExecutor(host_scope=need.worker_ref.host_scope)
+    job_id = fake.dispatch(need)
+    evidence = fake.synthesize_return(need=need, job_id=job_id, proposal={"hypothesis": "x"})
+    carrier_id = "campus-branch-alpha"
+    assert carrier_id in need.source_carrier_ids
+    pinned = need.source_versions[carrier_id]
+    engine.carrier_store.apply_delta(
+        carrier_id,
+        old_version=pinned,
+        new_version="2",
+        new_text="revised lab telemetry: utilization index 79%",
+    )
+    with pytest.raises(WaveEngineConfigurationError, match="SOURCE_VERSION_STALE"):
+        engine.resume_external_evidence(
+            receipt=ExternalResumeReceipt(
+                request_id=need.request_id, run_id="delta-wait", evidence_return=evidence
+            ),
+            budget=BUDGET,
+            port=fake,
+        )
+
+
+def test_wait_checkpoint_roundtrip(tmp_path):
+    from seshat.fabric_waves.external_carrier.wait_checkpoint import (
+        ExternalWaitCheckpoint,
+        load_wait_checkpoint,
+        write_wait_checkpoint,
+    )
+
+    engine = campus_external_host_engine()
+    engine.run(run_id="chk", budget=BUDGET, initial_stone=_query("campus-facility-utilization"))
+    wait = engine._waiting_runs["chk"]
+    checkpoint = ExternalWaitCheckpoint.build(
+        run_id="chk",
+        request_id=wait.request_id,
+        dispatch_snapshot=wait.dispatch_snapshot,
+        ledger=engine.external_ledger,
+    )
+    path = tmp_path / "wait_checkpoint.json"
+    write_wait_checkpoint(path, checkpoint)
+    restored = load_wait_checkpoint(path)
+    assert restored.request_id == wait.request_id
+    assert restored.ledger.research_needs[0].request_id == wait.request_id
 
 
 def test_resume_without_waiting_run_raises():

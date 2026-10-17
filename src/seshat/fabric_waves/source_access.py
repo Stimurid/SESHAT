@@ -45,6 +45,13 @@ class FabricCarrierStore:
         return tuple(self._carriers[cid].model_copy(deep=True)
                      for cid in carrier_ids if cid in self._carriers)
 
+    def current_source_versions(self, carrier_ids: tuple[str, ...]) -> dict[str, str]:
+        return {
+            cid: self._carriers[cid].version
+            for cid in carrier_ids
+            if cid in self._carriers
+        }
+
     def apply_delta(
         self, carrier_id: str, *, new_version: str, new_text: str,
         old_version: str = "", media_type: str = "text/plain",

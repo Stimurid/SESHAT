@@ -247,7 +247,8 @@ def export_external_artifacts(output_dir: Path, engines: dict[str, Any]) -> dict
         "known_limits": [
             "PHASE_B_REQUIRED: trusted AORUS Hub WorkerCarrier adapter not executed in this job.",
             "FakeHostExecutor used only inside deterministic portfolio/tests.",
-            "Process restart durable resume: WAITING state held in-memory on WaveEngine only.",
+            "Cross-process resume restores ledger+WAIT pins via wait_checkpoint only; "
+            "WaveEngine causal state still requires in-process snapshot restore (PHASE_B_BLOCKED).",
         ],
     }
     (output_dir / "receipt.json").write_text(

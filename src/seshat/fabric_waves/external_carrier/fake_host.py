@@ -14,7 +14,10 @@ from seshat.fabric_waves.external_carrier.contracts import (
     material_hash,
     utc_now_iso,
 )
-from seshat.fabric_waves.external_carrier.ledger import compute_host_binding_hash
+from seshat.fabric_waves.external_carrier.ledger import (
+    compute_host_binding_hash,
+    dispatch_pins_match,
+)
 from seshat.fabric_waves.external_carrier.port import ExternalAdmissionError
 
 
@@ -32,6 +35,11 @@ class FakeHostExecutor:
         ).hexdigest()[:16]
         self._jobs[job_id] = need.model_copy(deep=True)
         return job_id
+
+    def authoritative_dispatch(self, *, job_id: str) -> AgentTaskRequest:
+        if job_id not in self._jobs:
+            raise ExternalAdmissionError("UNKNOWN_JOB_ID")
+        return self._jobs[job_id]
 
     def synthesize_return(
         self,
@@ -57,10 +65,11 @@ class FakeHostExecutor:
             result_digest=digest,
             allowed_source_rights=need.source_rights,
         )
+        bound = self._jobs[job_id]
         binding_hash = compute_host_binding_hash(
-            request=need,
+            request=bound,
             host_job=host_job,
-            worker_ref=need.worker_ref,
+            worker_ref=bound.worker_ref,
         )
         receipt = HostJobReceipt(
             receipt_id=f"rcpt-{job_id}",
@@ -93,19 +102,21 @@ class FakeHostExecutor:
             raise ExternalAdmissionError("UNISSUED_HOST_JOB")
         if not evidence.host_receipt.authorized:
             raise ExternalAdmissionError("FORGED_AUTHORIZED_FLAG")
-        if evidence.host_receipt.host_job.request_id != need.request_id:
-            raise ExternalAdmissionError("JOB_REQUEST_ID_MISMATCH")
-        if evidence.host_receipt.worker_ref != need.worker_ref:
-            raise ExternalAdmissionError("WORKER_REF_MISMATCH")
         bound = self._jobs[job_id]
+        if not dispatch_pins_match(need, bound):
+            raise ExternalAdmissionError("LEDGER_DISPATCH_PIN_MISMATCH")
+        if evidence.host_receipt.host_job.request_id != bound.request_id:
+            raise ExternalAdmissionError("JOB_REQUEST_ID_MISMATCH")
+        if evidence.host_receipt.worker_ref != bound.worker_ref:
+            raise ExternalAdmissionError("WORKER_REF_MISMATCH")
         if bound.idempotency_key != need.idempotency_key:
             raise ExternalAdmissionError("JOB_IDEMPOTENCY_MISMATCH")
         if bound.canonical_input_hash != need.canonical_input_hash:
             raise ExternalAdmissionError("JOB_INPUT_HASH_MISMATCH")
         expected = compute_host_binding_hash(
-            request=need,
+            request=bound,
             host_job=evidence.host_receipt.host_job,
-            worker_ref=need.worker_ref,
+            worker_ref=bound.worker_ref,
         )
         if evidence.host_receipt.binding_hash != expected:
             raise ExternalAdmissionError("FAKE_HOST_SIGNATURE_INVALID")
