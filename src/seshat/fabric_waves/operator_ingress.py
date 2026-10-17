@@ -55,7 +55,6 @@ class AdmittedOperatorQuery(BaseModel):
     topic: str = Field(min_length=1)
     query: str = Field(min_length=1)
     aporia_occurrence_marker: AporiaOccurrenceMarker | None = None
-    aporia_context_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     epistemic_level: EpistemicLevel = EpistemicLevel.E5
     intent_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
@@ -84,26 +83,25 @@ def _payload_has_forbidden_keys(payload: Mapping[str, Any], *, depth: int = 0) -
     return False
 
 
-def admit_aporia_context_fingerprint(payload: Mapping[str, Any]) -> str | None:
-    """Hash-only fingerprint for a bounded APORIA note (never returns plaintext)."""
+def validate_aporia_context_note(payload: Mapping[str, Any]) -> None:
+    """Validate bounded APORIA note without deriving NEVER-thread method input."""
     if _payload_has_forbidden_keys(payload):
         raise OperatorAdmissionError("OPERATOR_APORIA_FORBIDDEN_KEY")
     note = payload.get("note")
     if note is None:
-        return None
+        return
     if not isinstance(note, str):
         raise OperatorAdmissionError("OPERATOR_APORIA_NOTE_INVALID")
     normalized = _normalize_label(note)
     if not normalized:
-        return None
+        return
     if len(normalized) > _MAX_CONTEXT_NOTE_LEN:
         raise OperatorAdmissionError("OPERATOR_APORIA_NOTE_TOO_LONG")
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def admit_aporia_context_note(payload: Mapping[str, Any]) -> str | None:
-    """Backward-compatible alias; returns SHA256 fingerprint only."""
-    return admit_aporia_context_fingerprint(payload)
+def admit_aporia_context_note(payload: Mapping[str, Any]) -> None:
+    """Backward-compatible entry point; validates note only (no content fingerprint)."""
+    validate_aporia_context_note(payload)
 
 
 def _intent_digest(
@@ -113,7 +111,7 @@ def _intent_digest(
     topic: str,
     query: str,
     scope_thread_id: str | None,
-    aporia_context_sha256: str | None,
+    aporia_occurrence_marker: AporiaOccurrenceMarker | None,
 ) -> str:
     material = {
         "event_id": event_id,
@@ -121,7 +119,7 @@ def _intent_digest(
         "scope_thread_id": scope_thread_id,
         "topic": topic,
         "query": query,
-        "aporia_context_sha256": aporia_context_sha256,
+        "aporia_occurrence_marker": aporia_occurrence_marker,
         "epistemic_level": EpistemicLevel.E5.value,
     }
     encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -132,7 +130,7 @@ def admit_operator_query(
     *,
     run_id: str,
     event: StoneEvent,
-    aporia_context_sha256: str | None = None,
+    prior_aporia_context: bool = False,
 ) -> AdmittedOperatorQuery:
     if event.kind is not StoneEventKind.QUERY:
         raise OperatorAdmissionError("OPERATOR_QUERY_KIND_MISMATCH")
@@ -165,7 +163,7 @@ def admit_operator_query(
     if scope is not None and not isinstance(scope, str):
         raise OperatorAdmissionError("OPERATOR_QUERY_SCOPE_INVALID")
     marker: AporiaOccurrenceMarker | None = (
-        "PRIOR_APORIA_CONTEXT" if aporia_context_sha256 else None
+        "PRIOR_APORIA_CONTEXT" if prior_aporia_context else None
     )
     return AdmittedOperatorQuery(
         event_id=event.event_id,
@@ -174,13 +172,12 @@ def admit_operator_query(
         topic=topic,
         query=query,
         aporia_occurrence_marker=marker,
-        aporia_context_sha256=aporia_context_sha256,
         intent_hash=_intent_digest(
             event_id=event.event_id,
             run_id=run_id,
             topic=topic,
             query=query,
             scope_thread_id=scope,
-            aporia_context_sha256=aporia_context_sha256,
+            aporia_occurrence_marker=marker,
         ),
     )

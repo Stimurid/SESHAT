@@ -39,9 +39,6 @@ def _question(inv: BodyInvocation, *, default_topic: str) -> BodyResult:
         marker = admitted.get("aporia_occurrence_marker")
         if marker:
             body["aporia_occurrence_marker"] = marker
-        fingerprint = admitted.get("aporia_context_sha256")
-        if fingerprint:
-            body["aporia_context_sha256"] = fingerprint
         return output(inv, body)
     return output(
         inv,

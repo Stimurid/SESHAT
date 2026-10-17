@@ -224,11 +224,14 @@ def _git_meta() -> dict[str, str | None]:
     modules = build_source_module_manifest()["modules"]
 
     attestation = "GIT_NOT_ATTESTED"
-    if head_sha and tree_sha:
+    if head_sha is None or tree_sha is None:
+        head_sha = None
+        tree_sha = None
+    else:
         dirty = _git_module_paths_dirty(root, modules)
         matches = _git_modules_match_head(root, modules)
         if not dirty and matches:
-            attestation = "GIT_ATTESTED"
+            attestation = "GIT_BYTES_MATCH_HEAD_LOCAL"
         else:
             attestation = "GIT_REPORTED_UNVERIFIED"
 
@@ -368,7 +371,7 @@ def export_artifacts(
             "Synthetic public fixtures only; F07 CorpusSelection host path unchanged.",
             "T3 uses campus governance gate with APORIA + unauthenticated HUMAN_DECISION REJECT.",
             "Independent Docker review and merge not performed in this executor run.",
-            "Portable receipt uses SOURCE_MODULE_BYTES_VERIFIED; git attestation is conservative (GIT_ATTESTED only when HEAD bytes match all listed modules and worktree is clean).",
+            "Portable receipt uses SOURCE_MODULE_BYTES_VERIFIED; git attestation is conservative (GIT_BYTES_MATCH_HEAD_LOCAL only when HEAD bytes match all listed modules and worktree is clean).",
             "GIT_REPORTED_UNVERIFIED / GIT_NOT_ATTESTED are honest self-reports; TRUSTED_EXTERNAL review must pin exact SHA/TREE + module digest independently.",
         ],
     }

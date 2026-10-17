@@ -161,7 +161,7 @@ class WaveEngine:
         self._event_limit_hit = False
         self._governance_hold = False
         self._operator_query_by_event: dict[tuple[str, str], AdmittedOperatorQuery] = {}
-        self._run_aporia_context: dict[str, str] = {}
+        self._run_prior_aporia: set[str] = set()
 
     # -- helpers -------------------------------------------------------------
 
@@ -310,9 +310,8 @@ class WaveEngine:
             if trigger_event.kind is StoneEventKind.APORIA:
                 self._governance_hold = True
                 try:
-                    fingerprint = admit_aporia_context_note(trigger_event.payload)
-                    if fingerprint:
-                        self._run_aporia_context[run_id] = fingerprint
+                    admit_aporia_context_note(trigger_event.payload)
+                    self._run_prior_aporia.add(run_id)
                 except OperatorAdmissionError:
                     stop_reason = FabricStopReason.INVALID_STONE
                     outcome = FabricRunOutcome.BLOCKED
@@ -367,10 +366,13 @@ class WaveEngine:
                 and trigger_event.payload != {"auto": True}
             ):
                 try:
+                    prior_aporia = run_id in self._run_prior_aporia
+                    if prior_aporia:
+                        self._run_prior_aporia.discard(run_id)
                     admitted = admit_operator_query(
                         run_id=run_id,
                         event=trigger_event,
-                        aporia_context_sha256=self._run_aporia_context.pop(run_id, None),
+                        prior_aporia_context=prior_aporia,
                     )
                     if admitted.scope_thread_id is not None:
                         scope_spec = self.thread_specs.get(admitted.scope_thread_id)
