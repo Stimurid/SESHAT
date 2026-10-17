@@ -86,8 +86,12 @@ def _thread_satisfies_conditions(
 
     # The whole-thread ``initial_state`` must be present in the working view.
     if law.initial_state:
-        working_ids = {record.sediment_id for record in sediment.views["working"].values()}
-        if not set(law.initial_state).issubset(working_ids):
+        readable_ids = {
+            record.sediment_id
+            for view_name in ("working", "candidate")
+            for record in sediment.views[view_name].values()
+        }
+        if not set(law.initial_state).issubset(readable_ids):
             return False
     # Node guards are evaluated immediately before each operation. A later
     # node may depend on state produced by an earlier node in this activation.

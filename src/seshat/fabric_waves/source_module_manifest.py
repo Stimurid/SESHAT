@@ -35,6 +35,13 @@ _MANIFEST_MODULE_NAMES: tuple[str, ...] = (
     "seshat.fabric_waves.source_module_manifest",
     "seshat.fabric_waves.stone",
     "seshat.fabric_waves.trace",
+    "seshat.fabric_waves.external_carrier.contracts",
+    "seshat.fabric_waves.external_carrier.ledger",
+    "seshat.fabric_waves.external_carrier.port",
+    "seshat.fabric_waves.external_carrier.fake_host",
+    "seshat.fabric_waves.external_carrier.hosts",
+    "seshat.fabric_waves.external_carrier.portfolio",
+    "seshat.fabric_waves.external_carrier.cli",
 )
 
 _COVERAGE_NOTE = (

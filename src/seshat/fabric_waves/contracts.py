@@ -63,6 +63,7 @@ class FabricRunOutcome(StrEnum):
     EXHAUSTED = "EXHAUSTED"
     BLOCKED = "BLOCKED"
     APORIA = "APORIA"
+    WAITING_EXTERNAL = "WAITING_EXTERNAL"
 
 
 class FabricStopReason(StrEnum):
@@ -78,6 +79,7 @@ class FabricStopReason(StrEnum):
     APORIA_RECORDED = "APORIA_RECORDED"
     STRATEGY_STOPPED = "STRATEGY_STOPPED"
     HUMAN_HALT = "HUMAN_HALT"
+    WAITING_EXTERNAL = "WAITING_EXTERNAL"
 
 
 class ActivationOutcome(StrEnum):
@@ -89,6 +91,7 @@ class ActivationOutcome(StrEnum):
     SATURATED_NO_DELTA = "SATURATED_NO_DELTA"
     BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
     ERROR = "ERROR"
+    WAITING_EXTERNAL = "WAITING_EXTERNAL"
 
 
 ACTIVATION_OUTCOMES: tuple[ActivationOutcome, ...] = tuple(ActivationOutcome)

@@ -97,6 +97,7 @@ def test_activation_outcome_enum_exhaustiveness() -> None:
         "SATURATED_NO_DELTA",
         "BUDGET_EXHAUSTED",
         "ERROR",
+        "WAITING_EXTERNAL",
     }
 
 

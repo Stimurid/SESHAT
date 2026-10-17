@@ -27,6 +27,7 @@ from seshat.fabric_waves.contracts import (
     MethodBodyRef,
     StoneEventKind,
 )
+from seshat.fabric_waves.external_carrier.contracts import ExternalWait
 from seshat.fabric_waves.sediment import SedimentRecord, payload_hash
 
 
@@ -46,6 +47,7 @@ class BodyResult(BaseModel):
 
     produced_sediments: tuple[SedimentRecord, ...] = Field(default_factory=tuple)
     aporia: str | None = None
+    external_wait: ExternalWait | None = None
     notes: tuple[str, ...] = Field(default_factory=tuple)
 
 

@@ -52,7 +52,7 @@ def output(inv: BodyInvocation, payload: dict, kind: str = "synthetic.state") ->
 
 def bundle(tid: str, fn: Callable, *, reads: tuple[str, ...] = (),
            source: str | None = None, kinds: tuple[StoneEventKind, ...] | None = None,
-           accepts_operator_query: bool = False):
+           accepts_operator_query: bool = False, output_sediment_type: str = "synthetic.state"):
     ref = MethodBodyRef(method_body_id="synthetic." + tid, version="1")
     spec = WorkflowThreadSpec(thread_id=tid, name=tid, purpose="synthetic mechanical oracle",
         method_body_refs=(ref,), admissible_source_carriers=(source,) if source else (),
@@ -60,7 +60,7 @@ def bundle(tid: str, fn: Callable, *, reads: tuple[str, ...] = (),
         accepts_operator_query=accepts_operator_query,
         nodes=(ThreadNodeSpec(node_id="compute", operation_id=ref.method_body_id,
             method_body_ref=ref, consumes_sediment_ids=reads,
-            produces_sediment_id=tid, output_sediment_type="synthetic.state"),),
+            produces_sediment_id=tid, output_sediment_type=output_sediment_type),),
         input_state=reads, output_state=(tid,), exit_criterion="typed state or explicit APORIA",
         bounded_budget_hint=8)
     law = PropagationLaw(thread_id=tid, initial_state=reads,

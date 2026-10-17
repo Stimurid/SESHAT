@@ -20,6 +20,7 @@ import hashlib
 import json
 from copy import deepcopy
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import dataclass
 from io import StringIO
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -91,6 +92,30 @@ from seshat.fabric_waves.resonance import (
 from seshat.fabric_waves.sediment import SedimentRecord, SedimentState, payload_hash
 from seshat.fabric_waves.source_access import FabricCarrierStore
 from seshat.fabric_waves.stone import StoneDispatcher, StoneQueueFull
+from seshat.fabric_waves.external_carrier.contracts import (
+    ExternalResumeReceipt,
+    material_hash,
+)
+from seshat.fabric_waves.external_carrier.ledger import ExternalCarrierLedger
+from seshat.fabric_waves.external_carrier.port import (
+    ExecutorPort,
+    ExternalAdmissionError,
+    verify_resume_receipt,
+)
+
+
+@dataclass
+class _WaitingRunState:
+    budget: WaveBudget
+    waves_emitted: int
+    activations_total: int
+    stone_events_used: int
+    thread_activations: dict[str, int]
+    last_wave_thread_ids: tuple[str, ...]
+    initial_versions: dict[str, str]
+    start_tick: int
+    decision_ids: list[str]
+    request_id: str
 
 
 class WaveEngineConfigurationError(ValueError):
@@ -162,6 +187,10 @@ class WaveEngine:
         self._governance_hold = False
         self._operator_query_by_event: dict[tuple[str, str], AdmittedOperatorQuery] = {}
         self._run_prior_aporia: set[str] = set()
+        self.external_ledger: ExternalCarrierLedger = ExternalCarrierLedger()
+        self.executor_port: ExecutorPort | None = None
+        self.external_proposal_sediment_id: str | None = None
+        self._waiting_runs: dict[str, _WaitingRunState] = {}
 
     # -- helpers -------------------------------------------------------------
 
@@ -196,14 +225,24 @@ class WaveEngine:
         budget: WaveBudget,
         initial_stone: StoneEvent | None = None,
         auto_answer: bool = True,
+        resume_continuation: bool = False,
     ) -> RunRecord:
         self._validate_specs()
         self._event_limit_hit = False
         self._governance_hold = False
-        if any(item.run_id == run_id for item in self.ledger.runs):
+        if not resume_continuation and any(item.run_id == run_id for item in self.ledger.runs):
             raise WaveEngineConfigurationError(f"run_id {run_id!r} already used")
+        waiting_state = self._waiting_runs.pop(run_id, None) if resume_continuation else None
         start_tick = self._tick()
-        if initial_stone is not None:
+        if resume_continuation and waiting_state is not None:
+            start_tick = waiting_state.start_tick
+            initial_event = self.dispatcher.pending[0] if self.dispatcher.pending else StoneEvent(
+                event_id=f"{run_id}:resume",
+                kind=StoneEventKind.SEDIMENT_AVAILABLE,
+                issued_at_tick=start_tick,
+                payload={"resume": True},
+            )
+        elif initial_stone is not None:
             initial_event = initial_stone.model_copy(deep=True)
             self._drop_stone(initial_event, budget=budget)
         elif not self.dispatcher.pending:
@@ -217,18 +256,28 @@ class WaveEngine:
         else:
             initial_event = self.dispatcher.pending[0].model_copy(deep=True)
 
-        initial_versions = self.sediment.version_map()
-        activations_total = 0
-        stone_events_used = 0
-        thread_activations = dict.fromkeys(self.thread_specs, 0)
+        if waiting_state is not None:
+            initial_versions = waiting_state.initial_versions
+            activations_total = waiting_state.activations_total
+            stone_events_used = waiting_state.stone_events_used
+            thread_activations = dict(waiting_state.thread_activations)
+            waves_emitted = waiting_state.waves_emitted
+            decision_ids = list(waiting_state.decision_ids)
+            last_wave_thread_ids = waiting_state.last_wave_thread_ids
+        else:
+            initial_versions = self.sediment.version_map()
+            activations_total = 0
+            stone_events_used = 0
+            thread_activations = dict.fromkeys(self.thread_specs, 0)
+            waves_emitted = 0
+            decision_ids = []
+            last_wave_thread_ids = ()
         thread_limit_hit = False
-        waves_emitted = 0
-        decision_ids: list[str] = []
         waves_with_aporia = 0
-        last_wave_thread_ids: tuple[str, ...] = ()
         stop_reason: FabricStopReason = FabricStopReason.NO_DELTA
         outcome: FabricRunOutcome = FabricRunOutcome.SATURATED
         ledger_head_at_start = self.ledger.head_hash
+        external_wait_requested = False
 
         while True:
             if waves_emitted >= budget.max_waves:
@@ -241,6 +290,10 @@ class WaveEngine:
                 break
             if not self.dispatcher.pending:
                 acts = self.ledger.activations_for_run(run_id)
+                if external_wait_requested:
+                    stop_reason = FabricStopReason.WAITING_EXTERNAL
+                    outcome = FabricRunOutcome.WAITING_EXTERNAL
+                    break
                 if self._event_limit_hit:
                     stop_reason, outcome = FabricStopReason.BUDGET_EXHAUSTED, FabricRunOutcome.EXHAUSTED
                 elif thread_limit_hit:
@@ -458,8 +511,11 @@ class WaveEngine:
                                                 trigger_event) for c in node.conditions):
                         skipped.append(spec.thread_id)
                         continue
-                    if not all(sid in self.sediment.views["working"]
-                               for sid in node.consumes_sediment_ids):
+                    if not all(
+                        sid in self.sediment.views["working"]
+                        or sid in self.sediment.views["candidate"]
+                        for sid in node.consumes_sediment_ids
+                    ):
                         skipped.append(spec.thread_id)
                         continue
                     if thread_activations[spec.thread_id] >= spec.bounded_budget_hint:
@@ -482,7 +538,10 @@ class WaveEngine:
                         stone=trigger_event,
                     )
                     self.ledger.append_activation(activation)
-                    if activation.outcome is ActivationOutcome.FIRED:
+                    if activation.outcome is ActivationOutcome.WAITING_EXTERNAL:
+                        external_wait_requested = True
+                        fired.append(spec.thread_id)
+                    elif activation.outcome is ActivationOutcome.FIRED:
                         fired.append(spec.thread_id)
                         stone_events_used = self._enqueue_causal_events(
                             run_id=run_id,
@@ -517,6 +576,11 @@ class WaveEngine:
             )
             self.ledger.append_wave(wave)
             last_wave_thread_ids = wave.fired_thread_ids
+
+            if external_wait_requested:
+                stop_reason = FabricStopReason.WAITING_EXTERNAL
+                outcome = FabricRunOutcome.WAITING_EXTERNAL
+                break
 
             # Bookkeeping of saturation / aporia
             # APORIA detection: any activation recorded an aporia note
@@ -562,12 +626,46 @@ class WaveEngine:
             ledger_head_hash=self.ledger.head_hash,
             notes=("deterministic_run",) if ledger_head_at_start else (),
         )
-        if auto_answer:
+        if auto_answer and outcome is not FabricRunOutcome.WAITING_EXTERNAL:
             self._autoresonance(run_id, run_record)
         run_record = run_record.model_copy(update={
             "resonance_ids": tuple(r.resonance_id for r in self.ledger.resonances_for_run(run_id)),
             "ledger_head_hash": self.ledger.head_hash,
         }, deep=True)
+        if outcome is FabricRunOutcome.WAITING_EXTERNAL:
+            self._waiting_runs[run_id] = _WaitingRunState(
+                budget=budget,
+                waves_emitted=waves_emitted,
+                activations_total=activations_total,
+                stone_events_used=stone_events_used,
+                thread_activations=thread_activations,
+                last_wave_thread_ids=last_wave_thread_ids,
+                initial_versions=initial_versions,
+                start_tick=start_tick,
+                decision_ids=decision_ids,
+                request_id=next(
+                    (
+                        need.request_id
+                        for need in reversed(self.external_ledger.research_needs)
+                        if need.run_id == run_id
+                    ),
+                    "",
+                ),
+            )
+            self._snapshots[run_id] = deepcopy(
+                (self.ledger, self.sediment, self.resonance_composer)
+            )
+            if auto_answer:
+                self._autoresonance(run_id, run_record)
+            return run_record.model_copy(
+                update={
+                    "resonance_ids": tuple(
+                        r.resonance_id for r in self.ledger.resonances_for_run(run_id)
+                    ),
+                    "ledger_head_hash": self.ledger.head_hash,
+                },
+                deep=True,
+            )
         self.ledger.append_run(run_record)
         self._snapshots[run_id] = deepcopy((self.ledger, self.sediment, self.resonance_composer))
         return run_record
@@ -597,6 +695,9 @@ class WaveEngine:
             new_text=new_text,
             old_version=payload["old_version"],
         )
+        for need in self.external_ledger.research_needs:
+            if carrier_id in need.source_carrier_ids:
+                self.external_ledger.mark_stale(need.request_id)
 
     def _enqueue_causal_events(
         self,
@@ -742,6 +843,8 @@ class WaveEngine:
         if consumed_ids:
             for sid in consumed_ids:
                 record = self.sediment.views["working"].get(sid)
+                if record is None:
+                    record = self.sediment.views["candidate"].get(sid)
                 if record is not None:
                     candidate_sediments.append(record)
         carriers = self._carriers_for_thread(spec, stone)
@@ -780,6 +883,8 @@ class WaveEngine:
                 error_detail=detail,
             )
         carried_payload = {
+            "run_id": run_id,
+            "wave_id": wave_id,
             "stone_payload": {},
             "output_sediment_id": node.produces_sediment_id,
             "research_object_id": stone.target_research_object_id or spec.thread_id,
@@ -857,6 +962,53 @@ class WaveEngine:
                 method_body_refs=(resolved_ref,),
                 error_code=code,
                 error_detail=detail,
+            )
+
+        if result.external_wait is not None:
+            need = result.external_wait.request
+            prior = [
+                item
+                for item in self.external_ledger.research_needs
+                if item.run_id == run_id and item.thread_id == spec.thread_id
+            ]
+            if prior:
+                return ActivationRecord(
+                    activation_id=f"{wave_id}:{spec.thread_id}:{node.node_id}:external-done",
+                    run_id=run_id,
+                    wave_id=wave_id,
+                    thread_id=spec.thread_id,
+                    started_at_tick=invocation.tick,
+                    ended_at_tick=invocation.tick,
+                    outcome=ActivationOutcome.SATURATED_NO_DELTA,
+                    stop_reason=FabricStopReason.NO_DELTA.value,
+                    read_sediment_ids=consumed_ids,
+                    receipts_hash=_material_hash({"external": "already_requested"}),
+                    method_body_refs=(resolved_ref,),
+                )
+            self.external_ledger.register_need(need)
+            if self.executor_port is not None:
+                job_id = self.executor_port.dispatch(need)
+                self.external_ledger.agent_jobs.append(
+                    {
+                        "job_id": job_id,
+                        "request_id": need.request_id,
+                        "host_scope": need.worker_ref.host_scope,
+                    }
+                )
+            return ActivationRecord(
+                activation_id=f"{wave_id}:{spec.thread_id}:{node.node_id}:external-wait",
+                run_id=run_id,
+                wave_id=wave_id,
+                thread_id=spec.thread_id,
+                started_at_tick=invocation.tick,
+                ended_at_tick=invocation.tick,
+                outcome=ActivationOutcome.WAITING_EXTERNAL,
+                stop_reason=FabricStopReason.WAITING_EXTERNAL.value,
+                read_sediment_ids=consumed_ids,
+                receipts_hash=_material_hash({"request_id": need.request_id}),
+                method_body_refs=(resolved_ref,),
+                error_code="EXTERNAL_WAIT",
+                error_detail=need.request_id,
             )
 
         if result.aporia is not None:
@@ -1048,6 +1200,104 @@ class WaveEngine:
             out.append(carrier)
         return tuple(out)
 
+    def _deposit_external_proposal(
+        self,
+        *,
+        sediment_id: str,
+        run_id: str,
+        evidence_return: Any,
+        parent_activation_id: str,
+    ) -> SedimentRecord:
+        payload = dict(evidence_return.proposal_payload)
+        digest = material_hash(payload)
+        record = SedimentRecord(
+            sediment_id=sediment_id,
+            object_type="external.proposal",
+            version=digest,
+            research_object_id=run_id,
+            payload=payload,
+            payload_hash=digest,
+            provenance=("HOST_VERIFIED_EXTERNAL_RETURN",),
+            method_body_refs=(),
+            source_carrier_refs=tuple(evidence_return.source_claim_refs),
+            epistemic_level=EpistemicLevel.E5,
+            read_dependencies=(),
+            write_dependencies=(),
+            produced_by_thread="external-carrier",
+            produced_at_tick=self._tick(),
+            produced_in_wave=1,
+            produced_by_stone_kind=StoneEventKind.SEDIMENT_AVAILABLE,
+            acceptance_state=AcceptanceState.WORKING,
+        )
+        self.sediment.deposit(record)
+        return record
+
+    def resume_external_evidence(
+        self,
+        *,
+        receipt: ExternalResumeReceipt,
+        budget: WaveBudget,
+        port: ExecutorPort | None = None,
+    ) -> RunRecord:
+        run_id = receipt.run_id
+        if run_id not in self._waiting_runs:
+            raise WaveEngineConfigurationError(f"run {run_id!r} is not waiting for external evidence")
+        try:
+            evidence = verify_resume_receipt(
+                ledger=self.external_ledger,
+                receipt=receipt,
+                port=port if port is not None else self.executor_port,
+            )
+        except ExternalAdmissionError as exc:
+            raise WaveEngineConfigurationError(str(exc)) from exc
+        proposal_id = self.external_proposal_sediment_id or f"external-proposal-{run_id}"
+        record = self._deposit_external_proposal(
+            sediment_id=proposal_id,
+            run_id=run_id,
+            evidence_return=evidence,
+            parent_activation_id=f"{run_id}:external-resume",
+        )
+        tick = self._tick()
+        self._drop_stone(
+            StoneEvent(
+                event_id=f"{run_id}:external-return:{evidence.request_id}",
+                kind=StoneEventKind.SEDIMENT_AVAILABLE,
+                issued_at_tick=tick,
+                parent_activation_id=f"{run_id}:external-resume",
+                payload={
+                    "sediment_id": record.sediment_id,
+                    "object_type": record.object_type,
+                    "version": record.version,
+                    "parent_activation_id": f"{run_id}:external-resume",
+                    "parent_wave_id": self._waiting_runs[run_id].request_id,
+                },
+            ),
+            budget=budget,
+        )
+        record = self.run(
+            run_id=run_id,
+            budget=budget,
+            auto_answer=False,
+            resume_continuation=True,
+        )
+        if record.outcome not in {
+            FabricRunOutcome.APORIA,
+            FabricRunOutcome.BLOCKED,
+            FabricRunOutcome.EXHAUSTED,
+            FabricRunOutcome.WAITING_EXTERNAL,
+        }:
+            self._autoresonance(run_id, record)
+            record = record.model_copy(
+                update={
+                    "resonance_ids": tuple(
+                        r.resonance_id for r in self.ledger.resonances_for_run(run_id)
+                    ),
+                    "ledger_head_hash": self.ledger.head_hash,
+                },
+                deep=True,
+            )
+        return record
+
     # -- human acceptance decision right ------------------------------------
 
     def record_human_decision(
@@ -1164,6 +1414,7 @@ class WaveEngine:
     # -- auto resonance for the demo CLI -------------------------------------
 
     def _autoresonance(self, run_id: str, run_record: RunRecord) -> None:
+        existing_ids = {r.resonance_id for r in self.ledger.resonances_for_run(run_id)}
         activations = self.ledger.activations_for_run(run_id)
         waves = tuple(item for item in self.ledger.waves if item.run_id == run_id)
         events = tuple(item for item in self.ledger.events if item.run_id == run_id)
@@ -1185,8 +1436,11 @@ class WaveEngine:
             FabricRunOutcome.APORIA,
             FabricRunOutcome.BLOCKED,
             FabricRunOutcome.EXHAUSTED,
+            FabricRunOutcome.WAITING_EXTERNAL,
         }
         if run_record.outcome in blocked_outcomes:
+            if f"{run_id}:resonance:question" in existing_ids:
+                return
             question_record = compose_question(
                 run_id=run_id,
                 resonance_id=f"{run_id}:resonance:question",
@@ -1201,6 +1455,8 @@ class WaveEngine:
             self.resonance_composer.add(question_record)
             self.ledger.append_resonance(question_record)
         else:
+            if f"{run_id}:resonance:answer" in existing_ids:
+                return
             answer_record = compose_answer(
                 run_id=run_id,
                 resonance_id=f"{run_id}:resonance:answer",
@@ -1222,6 +1478,8 @@ class WaveEngine:
         for wave in waves:
             for thread_id in wave.fired_thread_ids:
                 edges.append({"from": f"event:{wave.triggering_event_id}", "to": thread_id})
+        if f"{run_id}:resonance:map" in existing_ids:
+            return
         map_record = map_view(
             run_id=run_id,
             resonance_id=f"{run_id}:resonance:map",
