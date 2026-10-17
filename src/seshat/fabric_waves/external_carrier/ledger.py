@@ -113,6 +113,8 @@ def compute_host_binding_hash(
             "source_carrier_ids": list(request.source_carrier_ids),
             "source_versions": dict(request.source_versions),
             "source_rights": request.source_rights.value,
+            "expected_output_schema": request.expected_output_schema,
+            "admissible_evidence_classes": list(request.admissible_evidence_classes),
             "worker_ref": worker_ref.model_dump(mode="python"),
             "host_job": host_job.model_dump(mode="python"),
             "canonical_input_hash": request.canonical_input_hash,
@@ -139,6 +141,8 @@ def dispatch_pins_match(
         and ledger_need.source_versions == host_need.source_versions
         and ledger_need.canonical_input_hash == host_need.canonical_input_hash
         and ledger_need.source_rights == host_need.source_rights
+        and ledger_need.expected_output_schema == host_need.expected_output_schema
+        and ledger_need.admissible_evidence_classes == host_need.admissible_evidence_classes
     )
 
 

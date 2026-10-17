@@ -398,6 +398,186 @@ def test_wait_checkpoint_roundtrip(tmp_path):
     assert restored.ledger.research_needs[0].request_id == wait.request_id
 
 
+def _external_oracle_scene():
+    from seshat.contracts import RawAccessPolicy
+    from seshat.fabric_waves.external_carrier.contracts import (
+        AgentTaskRequest,
+        WorkerCarrierRef,
+        material_hash,
+    )
+    from seshat.fabric_waves.external_carrier.ledger import ExternalCarrierLedger
+
+    worker = WorkerCarrierRef(
+        carrier_id="safe-test-worker",
+        host_scope="lab-university",
+        capability_handle="synthetic-research",
+    )
+    need = AgentTaskRequest(
+        request_id="rn:lab:real-issued",
+        idempotency_key="d" * 64,
+        run_id="lab:run",
+        wave_id="lab:run:wave:2",
+        thread_id="external-research-university",
+        node_id="compute",
+        method_body_ref=MethodBodyRef(method_body_id="synthetic.external", version="1"),
+        worker_ref=worker,
+        source_carrier_ids=("source-alpha",),
+        source_versions={"source-alpha": "1"},
+        canonical_input_hash="a" * 64,
+        source_rights=RawAccessPolicy.DRILLBACK,
+        expected_output_schema="external.hypothesis.v1",
+        admissible_evidence_classes=("E5", "structured_hypothesis"),
+        created_at="2026-10-18T00:00:00Z",
+    )
+    ledger = ExternalCarrierLedger()
+    ledger.register_need(need)
+    host = FakeHostExecutor(host_scope=worker.host_scope)
+    job_id = host.dispatch(need)
+    evidence = host.synthesize_return(
+        need=need, job_id=job_id, proposal={"hypothesis": "original", "scope": "synthetic"}
+    )
+    return ledger, host, need, evidence
+
+
+def test_oracle_deny_host_dispatch_alias_mutation():
+    ledger, host, need, evidence = _external_oracle_scene()
+    job_id = evidence.host_receipt.host_job.job_id
+    original = host.authoritative_dispatch(job_id=job_id)
+    original.source_versions["source-alpha"] = "2"
+    forged = need.model_copy(update={"source_versions": {"source-alpha": "2"}})
+    ledger.research_needs[0] = forged
+    with pytest.raises(ExternalAdmissionError, match="LEDGER_DISPATCH_PIN_MISMATCH"):
+        verify_resume_receipt(
+            ledger=ledger,
+            receipt=ExternalResumeReceipt(
+                request_id=forged.request_id, run_id=need.run_id, evidence_return=evidence
+            ),
+            port=host,
+        )
+
+
+def test_oracle_deny_output_schema_change_after_dispatch():
+    ledger, host, need, evidence = _external_oracle_scene()
+    forged = need.model_copy(
+        update={
+            "expected_output_schema": "external.unreviewed.v99",
+            "admissible_evidence_classes": ("E5", "forbidden"),
+        }
+    )
+    ledger.research_needs[0] = forged
+    with pytest.raises(ExternalAdmissionError, match="LEDGER_DISPATCH_PIN_MISMATCH"):
+        verify_resume_receipt(
+            ledger=ledger,
+            receipt=ExternalResumeReceipt(
+                request_id=forged.request_id, run_id=need.run_id, evidence_return=evidence
+            ),
+            port=host,
+        )
+
+
+def test_oracle_deny_forged_terminal_result_replacement():
+    from seshat.fabric_waves.external_carrier.contracts import material_hash
+
+    ledger, host, need, evidence = _external_oracle_scene()
+    payload = {"hypothesis": "ATTACKER_REPLACEMENT", "scope": "unrequested"}
+    digest = material_hash(payload)
+    fake_job = evidence.host_receipt.host_job.model_copy(
+        update={"result_digest": digest, "result_provenance": ("ATTACKER_SELF_ATTEST",)}
+    )
+    forged_binding = compute_host_binding_hash(
+        request=need, host_job=fake_job, worker_ref=need.worker_ref
+    )
+    forged = evidence.model_copy(
+        update={
+            "proposal_payload": payload,
+            "result_digest": digest,
+            "method_call_receipt_hash": "c" * 64,
+            "host_receipt": evidence.host_receipt.model_copy(
+                update={"host_job": fake_job, "binding_hash": forged_binding}
+            ),
+        }
+    )
+    with pytest.raises(ExternalAdmissionError, match="FORGED_"):
+        verify_resume_receipt(
+            ledger=ledger,
+            receipt=ExternalResumeReceipt(
+                request_id=need.request_id, run_id=need.run_id, evidence_return=forged
+            ),
+            port=host,
+        )
+
+
+def test_oracle_deny_host_job_rights_escalation():
+    from seshat.contracts import RawAccessPolicy
+
+    ledger, host, need, evidence = _external_oracle_scene()
+    fake_job = evidence.host_receipt.host_job.model_copy(
+        update={"allowed_source_rights": RawAccessPolicy.FULL_REQUIRED}
+    )
+    forged_binding = compute_host_binding_hash(
+        request=need, host_job=fake_job, worker_ref=need.worker_ref
+    )
+    forged = evidence.model_copy(
+        update={
+            "host_receipt": evidence.host_receipt.model_copy(
+                update={"host_job": fake_job, "binding_hash": forged_binding}
+            )
+        }
+    )
+    with pytest.raises(ExternalAdmissionError, match="HOST_JOB_RIGHTS_ESCALATION"):
+        verify_resume_receipt(
+            ledger=ledger,
+            receipt=ExternalResumeReceipt(
+                request_id=need.request_id, run_id=need.run_id, evidence_return=forged
+            ),
+            port=host,
+        )
+
+
+def test_oracle_deny_same_job_id_redispatch_overwrite():
+    ledger, host, need, evidence = _external_oracle_scene()
+    job_id = evidence.host_receipt.host_job.job_id
+    original = host.authoritative_dispatch(job_id=job_id).model_copy(deep=True)
+    duplicate = need.model_copy(update={"source_versions": {"source-alpha": "99"}})
+    with pytest.raises(ExternalAdmissionError, match="HOST_DISPATCH_JOB_ID_COLLISION"):
+        host.dispatch(duplicate)
+    observed = host.authoritative_dispatch(job_id=job_id)
+    assert original == observed
+
+
+def test_oracle_control_original_host_result_accepted():
+    ledger, host, need, evidence = _external_oracle_scene()
+    admitted = verify_resume_receipt(
+        ledger=ledger,
+        receipt=ExternalResumeReceipt(
+            request_id=need.request_id, run_id=need.run_id, evidence_return=evidence
+        ),
+        port=host,
+    )
+    assert admitted.result_digest == evidence.result_digest
+    assert len(ledger.evidence_returns) == 1
+
+
+def test_same_version_source_content_revoked_during_wait():
+    engine = campus_external_host_engine()
+    engine.run(run_id="revoke", budget=BUDGET, initial_stone=_query("campus-facility-utilization"))
+    need = engine.external_ledger.research_needs[-1]
+    fake = FakeHostExecutor(host_scope=need.worker_ref.host_scope)
+    job_id = fake.dispatch(need)
+    evidence = fake.synthesize_return(need=need, job_id=job_id, proposal={"hypothesis": "x"})
+    carrier_id = "campus-branch-alpha"
+    engine.carrier_store.revoke_content_same_version(carrier_id)
+    with pytest.raises(WaveEngineConfigurationError, match="SOURCE_CONTENT_STALE"):
+        engine.resume_external_evidence(
+            receipt=ExternalResumeReceipt(
+                request_id=need.request_id, run_id="revoke", evidence_return=evidence
+            ),
+            budget=BUDGET,
+            port=fake,
+        )
+    assert need.request_id in engine.external_ledger.stale_request_ids
+
+
 def test_resume_without_waiting_run_raises():
     engine = campus_external_host_engine()
     engine.run(run_id="w", budget=BUDGET, initial_stone=_query("campus-facility-utilization"))

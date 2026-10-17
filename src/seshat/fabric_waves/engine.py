@@ -97,7 +97,10 @@ from seshat.fabric_waves.external_carrier.contracts import (
     ExternalResumeReceipt,
     material_hash,
 )
-from seshat.fabric_waves.external_carrier.ledger import ExternalCarrierLedger
+from seshat.fabric_waves.external_carrier.ledger import (
+    ExternalCarrierLedger,
+    dispatch_pins_match,
+)
 from seshat.fabric_waves.external_carrier.port import (
     ExecutorPort,
     ExternalAdmissionError,
@@ -118,6 +121,7 @@ class _WaitingRunState:
     decision_ids: list[str]
     request_id: str
     dispatch_snapshot: AgentTaskRequest | None = None
+    pinned_source_content_digests: dict[str, str] | None = None
 
 
 class WaveEngineConfigurationError(ValueError):
@@ -643,6 +647,9 @@ class WaveEngine:
                 ),
                 None,
             )
+            pinned_digests: dict[str, str] | None = None
+            if active_need is not None:
+                pinned_digests = self._capture_pinned_source_digests(active_need)
             self._waiting_runs[run_id] = _WaitingRunState(
                 budget=budget,
                 waves_emitted=waves_emitted,
@@ -657,6 +664,7 @@ class WaveEngine:
                 dispatch_snapshot=(
                     active_need.model_copy(deep=True) if active_need is not None else None
                 ),
+                pinned_source_content_digests=pinned_digests,
             )
             self._snapshots[run_id] = deepcopy(
                 (self.ledger, self.sediment, self.resonance_composer)
@@ -1274,17 +1282,51 @@ class WaveEngine:
         self.sediment.deposit(record)
         return record
 
-    def _verify_pinned_sources_current(self, need: AgentTaskRequest) -> None:
+    def _capture_pinned_source_digests(self, need: AgentTaskRequest) -> dict[str, str]:
         if self.carrier_store is None:
             raise ExternalAdmissionError("SOURCE_AUTHORITY_UNAVAILABLE")
+        digests: dict[str, str] = {}
+        for carrier_id in need.source_carrier_ids:
+            pinned = need.source_versions.get(carrier_id)
+            if pinned is None:
+                raise ExternalAdmissionError("SOURCE_VERSION_PIN_MISSING")
+            try:
+                digests[carrier_id] = self.carrier_store.pin_content_digest(
+                    carrier_id, pinned_version=pinned
+                )
+            except ValueError:
+                raise ExternalAdmissionError("SOURCE_CONTENT_UNAVAILABLE") from None
+        return digests
+
+    def _verify_pinned_sources_current(self, run_id: str, need: AgentTaskRequest) -> None:
+        if self.carrier_store is None:
+            raise ExternalAdmissionError("SOURCE_AUTHORITY_UNAVAILABLE")
+        wait = self._waiting_runs.get(run_id)
+        pinned_digests = wait.pinned_source_content_digests if wait is not None else None
         for carrier_id in need.source_carrier_ids:
             carriers = self.carrier_store.carriers_for((carrier_id,))
             if not carriers:
+                self.external_ledger.mark_stale(need.request_id)
                 raise ExternalAdmissionError("SOURCE_CARRIER_UNKNOWN")
             pinned = need.source_versions.get(carrier_id)
             if pinned is None or carriers[0].version != pinned:
                 self.external_ledger.mark_stale(need.request_id)
                 raise ExternalAdmissionError("SOURCE_VERSION_STALE")
+            if pinned_digests is not None:
+                expected = pinned_digests.get(carrier_id)
+                if expected is None:
+                    self.external_ledger.mark_stale(need.request_id)
+                    raise ExternalAdmissionError("SOURCE_CONTENT_STALE")
+                try:
+                    current = self.carrier_store.pin_content_digest(
+                        carrier_id, pinned_version=pinned
+                    )
+                except ValueError:
+                    self.external_ledger.mark_stale(need.request_id)
+                    raise ExternalAdmissionError("SOURCE_CONTENT_STALE") from None
+                if current != expected:
+                    self.external_ledger.mark_stale(need.request_id)
+                    raise ExternalAdmissionError("SOURCE_CONTENT_STALE")
 
     def _assert_active_external_wait(
         self,
@@ -1301,13 +1343,8 @@ class WaveEngine:
         if snap is not None:
             if receipt.evidence_return.worker_ref != snap.worker_ref:
                 raise WaveEngineConfigurationError("ACTIVE_WAIT_WORKER_MISMATCH")
-            if (
-                need.thread_id != snap.thread_id
-                or need.node_id != snap.node_id
-                or need.wave_id != snap.wave_id
-                or need.method_body_ref != snap.method_body_ref
-            ):
-                raise WaveEngineConfigurationError("ACTIVE_WAIT_THREAD_MISMATCH")
+            if not dispatch_pins_match(need, snap):
+                raise WaveEngineConfigurationError("ACTIVE_WAIT_DISPATCH_PIN_MISMATCH")
         return need
 
     def resume_external_evidence(
@@ -1322,7 +1359,7 @@ class WaveEngine:
             raise WaveEngineConfigurationError(f"run {run_id!r} is not waiting for external evidence")
         active_need = self._assert_active_external_wait(run_id, receipt)
         try:
-            self._verify_pinned_sources_current(active_need)
+            self._verify_pinned_sources_current(run_id, active_need)
             evidence = verify_resume_receipt(
                 ledger=self.external_ledger,
                 receipt=receipt,

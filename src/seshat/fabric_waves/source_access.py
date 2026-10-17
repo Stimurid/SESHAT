@@ -52,6 +52,35 @@ class FabricCarrierStore:
             if cid in self._carriers
         }
 
+    def pin_content_digest(self, carrier_id: str, *, pinned_version: str) -> str:
+        """Authorized content digest for a version-pinned carrier (host authority)."""
+
+        if carrier_id not in self._carriers:
+            raise ValueError("SOURCE_CARRIER_UNKNOWN")
+        carrier = self._carriers[carrier_id]
+        if carrier.version != pinned_version:
+            raise ValueError("SOURCE_VERSION_STALE")
+        content = self._contents.get(carrier_id)
+        if content is None:
+            raise ValueError("SOURCE_CONTENT_UNAVAILABLE")
+        if (
+            content.source_version != pinned_version
+            or not content.complete
+            or not content.authorized
+        ):
+            raise ValueError("SOURCE_CONTENT_UNAVAILABLE")
+        return content.content_sha256
+
+    def revoke_content_same_version(self, carrier_id: str) -> None:
+        """Host/test hook: invalidate readable body while the version id stays unchanged."""
+
+        if carrier_id not in self._contents:
+            raise ValueError("SOURCE_CARRIER_UNKNOWN")
+        content = self._contents[carrier_id]
+        self._contents[carrier_id] = content.model_copy(
+            update={"complete": False, "authorized": False, "content": b""}
+        )
+
     def apply_delta(
         self, carrier_id: str, *, new_version: str, new_text: str,
         old_version: str = "", media_type: str = "text/plain",

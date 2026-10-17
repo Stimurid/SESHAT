@@ -22,6 +22,14 @@ class ExternalAdmissionError(ValueError):
     """Stable rejection code for forged or mismatched external material."""
 
 
+def _validate_proposal_schema(*, schema_id: str, payload: dict) -> None:
+    if schema_id == "external.hypothesis.v1":
+        if not isinstance(payload.get("hypothesis"), str) or not payload["hypothesis"]:
+            raise ExternalAdmissionError("OUTPUT_SCHEMA_VIOLATION")
+        return
+    raise ExternalAdmissionError("OUTPUT_SCHEMA_UNKNOWN")
+
+
 class ExecutorPort(Protocol):
     def dispatch(self, need: AgentTaskRequest) -> str:
         """Return opaque host job_id (may be recorded in agent_jobs.jsonl)."""
@@ -71,6 +79,18 @@ def verify_resume_receipt(
         raise ExternalAdmissionError("HOST_SCOPE_MISMATCH")
     if host_job.result_digest != receipt.evidence_return.result_digest:
         raise ExternalAdmissionError("JOB_RESULT_DIGEST_MISMATCH")
+    if host_job.allowed_source_rights != authoritative.source_rights:
+        raise ExternalAdmissionError("HOST_JOB_RIGHTS_ESCALATION")
+    if need.expected_output_schema != authoritative.expected_output_schema:
+        raise ExternalAdmissionError("LEDGER_DISPATCH_PIN_MISMATCH")
+    if need.admissible_evidence_classes != authoritative.admissible_evidence_classes:
+        raise ExternalAdmissionError("LEDGER_DISPATCH_PIN_MISMATCH")
+    _validate_proposal_schema(
+        schema_id=authoritative.expected_output_schema,
+        payload=receipt.evidence_return.proposal_payload,
+    )
+    if "E5" not in authoritative.admissible_evidence_classes:
+        raise ExternalAdmissionError("ADMISSIBLE_EVIDENCE_CLASS_DENIED")
     if authoritative.source_carrier_ids:
         missing = [
             cid
