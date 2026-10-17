@@ -596,3 +596,82 @@ def test_resume_without_waiting_run_raises():
             budget=BUDGET,
             port=fake,
         )
+
+
+def test_same_version_corrupt_bytes_during_wait_denied():
+    engine = campus_external_host_engine()
+    engine.run(run_id="corrupt", budget=BUDGET, initial_stone=_query("campus-facility-utilization"))
+    need = engine.external_ledger.research_needs[-1]
+    fake = FakeHostExecutor(host_scope=need.worker_ref.host_scope)
+    job_id = fake.dispatch(need)
+    evidence = fake.synthesize_return(
+        need=need,
+        job_id=job_id,
+        proposal={"hypothesis": "legitimate-host-record", "branch_focus": "alpha"},
+    )
+    carrier_id = need.source_carrier_ids[0]
+    prev = engine.carrier_store._contents[carrier_id]
+    engine.carrier_store._contents[carrier_id] = prev.model_copy(
+        update={"content": b"CORRUPTED_SOURCE_BYTES"}, deep=True
+    )
+    with pytest.raises(WaveEngineConfigurationError, match="SOURCE_CONTENT_STALE"):
+        engine.resume_external_evidence(
+            receipt=ExternalResumeReceipt(
+                request_id=need.request_id, run_id="corrupt", evidence_return=evidence
+            ),
+            budget=BUDGET,
+            port=fake,
+        )
+    assert not engine.external_ledger.evidence_returns
+    assert not any(r.object_type == "external.proposal" for r in engine.sediment.all_records())
+
+
+def test_false_metadata_digest_pin_rejected():
+    engine = campus_external_host_engine()
+    carrier_id = "campus-branch-alpha"
+    content = engine.carrier_store._contents[carrier_id]
+    engine.carrier_store._contents[carrier_id] = content.model_copy(
+        update={"content_sha256": "0" * 64, "byte_length": len(content.content)},
+        deep=True,
+    )
+    with pytest.raises(ValueError, match="SOURCE_CONTENT_UNAVAILABLE"):
+        engine.carrier_store.pin_content_digest(carrier_id, pinned_version=content.source_version)
+
+
+def test_second_terminal_completion_cannot_replace_first():
+    engine = campus_external_host_engine()
+    engine.run(run_id="term", budget=BUDGET, initial_stone=_query("campus-facility-utilization"))
+    need = engine.external_ledger.research_needs[-1]
+    host = FakeHostExecutor(host_scope=need.worker_ref.host_scope)
+    job_id = host.dispatch(need)
+    original = host.synthesize_return(
+        need=need,
+        job_id=job_id,
+        proposal={"hypothesis": "legitimate-host-record", "branch_focus": "alpha"},
+    )
+    with pytest.raises(ExternalAdmissionError, match="TERMINAL_RESULT_ALREADY_ISSUED"):
+        host.synthesize_return(
+            need=need,
+            job_id=job_id,
+            proposal={"hypothesis": "CONFLICTING_SECOND_RESULT", "branch_focus": "beta"},
+        )
+    verify_resume_receipt(
+        ledger=engine.external_ledger,
+        receipt=ExternalResumeReceipt(
+            request_id=need.request_id, run_id=need.run_id, evidence_return=original
+        ),
+        port=host,
+    )
+
+
+def test_idempotent_terminal_synthesize_replays_same_return():
+    engine = campus_external_host_engine()
+    engine.run(run_id="idem-term", budget=BUDGET, initial_stone=_query("campus-facility-utilization"))
+    need = engine.external_ledger.research_needs[-1]
+    host = FakeHostExecutor(host_scope=need.worker_ref.host_scope)
+    job_id = host.dispatch(need)
+    proposal = {"hypothesis": "once", "branch_focus": "alpha"}
+    first = host.synthesize_return(need=need, job_id=job_id, proposal=proposal)
+    second = host.synthesize_return(need=need, job_id=job_id, proposal=proposal)
+    assert second.result_digest == first.result_digest
+    assert second.method_call_receipt_hash == first.method_call_receipt_hash

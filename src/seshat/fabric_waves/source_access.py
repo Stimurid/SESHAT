@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Mapping
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
@@ -13,7 +14,7 @@ from seshat.contracts import (
     SourceCarrier,
     SourceContent,
 )
-from seshat.runtime import RuntimeSourceAccess
+from seshat.runtime import EvidenceAccessError, RuntimeSourceAccess
 
 
 class _DictContentProvider:
@@ -69,7 +70,18 @@ class FabricCarrierStore:
             or not content.authorized
         ):
             raise ValueError("SOURCE_CONTENT_UNAVAILABLE")
-        return content.content_sha256
+        access = RuntimeSourceAccess(
+            policy=RawAccessPolicy.FULL_REQUIRED,
+            carriers=(carrier.model_copy(deep=True),),
+            content_provider=_DictContentProvider({carrier_id: content}),
+            carrier_ids=(carrier_id,),
+        )
+        try:
+            access.verify_all((carrier_id,))
+            body = access.read_all(carrier_id)
+        except EvidenceAccessError:
+            raise ValueError("SOURCE_CONTENT_UNAVAILABLE") from None
+        return hashlib.sha256(body).hexdigest()
 
     def revoke_content_same_version(self, carrier_id: str) -> None:
         """Host/test hook: invalidate readable body while the version id stays unchanged."""

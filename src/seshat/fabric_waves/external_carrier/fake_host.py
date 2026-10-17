@@ -81,9 +81,35 @@ class FakeHostExecutor:
         bound = self._load_dispatch(job_id)
         if bound.request_id != need.request_id:
             raise ExternalAdmissionError("JOB_REQUEST_MISMATCH")
-        now = utc_now_iso()
         digest = material_hash(proposal)
         method_call_receipt_hash = hashlib.sha256(job_id.encode()).hexdigest()
+        existing = self._terminals.get(job_id)
+        if existing is not None:
+            if digest != existing.result_digest:
+                raise ExternalAdmissionError("TERMINAL_RESULT_ALREADY_ISSUED")
+            return AgentEvidenceReturn(
+                request_id=need.request_id,
+                idempotency_key=need.idempotency_key,
+                run_id=need.run_id,
+                worker_ref=need.worker_ref,
+                epistemic_level=EpistemicLevel.E5,
+                proposal_payload=proposal,
+                source_claim_refs=tuple(need.source_carrier_ids),
+                method_call_receipt_hash=existing.method_call_receipt_hash,
+                result_digest=existing.result_digest,
+                host_receipt=HostJobReceipt(
+                    receipt_id=f"rcpt-{job_id}",
+                    authorized=True,
+                    host_job=existing.host_job,
+                    binding_hash=compute_host_binding_hash(
+                        request=bound,
+                        host_job=existing.host_job,
+                        worker_ref=bound.worker_ref,
+                    ),
+                    worker_ref=bound.worker_ref,
+                ),
+            )
+        now = utc_now_iso()
         host_job = HostJobEvidence(
             job_id=job_id,
             host_scope=self.host_scope,
