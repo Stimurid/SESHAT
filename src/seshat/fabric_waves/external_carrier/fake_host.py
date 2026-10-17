@@ -88,12 +88,20 @@ class FakeHostExecutor:
         need: AgentTaskRequest,
         evidence: AgentEvidenceReturn,
     ) -> HostJobReceipt:
+        job_id = evidence.host_receipt.host_job.job_id
+        if job_id not in self._jobs:
+            raise ExternalAdmissionError("UNISSUED_HOST_JOB")
         if not evidence.host_receipt.authorized:
             raise ExternalAdmissionError("FORGED_AUTHORIZED_FLAG")
         if evidence.host_receipt.host_job.request_id != need.request_id:
             raise ExternalAdmissionError("JOB_REQUEST_ID_MISMATCH")
         if evidence.host_receipt.worker_ref != need.worker_ref:
             raise ExternalAdmissionError("WORKER_REF_MISMATCH")
+        bound = self._jobs[job_id]
+        if bound.idempotency_key != need.idempotency_key:
+            raise ExternalAdmissionError("JOB_IDEMPOTENCY_MISMATCH")
+        if bound.canonical_input_hash != need.canonical_input_hash:
+            raise ExternalAdmissionError("JOB_INPUT_HASH_MISMATCH")
         expected = compute_host_binding_hash(
             request=need,
             host_job=evidence.host_receipt.host_job,

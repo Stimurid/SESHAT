@@ -882,6 +882,7 @@ class WaveEngine:
                 error_code=code,
                 error_detail=detail,
             )
+        pin_carriers, pin_versions = self._transitive_source_pins(consumed_ids)
         carried_payload = {
             "run_id": run_id,
             "wave_id": wave_id,
@@ -893,6 +894,8 @@ class WaveEngine:
             "values": source_payload.get("values", []),
             "candidate_sediments": candidate_sediments,
             "source_access_manifest": manifest,
+            "transitive_source_carrier_ids": pin_carriers,
+            "transitive_source_versions": pin_versions,
             "governance_hold": self._governance_hold,
         }
         if spec.accepts_operator_query and stone.kind is StoneEventKind.QUERY:
@@ -1182,6 +1185,33 @@ class WaveEngine:
                 if archived is not None:
                     consumed.append(archived.sediment_id)
         return tuple(consumed)
+
+    def _transitive_source_pins(
+        self, consumed_ids: tuple[str, ...]
+    ) -> tuple[tuple[str, ...], dict[str, str]]:
+        carriers: list[str] = []
+        versions: dict[str, str] = {}
+        seen: set[str] = set()
+        queue = list(consumed_ids)
+        while queue:
+            sid = queue.pop()
+            if sid in seen:
+                continue
+            seen.add(sid)
+            record = self.sediment.views["working"].get(sid)
+            if record is None:
+                record = self.sediment.views["candidate"].get(sid)
+            if record is None:
+                continue
+            for cid in record.source_carrier_refs:
+                if cid not in carriers:
+                    carriers.append(cid)
+            manifest = record.source_access_manifest
+            if manifest is not None:
+                for receipt in manifest.receipts:
+                    versions[receipt.carrier_id] = receipt.source_version
+            queue.extend(record.read_dependencies)
+        return tuple(carriers), versions
 
     def _carriers_for_thread(
         self, spec: WorkflowThreadSpec, stone: StoneEvent

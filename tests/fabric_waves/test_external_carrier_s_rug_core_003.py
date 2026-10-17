@@ -12,6 +12,7 @@ from seshat.fabric_waves.external_carrier.contracts import (
 )
 from seshat.fabric_waves.external_carrier.fake_host import FakeHostExecutor
 from seshat.fabric_waves.external_carrier.hosts import campus_external_host_engine
+from seshat.fabric_waves.external_carrier.ledger import compute_host_binding_hash
 from seshat.fabric_waves.external_carrier.port import ExternalAdmissionError, verify_resume_receipt
 from seshat.fabric_waves.external_carrier.portfolio import execute_external_portfolio
 from seshat.fabric_waves.operator_ingress import admit_operator_query
@@ -63,6 +64,67 @@ def test_t2_fake_host_resume_reactivates_dependent_threads():
     threads = {a.thread_id for a in engine.ledger.activations_for_run("t2")}
     assert "external-integrate-campus" in threads
     assert "reconcile-campus" in threads
+
+
+def test_unissued_job_with_empty_host_registry_rejected():
+    engine = campus_external_host_engine()
+    engine.run(run_id="unissued", budget=BUDGET, initial_stone=_query("campus-facility-utilization"))
+    need = engine.external_ledger.research_needs[-1]
+    fake = FakeHostExecutor(host_scope=need.worker_ref.host_scope)
+    job_id = fake.dispatch(need)
+    evidence = fake.synthesize_return(need=need, job_id=job_id, proposal={"hypothesis": "x"})
+    forged_job = evidence.host_receipt.host_job.model_copy(
+        update={"job_id": "UNISSUED_EXTERNAL_JOB"}
+    )
+    forged_binding = compute_host_binding_hash(
+        request=need,
+        host_job=forged_job,
+        worker_ref=need.worker_ref,
+    )
+    evidence = evidence.model_copy(
+        update={
+            "host_receipt": evidence.host_receipt.model_copy(
+                update={
+                    "host_job": forged_job,
+                    "binding_hash": forged_binding,
+                }
+            )
+        }
+    )
+    with pytest.raises(ExternalAdmissionError, match="UNISSUED_HOST_JOB"):
+        verify_resume_receipt(
+            ledger=engine.external_ledger,
+            receipt=ExternalResumeReceipt(
+                request_id=need.request_id, run_id="unissued", evidence_return=evidence
+            ),
+            port=fake,
+        )
+
+
+def test_port_absent_fails_closed():
+    engine = campus_external_host_engine()
+    engine.run(run_id="noport", budget=BUDGET, initial_stone=_query("campus-facility-utilization"))
+    need = engine.external_ledger.research_needs[-1]
+    fake = FakeHostExecutor(host_scope=need.worker_ref.host_scope)
+    job_id = fake.dispatch(need)
+    evidence = fake.synthesize_return(need=need, job_id=job_id, proposal={"hypothesis": "x"})
+    with pytest.raises(ExternalAdmissionError, match="EXECUTOR_PORT_REQUIRED"):
+        verify_resume_receipt(
+            ledger=engine.external_ledger,
+            receipt=ExternalResumeReceipt(
+                request_id=need.request_id, run_id="noport", evidence_return=evidence
+            ),
+            port=None,
+        )
+
+
+def test_research_need_pins_source_versions():
+    engine = campus_external_host_engine()
+    engine.run(run_id="pins", budget=BUDGET, initial_stone=_query("campus-facility-utilization"))
+    need = engine.external_ledger.research_needs[-1]
+    assert need.source_carrier_ids
+    assert need.source_versions
+    assert all(cid in need.source_versions for cid in need.source_carrier_ids)
 
 
 def test_forged_receipt_rejected():

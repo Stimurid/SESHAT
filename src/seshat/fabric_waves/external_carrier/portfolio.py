@@ -152,6 +152,11 @@ def execute_external_portfolio() -> dict[str, Any]:
         "campus": campus,
         "met": met,
         "primary_run_id": "ext-t1-campus",
+        "primary_resume": {
+            "run_id": "ext-t1-campus",
+            "request_id": need.request_id,
+            "job_id": job_id,
+        },
     }
 
 
@@ -207,9 +212,14 @@ def export_external_artifacts(output_dir: Path, engines: dict[str, Any]) -> dict
     )
     (output_dir / "carpet.html").write_text(html, encoding="utf-8")
     campus.external_ledger.export_jsonl(output_dir)
-    resume_receipt = {
+    primary_resume = engines.get("primary_resume") or {
         "run_id": run_id,
-        "request_id": campus.external_ledger.research_needs[-1].request_id,
+        "request_id": campus.external_ledger.research_needs[0].request_id,
+    }
+    resume_receipt = {
+        "run_id": primary_resume["run_id"],
+        "request_id": primary_resume["request_id"],
+        "job_id": primary_resume.get("job_id"),
         "phase": "PHASE_A_SYNTHETIC_RESUME",
         "phase_b": "REQUIRED",
     }

@@ -62,12 +62,14 @@ def _build_task_request(
     canonical = material_hash(input_material)
     request_id = f"rn:{host_id}:{canonical[:12]}"
     idem = hashlib.sha256(f"{run_id}:{request_id}:{canonical}".encode()).hexdigest()
-    carriers = tuple(inv.carried_payload.get("carriers", ()))
-    versions = {}
+    carriers = tuple(inv.carried_payload.get("transitive_source_carrier_ids", ()))
+    if not carriers:
+        carriers = tuple(inv.carried_payload.get("carriers", ()))
+    versions = dict(inv.carried_payload.get("transitive_source_versions", {}))
     if inv.carried_payload.get("source_access_manifest"):
         manifest = inv.carried_payload["source_access_manifest"]
         for receipt in getattr(manifest, "receipts", ()) or ():
-            versions[receipt.source_id] = receipt.source_version
+            versions[receipt.carrier_id] = receipt.source_version
     return AgentTaskRequest(
         request_id=request_id,
         idempotency_key=idem,
