@@ -21,39 +21,45 @@ jobs:
         run: |
           git rev-parse HEAD
           git rev-parse 'HEAD^{tree}'
-      - name: Build synthetic-only image (no private assets)
+      - name: Build synthetic-only image
         shell: bash
         run: docker build --pull=false -f Dockerfile.report -t seshat-report:pr .
-      - name: Offline unprivileged R01 text-generation smoke
+      - name: Offline unprivileged R01 text-generation and durable export
         shell: bash
         run: |
           set -euo pipefail
-          docker create --name seshat-report-r01-ci --network none --read-only --user 65532:65532 --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m seshat-report:pr
-          docker start -a seshat-report-r01-ci
-          test "$(docker inspect -f '{{.State.ExitCode}}' seshat-report-r01-ci)" = 0
-          docker cp seshat-report-r01-ci:/tmp/report/report.md "$RUNNER_TEMP/report.md"
-          docker cp seshat-report-r01-ci:/tmp/report/report.html "$RUNNER_TEMP/report.html"
-          grep -q 'OWNER_AUTHORED_UNREVIEWED' "$RUNNER_TEMP/report.md"
-          grep -q 'Осадки в горном водосборе' "$RUNNER_TEMP/report.md"
-          grep -q 'Температура прибрежного слоя' "$RUNNER_TEMP/report.md"
-          docker rm seshat-report-r01-ci
-      - name: Offline unprivileged serial batch smoke
+          test "$(id -u)" -ne 0
+          dest="$RUNNER_TEMP/seshat-synthetic-r01"
+          mkdir -p "$dest"
+          chmod 700 "$dest"
+          docker run --rm --network none --read-only --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m --mount "type=bind,source=$dest,target=/out" seshat-report:pr python -m seshat.report_demo --fixture meteorology --report R01 --scientific --output /out/report
+          # A successful exit without an exported human-readable file is a FAIL.
+          test -s "$dest/report/report.md"
+          test -s "$dest/report/report.html"
+          grep -q 'OWNER_AUTHORED_UNREVIEWED' "$dest/report/report.md"
+          grep -q 'Осадки в горном водосборе' "$dest/report/report.md"
+          grep -q 'Температура прибрежного слоя' "$dest/report/report.md"
+      - name: Offline unprivileged private serial batch and safe preview
         shell: bash
         run: |
           set -euo pipefail
-          docker create --name seshat-report-batch-ci --network none --read-only --user 65532:65532 --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m seshat-report:pr python -m seshat.batch_demo --fixture meteorology --scientific --output /tmp/batch
-          docker start -a seshat-report-batch-ci
-          test "$(docker inspect -f '{{.State.ExitCode}}' seshat-report-batch-ci)" = 0
-          # Copy ONLY one synthetic prose preview; never the private batch root.
-          docker cp seshat-report-batch-ci:/tmp/batch/items/r01-readable/report.md "$RUNNER_TEMP/batch-preview.md"
-          grep -q 'OWNER_AUTHORED_UNREVIEWED' "$RUNNER_TEMP/batch-preview.md"
-          docker rm seshat-report-batch-ci
+          dest="$RUNNER_TEMP/seshat-internal-batch"
+          mkdir -p "$dest"
+          chmod 700 "$dest"
+          docker run --rm --network none --read-only --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m --mount "type=bind,source=$dest,target=/out" seshat-report:pr python -m seshat.batch_demo --fixture meteorology --scientific --output /out/batch
+          test -s "$dest/batch/batch_receipt.json"
+          test -s "$dest/batch/manifest.json"
+          test -s "$dest/batch/items/r01-readable/report.md"
+          # NEVER expose/copy the private manifest, rights pins or SQLite ledger.
+          cp "$dest/batch/items/r01-readable/report.md" "$RUNNER_TEMP/seshat-preview-r01.md"
+          test -s "$RUNNER_TEMP/seshat-preview-r01.md"
+          grep -q 'OWNER_AUTHORED_UNREVIEWED' "$RUNNER_TEMP/seshat-preview-r01.md"
       - name: Offline report and batch security tests
         shell: bash
         run: |
           set -euo pipefail
-          docker run --rm --network none --read-only --user 65532:65532 --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m seshat-report:pr python -m pytest -q -p no:cacheprovider tests/test_reports.py tests/test_batch.py tests/test_scientific_report.py
-          docker run --rm --network none --read-only --user 65532:65532 --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m seshat-report:pr python -m ruff check --no-cache .
+          docker run --rm --network none --read-only --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m seshat-report:pr python -m pytest -q -p no:cacheprovider tests/test_reports.py tests/test_batch.py tests/test_scientific_report.py
+          docker run --rm --network none --read-only --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m seshat-report:pr python -m ruff check --no-cache .
       - name: Print scope boundary
         shell: bash
         run: |
