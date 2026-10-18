@@ -1,6 +1,7 @@
 """S-RUG-CORE-003 Phase A: external worker carrier negative and demo gates."""
 
 import json
+import threading
 
 import pytest
 
@@ -11,7 +12,10 @@ from seshat.fabric_waves.external_carrier.contracts import (
     ExternalResumeReceipt,
 )
 from seshat.fabric_waves.external_carrier.fake_host import FakeHostExecutor
-from seshat.fabric_waves.external_carrier.hosts import campus_external_host_engine
+from seshat.fabric_waves.external_carrier.hosts import (
+    campus_external_host_engine,
+    meteorology_external_host_engine,
+)
 from seshat.fabric_waves.external_carrier.ledger import compute_host_binding_hash
 from seshat.fabric_waves.external_carrier.port import ExternalAdmissionError, verify_resume_receipt
 from seshat.fabric_waves.external_carrier.portfolio import execute_external_portfolio
@@ -675,3 +679,132 @@ def test_idempotent_terminal_synthesize_replays_same_return():
     second = host.synthesize_return(need=need, job_id=job_id, proposal=proposal)
     assert second.result_digest == first.result_digest
     assert second.method_call_receipt_hash == first.method_call_receipt_hash
+
+
+def test_concurrent_terminal_synthesize_first_write_wins():
+    ledger, host, need, _evidence = _external_oracle_scene()
+    job_id = host.dispatch(need)
+    arrival = threading.Barrier(2)
+    outcomes: list[object] = []
+
+    def _complete(proposal: dict) -> None:
+        arrival.wait()
+        try:
+            outcomes.append(
+                host.synthesize_return(need=need, job_id=job_id, proposal=proposal)
+            )
+        except ExternalAdmissionError as exc:
+            outcomes.append(exc)
+
+    proposals = (
+        {"hypothesis": "winner-alpha", "scope": "synthetic"},
+        {"hypothesis": "loser-beta", "scope": "conflict"},
+    )
+    threads = [
+        threading.Thread(target=_complete, args=(proposal,), daemon=True)
+        for proposal in proposals
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    successes = [item for item in outcomes if not isinstance(item, ExternalAdmissionError)]
+    failures = [item for item in outcomes if isinstance(item, ExternalAdmissionError)]
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert failures[0].args[0] == "TERMINAL_RESULT_ALREADY_ISSUED"
+    winner = successes[0]
+    replay = host.synthesize_return(need=need, job_id=job_id, proposal=winner.proposal_payload)
+    assert replay.result_digest == winner.result_digest
+    assert replay.method_call_receipt_hash == winner.method_call_receipt_hash
+    verify_resume_receipt(
+        ledger=ledger,
+        receipt=ExternalResumeReceipt(
+            request_id=need.request_id, run_id=need.run_id, evidence_return=winner
+        ),
+        port=host,
+    )
+
+
+def _waiting_external_activation(engine, run_id: str, request_id: str):
+    return next(
+        activation
+        for activation in engine.ledger.activations_for_run(run_id)
+        if activation.outcome.value == "WAITING_EXTERNAL"
+        and activation.error_detail == request_id
+    )
+
+
+def test_resume_external_stone_parents_waiting_activation_campus():
+    engine = campus_external_host_engine()
+    engine.run(run_id="causal-campus", budget=BUDGET, initial_stone=_query("campus-facility-utilization"))
+    need = engine.external_ledger.research_needs[-1]
+    wait_activation = _waiting_external_activation(engine, "causal-campus", need.request_id)
+    assert wait_activation.wave_id == need.wave_id
+    fake = FakeHostExecutor(host_scope=need.worker_ref.host_scope)
+    job_id = fake.dispatch(need)
+    evidence = fake.synthesize_return(
+        need=need,
+        job_id=job_id,
+        proposal={"hypothesis": "calibration drift", "branch_focus": "alpha"},
+    )
+    engine.resume_external_evidence(
+        receipt=ExternalResumeReceipt(
+            request_id=need.request_id, run_id="causal-campus", evidence_return=evidence
+        ),
+        budget=BUDGET,
+        port=fake,
+    )
+    external_events = [
+        event
+        for event in engine.ledger.events
+        if event.run_id == "causal-campus" and "external-return" in event.event_id
+    ]
+    assert external_events
+    event = external_events[-1]
+    assert event.parent_activation_id == wait_activation.activation_id
+    assert event.consumed_by_wave_id is not None
+    assert event.consumed_by_wave_id in {
+        wave.wave_id for wave in engine.ledger.waves if wave.run_id == "causal-campus"
+    }
+    proposal = next(
+        record for record in engine.sediment.all_records() if record.object_type == "external.proposal"
+    )
+    assert any(
+        entry.startswith(f"parent_activation:{wait_activation.activation_id}")
+        for entry in proposal.provenance
+    )
+    assert any(entry.startswith(f"parent_wave:{need.wave_id}") for entry in proposal.provenance)
+
+
+def test_resume_external_stone_parents_waiting_activation_meteorology():
+    engine = meteorology_external_host_engine()
+    engine.run(
+        run_id="causal-met",
+        budget=BUDGET,
+        initial_stone=_query("winter-operations-wind-icing"),
+    )
+    need = engine.external_ledger.research_needs[-1]
+    wait_activation = _waiting_external_activation(engine, "causal-met", need.request_id)
+    assert wait_activation.wave_id == need.wave_id
+    fake = FakeHostExecutor(host_scope=need.worker_ref.host_scope)
+    job_id = fake.dispatch(need)
+    evidence = fake.synthesize_return(
+        need=need,
+        job_id=job_id,
+        proposal={"hypothesis": "icing asymmetry", "domain": "meteorology"},
+    )
+    engine.resume_external_evidence(
+        receipt=ExternalResumeReceipt(
+            request_id=need.request_id, run_id="causal-met", evidence_return=evidence
+        ),
+        budget=BUDGET,
+        port=fake,
+    )
+    external_events = [
+        event
+        for event in engine.ledger.events
+        if event.run_id == "causal-met" and "external-return" in event.event_id
+    ]
+    assert external_events[-1].parent_activation_id == wait_activation.activation_id

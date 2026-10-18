@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,6 +40,7 @@ class FakeHostExecutor:
         self._salt = signing_salt
         self._dispatch_json: dict[str, str] = {}
         self._terminals: dict[str, _TerminalResult] = {}
+        self._terminal_lock = threading.RLock()
 
     @staticmethod
     def _job_id_for(need: AgentTaskRequest) -> str:
@@ -83,10 +85,61 @@ class FakeHostExecutor:
             raise ExternalAdmissionError("JOB_REQUEST_MISMATCH")
         digest = material_hash(proposal)
         method_call_receipt_hash = hashlib.sha256(job_id.encode()).hexdigest()
-        existing = self._terminals.get(job_id)
-        if existing is not None:
-            if digest != existing.result_digest:
-                raise ExternalAdmissionError("TERMINAL_RESULT_ALREADY_ISSUED")
+        with self._terminal_lock:
+            existing = self._terminals.get(job_id)
+            if existing is not None:
+                if digest != existing.result_digest:
+                    raise ExternalAdmissionError("TERMINAL_RESULT_ALREADY_ISSUED")
+                return AgentEvidenceReturn(
+                    request_id=need.request_id,
+                    idempotency_key=need.idempotency_key,
+                    run_id=need.run_id,
+                    worker_ref=need.worker_ref,
+                    epistemic_level=EpistemicLevel.E5,
+                    proposal_payload=proposal,
+                    source_claim_refs=tuple(need.source_carrier_ids),
+                    method_call_receipt_hash=existing.method_call_receipt_hash,
+                    result_digest=existing.result_digest,
+                    host_receipt=HostJobReceipt(
+                        receipt_id=f"rcpt-{job_id}",
+                        authorized=True,
+                        host_job=existing.host_job,
+                        binding_hash=compute_host_binding_hash(
+                            request=bound,
+                            host_job=existing.host_job,
+                            worker_ref=bound.worker_ref,
+                        ),
+                        worker_ref=bound.worker_ref,
+                    ),
+                )
+            now = utc_now_iso()
+            host_job = HostJobEvidence(
+                job_id=job_id,
+                host_scope=self.host_scope,
+                request_id=bound.request_id,
+                started_at=now,
+                ended_at=now,
+                result_provenance=("FAKE_HOST_SYNTHETIC",),
+                result_digest=digest,
+                allowed_source_rights=bound.source_rights,
+            )
+            binding_hash = compute_host_binding_hash(
+                request=bound,
+                host_job=host_job,
+                worker_ref=bound.worker_ref,
+            )
+            receipt = HostJobReceipt(
+                receipt_id=f"rcpt-{job_id}",
+                authorized=True,
+                host_job=host_job,
+                binding_hash=binding_hash,
+                worker_ref=bound.worker_ref,
+            )
+            self._terminals[job_id] = _TerminalResult(
+                result_digest=digest,
+                method_call_receipt_hash=method_call_receipt_hash,
+                host_job=host_job.model_copy(deep=True),
+            )
             return AgentEvidenceReturn(
                 request_id=need.request_id,
                 idempotency_key=need.idempotency_key,
@@ -95,60 +148,10 @@ class FakeHostExecutor:
                 epistemic_level=EpistemicLevel.E5,
                 proposal_payload=proposal,
                 source_claim_refs=tuple(need.source_carrier_ids),
-                method_call_receipt_hash=existing.method_call_receipt_hash,
-                result_digest=existing.result_digest,
-                host_receipt=HostJobReceipt(
-                    receipt_id=f"rcpt-{job_id}",
-                    authorized=True,
-                    host_job=existing.host_job,
-                    binding_hash=compute_host_binding_hash(
-                        request=bound,
-                        host_job=existing.host_job,
-                        worker_ref=bound.worker_ref,
-                    ),
-                    worker_ref=bound.worker_ref,
-                ),
+                method_call_receipt_hash=method_call_receipt_hash,
+                result_digest=digest,
+                host_receipt=receipt,
             )
-        now = utc_now_iso()
-        host_job = HostJobEvidence(
-            job_id=job_id,
-            host_scope=self.host_scope,
-            request_id=bound.request_id,
-            started_at=now,
-            ended_at=now,
-            result_provenance=("FAKE_HOST_SYNTHETIC",),
-            result_digest=digest,
-            allowed_source_rights=bound.source_rights,
-        )
-        binding_hash = compute_host_binding_hash(
-            request=bound,
-            host_job=host_job,
-            worker_ref=bound.worker_ref,
-        )
-        receipt = HostJobReceipt(
-            receipt_id=f"rcpt-{job_id}",
-            authorized=True,
-            host_job=host_job,
-            binding_hash=binding_hash,
-            worker_ref=bound.worker_ref,
-        )
-        self._terminals[job_id] = _TerminalResult(
-            result_digest=digest,
-            method_call_receipt_hash=method_call_receipt_hash,
-            host_job=host_job.model_copy(deep=True),
-        )
-        return AgentEvidenceReturn(
-            request_id=need.request_id,
-            idempotency_key=need.idempotency_key,
-            run_id=need.run_id,
-            worker_ref=need.worker_ref,
-            epistemic_level=EpistemicLevel.E5,
-            proposal_payload=proposal,
-            source_claim_refs=tuple(need.source_carrier_ids),
-            method_call_receipt_hash=method_call_receipt_hash,
-            result_digest=digest,
-            host_receipt=receipt,
-        )
 
     def verify_return(
         self,

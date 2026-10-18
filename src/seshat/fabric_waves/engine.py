@@ -120,6 +120,8 @@ class _WaitingRunState:
     start_tick: int
     decision_ids: list[str]
     request_id: str
+    waiting_activation_id: str = ""
+    waiting_wave_id: str = ""
     dispatch_snapshot: AgentTaskRequest | None = None
     pinned_source_content_digests: dict[str, str] | None = None
 
@@ -648,8 +650,12 @@ class WaveEngine:
                 None,
             )
             pinned_digests: dict[str, str] | None = None
+            wait_activation: ActivationRecord | None = None
             if active_need is not None:
                 pinned_digests = self._capture_pinned_source_digests(active_need)
+                wait_activation = self._external_wait_activation(
+                    run_id, active_need.request_id
+                )
             self._waiting_runs[run_id] = _WaitingRunState(
                 budget=budget,
                 waves_emitted=waves_emitted,
@@ -661,6 +667,12 @@ class WaveEngine:
                 start_tick=start_tick,
                 decision_ids=decision_ids,
                 request_id=active_need.request_id if active_need is not None else "",
+                waiting_activation_id=(
+                    wait_activation.activation_id if wait_activation is not None else ""
+                ),
+                waiting_wave_id=(
+                    wait_activation.wave_id if wait_activation is not None else ""
+                ),
                 dispatch_snapshot=(
                     active_need.model_copy(deep=True) if active_need is not None else None
                 ),
@@ -1227,6 +1239,17 @@ class WaveEngine:
             queue.extend(record.read_dependencies)
         return tuple(carriers), versions
 
+    def _external_wait_activation(
+        self, run_id: str, request_id: str
+    ) -> ActivationRecord | None:
+        for activation in reversed(self.ledger.activations_for_run(run_id)):
+            if (
+                activation.outcome is ActivationOutcome.WAITING_EXTERNAL
+                and activation.error_detail == request_id
+            ):
+                return activation
+        return None
+
     def _carriers_for_thread(
         self, spec: WorkflowThreadSpec, stone: StoneEvent
     ) -> tuple[str, ...]:
@@ -1251,9 +1274,14 @@ class WaveEngine:
         run_id: str,
         evidence_return: Any,
         parent_activation_id: str,
+        parent_wave_id: str,
     ) -> SedimentRecord:
         payload = dict(evidence_return.proposal_payload)
         digest = material_hash(payload)
+        try:
+            produced_in_wave = int(parent_wave_id.rsplit(":", 1)[-1])
+        except ValueError:
+            produced_in_wave = 1
         record = SedimentRecord(
             sediment_id=sediment_id,
             object_type="external.proposal",
@@ -1267,6 +1295,8 @@ class WaveEngine:
                 f"job:{evidence_return.host_receipt.host_job.job_id}",
                 f"worker:{evidence_return.worker_ref.carrier_id}",
                 f"method:{evidence_return.method_call_receipt_hash[:16]}",
+                f"parent_activation:{parent_activation_id}",
+                f"parent_wave:{parent_wave_id}",
             ),
             method_body_refs=(),
             source_carrier_refs=tuple(evidence_return.source_claim_refs),
@@ -1275,7 +1305,7 @@ class WaveEngine:
             write_dependencies=(),
             produced_by_thread="external-carrier",
             produced_at_tick=self._tick(),
-            produced_in_wave=1,
+            produced_in_wave=produced_in_wave,
             produced_by_stone_kind=StoneEventKind.SEDIMENT_AVAILABLE,
             acceptance_state=AcceptanceState.WORKING,
         )
@@ -1367,12 +1397,27 @@ class WaveEngine:
             )
         except ExternalAdmissionError as exc:
             raise WaveEngineConfigurationError(str(exc)) from exc
+        wait = self._waiting_runs[run_id]
+        parent_activation = self._external_wait_activation(run_id, active_need.request_id)
+        if parent_activation is None:
+            raise WaveEngineConfigurationError("ACTIVE_WAIT_PARENT_ACTIVATION_MISSING")
+        parent_activation_id = wait.waiting_activation_id or parent_activation.activation_id
+        parent_wave_id = (
+            wait.waiting_wave_id or parent_activation.wave_id or active_need.wave_id
+        )
+        if parent_activation.activation_id != parent_activation_id:
+            raise WaveEngineConfigurationError("ACTIVE_WAIT_PARENT_ACTIVATION_MISMATCH")
+        if parent_activation.wave_id != parent_wave_id:
+            raise WaveEngineConfigurationError("ACTIVE_WAIT_PARENT_WAVE_MISMATCH")
+        if active_need.wave_id != parent_wave_id:
+            raise WaveEngineConfigurationError("ACTIVE_WAIT_NEED_WAVE_MISMATCH")
         proposal_id = self.external_proposal_sediment_id or f"external-proposal-{run_id}"
         record = self._deposit_external_proposal(
             sediment_id=proposal_id,
             run_id=run_id,
             evidence_return=evidence,
-            parent_activation_id=f"{run_id}:external-resume",
+            parent_activation_id=parent_activation_id,
+            parent_wave_id=parent_wave_id,
         )
         tick = self._tick()
         self._drop_stone(
@@ -1380,13 +1425,13 @@ class WaveEngine:
                 event_id=f"{run_id}:external-return:{evidence.request_id}",
                 kind=StoneEventKind.SEDIMENT_AVAILABLE,
                 issued_at_tick=tick,
-                parent_activation_id=f"{run_id}:external-resume",
+                parent_activation_id=parent_activation_id,
                 payload={
                     "sediment_id": record.sediment_id,
                     "object_type": record.object_type,
                     "version": record.version,
-                    "parent_activation_id": f"{run_id}:external-resume",
-                    "parent_wave_id": self._waiting_runs[run_id].request_id,
+                    "parent_activation_id": parent_activation_id,
+                    "parent_wave_id": parent_wave_id,
                 },
             ),
             budget=budget,
