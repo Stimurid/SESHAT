@@ -182,7 +182,10 @@ def make_adapter(
         ]
     )
     return TrustedHubHostAdapter(
-        store=HostJobStore(tmp_path / store_name),
+        store=HostJobStore(
+            tmp_path / store_name,
+            integrity_key=HostIntegrityKey(MAC_KEY_BYTES) if mac else None,
+        ),
         registry=registry,
         source_authority=authority,
         approvals=OwnerApprovals(entries),
