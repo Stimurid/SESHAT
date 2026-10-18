@@ -45,15 +45,23 @@ from seshat.fabric_waves.external_carrier.hub_protocol import (
 
 LIVE_AUTH_SCHEMA = "seshat.live_dispatch_authorization.v1"
 ASSUMED_PROTOCOL_STATUS = "UNVERIFIED_AGAINST_CALLER_PROTOCOL"
+# Hard-fail-closed gate for live dispatch. The actual official ``aiye-exec submit`` argv template
+# could NOT be verified against AORUS ``services/aiye-local-executor/CALLER_PROTOCOL.md`` from the
+# authoring workspace. Live dispatch must therefore raise ``PROTOCOL_UNVERIFIED`` rather than
+# spoofing an unverified argv. ``CallerProtocolVerifier`` is the only approved override path.
+PROTOCOL_VERIFIED_ENV = "SESHAT_PHASE_B_PROTOCOL_VERIFIED"
 # Transport outcomes that may have created a Hub job; never allow a second paid submit.
 _AMBIGUOUS_CODES = frozenset(
     {
         "SUBMIT_TIMEOUT_AMBIGUOUS",
         "SUBMIT_EXIT_AMBIGUOUS",
         "SUBMIT_TRANSPORT_AMBIGUOUS",
+        "PROTOCOL_UNVERIFIED",
     }
 )
 # Only pre-send, locally verified failures (no subprocess started or provably rejected before send).
+# ``PROVIDER_UNAVAILABLE`` is REACHED only after the OS already attempted exec and refused: the
+# command line is gone and stdin/stdout were never consumed, so retry with fresh auth is safe.
 _PROVEN_NOT_SENT_CODES = frozenset(
     {
         "PROVIDER_UNAVAILABLE",
@@ -68,23 +76,30 @@ _PROVEN_NOT_SENT_CODES = frozenset(
 )
 _MAX_RECORD_BYTES = 64_000
 
-# READ-ONLY gap ledger vs AORUS ``aiye-local-executor/CALLER_PROTOCOL.md`` (not executed here).
+# The expected official submit flags recorded by an independent reviewer after reading the live
+# ``aiye-exec submit --help`` output on AORUS. The expected set does NOT include ``--provider``,
+# ``--job-id``, ``--budget-usd``, ``--max-tokens``, ``--timeout-seconds`` or a ``--decision`` flag
+# (the accepted name is ``--decision-id``). Mode values are ``{audit, code}``; ``read-only`` is
+# invalid in the official CLI. We list the flags here only so that the read-only gap ledger can be
+# filled in once the live protocol is independently re-checked.
 _CALLER_PROTOCOL_EXPECTED_SUBMIT_FLAGS = frozenset(
     {
         "--agent",
+        "--kind",
         "--ticket",
         "--decision-id",
         "--role",
         "--mode",
-        "--job-id",
-        "--provider",
+        "--max-seconds",
+        "--max-turns",
+        "--client",
+        "--purpose",
         "--model",
-        "--max-tokens",
-        "--timeout-seconds",
-        "--budget-usd",
+        "--model-tier",
         "--prompt-file",
     }
 )
+# Flags the host adapter currently emits (placeholders pending independent CALLER_PROTOCOL review).
 _SESHAT_SUBMIT_FLAGS = frozenset(
     {
         "--ticket",
@@ -110,15 +125,35 @@ def caller_protocol_argv_gaps() -> tuple[str, ...]:
     extra = sorted(_SESHAT_SUBMIT_FLAGS - _CALLER_PROTOCOL_EXPECTED_SUBMIT_FLAGS)
     if "--agent" in missing:
         gaps.append("CALLER_PROTOCOL_REQUIRES_AGENT_AUTO")
+    if "--kind" in missing:
+        gaps.append("CALLER_PROTOCOL_REQUIRES_KIND")
     if "--decision-id" in missing and "--decision" in extra:
         gaps.append("CALLER_PROTOCOL_DECISION_ID_VS_DECISION_FLAG")
     for flag in missing:
-        if flag not in {"--agent", "--decision-id"}:
+        if flag not in {"--agent", "--decision-id", "--kind"}:
             gaps.append(f"CALLER_PROTOCOL_MISSING_FLAG:{flag}")
     for flag in extra:
-        if flag != "--decision":
-            gaps.append(f"SESHAT_EXTRA_FLAG:{flag}")
+        gaps.append(f"SESHAT_INVALID_FLAG:{flag}")
+    # Per the actual ``aiye-exec submit`` help, ``--mode read-only`` is an INVALID mode; the
+    # accepted values are ``audit`` and ``code``. We never produce a session that pretends to be
+    # read-only; the host gate would still need independent verification.
+    gaps.append("CALLER_PROTOCOL_REJECTS_READ_ONLY_MODE")
     return tuple(gaps)
+
+
+def caller_protocol_unverified() -> bool:
+    """True unless an independent review flipped the verification gate to ``True``.
+
+    The flag is read from process environment to keep it out of the host JSON config and away
+    from operator-editable files. Setting ``SESHAT_PHASE_B_PROTOCOL_VERIFIED=true`` does NOT
+    constitute scientific-method acceptance; it is a host-controlled engineering gate that must
+    be flipped only after reading the live ``aiye-exec submit --help`` output and updating
+    ``build_aiye_exec_argv`` to match.
+    """
+
+    import os as _os
+
+    return _os.environ.get(PROTOCOL_VERIFIED_ENV, "").lower() not in {"1", "true", "yes"}
 
 
 def _cents(value: int) -> str:
@@ -185,6 +220,12 @@ class AiyeExecSubmitter:
     exit_code_map: Mapping[int, str] = field(default_factory=dict)
 
     def submit(self, *, spec: HubJobSpec, prompt: bytes) -> None:
+        # Hard-fail closed: the official ``aiye-exec submit`` argv template was NOT independently
+        # verified in this workspace. Every ambiguous gap is reported, and no live argv is built
+        # until an independent reviewer flips ``SESHAT_PHASE_B_PROTOCOL_VERIFIED``. We never spoof
+        # the Hub-issued ``hub_job_id``; the actual Hub assigns ``jx-...`` identifiers after dispatch.
+        if caller_protocol_unverified():
+            raise HubTransportError("PROTOCOL_UNVERIFIED")
         if sha256_hex(prompt) != spec.prompt_sha256:
             raise HostBoundaryError("PROMPT_DIGEST_MISMATCH")
         # Validate every token (and build argv) BEFORE any file is written.
@@ -203,14 +244,21 @@ class AiyeExecSubmitter:
         except subprocess.TimeoutExpired:
             raise HubTransportError("SUBMIT_TIMEOUT_AMBIGUOUS") from None
         except OSError:
-            raise HubTransportError("PROVIDER_UNAVAILABLE") from None
+            # OSError after the child was forked may still mean the child ran (fork before exec);
+            # we cannot prove NOT_SENT, so the conservative classification is AMBIGUOUS. The
+            # caller must issue a new, separately approved job to retry, never reuse this nonce.
+            raise HubTransportError("SUBMIT_DISPATCH_AMBIGUOUS") from None
         code = int(getattr(completed, "returncode", 1))
         if code != 0:
             # stderr/stdout are deliberately not propagated: they may echo credentials.
             mapped = self.exit_code_map.get(code)
             if mapped is None:
+                # Unmapped nonzero exit is always ambiguous: the child has produced stderr we
+                # will not surface, so we cannot prove the chargeable model call did NOT run.
                 raise HubTransportError("SUBMIT_EXIT_AMBIGUOUS")
             if mapped not in _PROVEN_NOT_SENT_CODES:
+                # Caller-mapped code that is not in the documented pre-send whitelist cannot be
+                # trusted as ``NOT_SENT``: the child had already launched.
                 raise HubTransportError("SUBMIT_TRANSPORT_AMBIGUOUS")
             raise HubTransportError(mapped)
 

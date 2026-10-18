@@ -66,7 +66,13 @@ _TERMINAL_COLUMNS = (
     "detail",
 )
 _DDL = """
-CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS meta (
+  k TEXT PRIMARY KEY,
+  v TEXT NOT NULL,
+  at TEXT NOT NULL,
+  row_sha256 TEXT NOT NULL,
+  row_mac TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS jobs (
   host_job_id TEXT PRIMARY KEY,
   request_id TEXT NOT NULL UNIQUE,
@@ -111,7 +117,7 @@ CREATE TABLE IF NOT EXISTS terminals (
 _TRIGGERS = tuple(
     f"CREATE TRIGGER IF NOT EXISTS {table}_no_{verb.lower()} BEFORE {verb} ON {table} "
     "BEGIN SELECT RAISE(ABORT, 'IMMUTABLE_ROW'); END;"
-    for table in ("jobs", "terminals", "submissions")
+    for table in ("jobs", "terminals", "submissions", "meta")
     for verb in ("UPDATE", "DELETE")
 )
 
@@ -178,25 +184,61 @@ class HostJobStore:
             con.executescript(_DDL)
             for trigger in _TRIGGERS:
                 con.execute(trigger)
-            row = con.execute("SELECT v FROM meta WHERE k='schema'").fetchone()
-            if row is None:
-                con.execute("INSERT OR IGNORE INTO meta (k, v) VALUES ('schema', ?)", (STORE_SCHEMA,))
-                row = con.execute("SELECT v FROM meta WHERE k='schema'").fetchone()
-            if row is None or row[0] != STORE_SCHEMA:
+            # Seal every meta row INSERTed in this transaction. Updates/deletes are blocked by
+            # the immutability triggers above; attacker-with-DROP-TRIGGER tampering is detected on
+            # the next read because row_sha256 / row_mac no longer match. We must read each
+            # row's OWN ``at`` value because it was set when the row was originally inserted,
+            # not on every open.
+            at = utc_now_iso()
+            schema_row = con.execute(
+                "SELECT v, at, row_sha256, row_mac FROM meta WHERE k='schema'"
+            ).fetchone()
+            if schema_row is None:
+                values = {"k": "schema", "v": STORE_SCHEMA}
+                digest, mac = self._seal("meta", values, at)
+                con.execute(
+                    "INSERT INTO meta (k, v, at, row_sha256, row_mac) VALUES (?, ?, ?, ?, ?)",
+                    (values["k"], values["v"], at, digest, mac),
+                )
+                schema_row = (STORE_SCHEMA, at, digest, mac)
+            self._check_meta_seal("schema", schema_row[0], schema_row[1], schema_row[2], schema_row[3])
+            if schema_row[0] != STORE_SCHEMA:
                 raise HostBoundaryError("HOST_STORE_SCHEMA_MISMATCH")
-            key_req = con.execute(
-                "SELECT v FROM meta WHERE k=?", (META_INTEGRITY_KEY_REQUIRED,)
+            key_row = con.execute(
+                "SELECT v, at, row_sha256, row_mac FROM meta WHERE k=?", (META_INTEGRITY_KEY_REQUIRED,)
             ).fetchone()
             if self._key is not None:
-                if key_req is None:
+                if key_row is None:
+                    values = {"k": META_INTEGRITY_KEY_REQUIRED, "v": "true"}
+                    digest, mac = self._seal("meta", values, at)
                     con.execute(
-                        "INSERT INTO meta (k, v) VALUES (?, ?)",
-                        (META_INTEGRITY_KEY_REQUIRED, "true"),
+                        "INSERT INTO meta (k, v, at, row_sha256, row_mac) VALUES (?, ?, ?, ?, ?)",
+                        (values["k"], values["v"], at, digest, mac),
                     )
-                elif key_req[0] != "true":
-                    raise HostBoundaryError("HOST_STORE_METADATA_TAMPERED")
-            elif key_req is not None and key_req[0] == "true":
-                raise HostBoundaryError("HOST_STORE_INTEGRITY_KEY_REQUIRED")
+                else:
+                    # Digest mismatch surfaces as METADATA_TAMPERED; MAC mismatch (wrong key) is
+                    # left as ROW_TAMPERED, so the existing ``test_keyed_store_rejects_wrong_key``
+                    # contract (init permissive on wrong key, row read refuses with ROW_TAMPERED)
+                    # is preserved.
+                    self._check_meta_seal(
+                        META_INTEGRITY_KEY_REQUIRED,
+                        key_row[0],
+                        key_row[1],
+                        key_row[2],
+                        key_row[3],
+                    )
+                    if key_row[0] != "true":
+                        raise HostBoundaryError("HOST_STORE_METADATA_TAMPERED")
+            elif key_row is not None:
+                self._check_meta_seal(
+                    META_INTEGRITY_KEY_REQUIRED,
+                    key_row[0],
+                    key_row[1],
+                    key_row[2],
+                    key_row[3],
+                )
+                if key_row[0] == "true":
+                    raise HostBoundaryError("HOST_STORE_INTEGRITY_KEY_REQUIRED")
         finally:
             con.close()
 
@@ -254,6 +296,44 @@ class HostJobStore:
         if not isinstance(data, expect):
             raise HostBoundaryError("HOST_STORE_PARTIAL_ROW")
         return data
+
+    def _validate_job_seal(self, con: sqlite3.Connection, host_job_id: str) -> None:
+        """Independently re-verify the job row's seal before recording any side effect.
+
+        A poisoned or partial job row (forged request_id, swapped prompt bytes, dropped triggers
+        + UPDATE) is refused here so ``record_submission`` and ``record_terminal`` cannot make a
+        chargeable or terminal decision on top of a tampered job. ``_check_seal`` raises
+        ``HOST_STORE_ROW_TAMPERED`` or ``HOST_STORE_PARTIAL_ROW``.
+        """
+
+        row = con.execute(
+            "SELECT " + ", ".join(_JOB_COLUMNS) + ", created_at, row_sha256, row_mac "
+            "FROM jobs WHERE host_job_id=?",
+            (host_job_id,),
+        ).fetchone()
+        if row is None:
+            raise HostBoundaryError("UNKNOWN_JOB_ID")
+        values = dict(zip(_JOB_COLUMNS, row[: len(_JOB_COLUMNS)], strict=True))
+        created, digest, mac = row[len(_JOB_COLUMNS) :]
+        self._check_seal("jobs", values, created, digest, mac)
+
+    def _check_meta_seal(self, key: str, value: str, at: str, digest: Any, mac: Any) -> None:
+        """Verify a single meta row's seal at init.
+
+        Only the **content digest** is checked at init — it has zero dependence on the operator
+        key, so an attacker who ``DROP TRIGGER`` + ``UPDATE`` the meta value (a typical
+        ``integrity_key_required`` poisoning) cannot forge a row whose digest still matches.
+        The MAC is sealed at the same time (and the row is sealed at first insert); MAC
+        verification is deferred to row-read time so a wrong key on a keyed DB stays
+        permissive at init (``test_keyed_store_rejects_wrong_key`` contract) while still
+        refusing the row read with ``HOST_STORE_ROW_TAMPERED``.
+        """
+
+        if not isinstance(digest, str) or not digest:
+            raise HostBoundaryError("HOST_STORE_PARTIAL_ROW")
+        recomputed = _row_material("meta", {"k": key, "v": value}, at)
+        if recomputed != digest:
+            raise HostBoundaryError("HOST_STORE_METADATA_TAMPERED")
 
     # -- jobs -----------------------------------------------------------------------------
 
@@ -372,8 +452,7 @@ class HostJobStore:
         at = utc_now_iso()
         digest, mac = self._seal("submissions", values, at)
         with self._tx() as con:
-            if con.execute("SELECT 1 FROM jobs WHERE host_job_id=?", (host_job_id,)).fetchone() is None:
-                raise HostBoundaryError("UNKNOWN_JOB_ID")
+            self._validate_job_seal(con, host_job_id)
             cursor = con.execute(
                 "INSERT INTO submissions (host_job_id, kind, detail_json, at, row_sha256, row_mac)"
                 " VALUES (?, ?, ?, ?, ?, ?)",
@@ -416,8 +495,7 @@ class HostJobStore:
 
         at = utc_now_iso()
         with self._tx() as con:
-            if con.execute("SELECT 1 FROM jobs WHERE host_job_id=?", (host_job_id,)).fetchone() is None:
-                raise HostBoundaryError("UNKNOWN_JOB_ID")
+            self._validate_job_seal(con, host_job_id)
             raw_rows = con.execute(
                 "SELECT host_job_id, kind, detail_json, at, row_sha256, row_mac "
                 "FROM submissions WHERE host_job_id=? ORDER BY seq",
@@ -520,8 +598,7 @@ class HostJobStore:
         recorded = utc_now_iso()
         digest, mac = self._seal("terminals", values, recorded)
         with self._tx() as con:
-            if con.execute("SELECT 1 FROM jobs WHERE host_job_id=?", (host_job_id,)).fetchone() is None:
-                raise HostBoundaryError("UNKNOWN_JOB_ID")
+            self._validate_job_seal(con, host_job_id)
             existing = con.execute(
                 "SELECT " + ", ".join(_TERMINAL_COLUMNS) + " FROM terminals WHERE host_job_id=?",
                 (host_job_id,),

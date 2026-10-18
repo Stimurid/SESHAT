@@ -51,6 +51,8 @@ from seshat.fabric_waves.external_carrier.host_store import HostJobStore
 from seshat.fabric_waves.external_carrier.hub_protocol import HubIssuer, HubIssuerRegistry
 from seshat.fabric_waves.external_carrier.phase_b import (
     ENGINE_FACTORIES,
+    TRANSPORT_KIND_HUB_SPOOL_RECORD,
+    TRANSPORT_KIND_UNATTESTED_MANUAL_IMPORT,
     OriginManifest,
     export_phase_b_artifacts,
     resume_by_replay,
@@ -62,8 +64,10 @@ CONFIG_SCHEMA = "seshat.host_config.v1"
 CONFIG_NAME = "host_config.json"
 _MAX_DOC_BYTES = 256_000
 EXIT_OK, EXIT_REFUSED, EXIT_WAITING, EXIT_BLOCKED = 0, 2, 10, 11
-TRANSPORT_UNATTESTED_MANUAL_IMPORT = "UNATTESTED_MANUAL_IMPORT"
-TRANSPORT_HUB_SPOOL_RECORD = "HUB_SPOOL_RECORD"
+# Re-export the canonical Phase-B transport labels so the CLI does not diverge from the
+# library API. The library owns the gating decision.
+TRANSPORT_UNATTESTED_MANUAL_IMPORT = TRANSPORT_KIND_UNATTESTED_MANUAL_IMPORT
+TRANSPORT_HUB_SPOOL_RECORD = TRANSPORT_KIND_HUB_SPOOL_RECORD
 
 
 class _UnionAuthority:

@@ -64,6 +64,14 @@ from seshat.fabric_waves.trace import render_html
 PHASE_B_LIVE_IN_PROCESS_ONLY = "PHASE_B_LIVE_IN_PROCESS_ONLY"
 PHASE_B_REPLAY_VERIFIED = "PHASE_B_REPLAY_VERIFIED"
 PHASE_B_REQUIRED = "PHASE_B_REQUIRED"
+# Library-API transport labels. ``HUB_SPOOL_RECORD`` requires an attested Hub chain on the
+# adapter; ``UNATTESTED_MANUAL_IMPORT`` is the safe default for manual snapshots. Any other
+# caller-supplied label is rejected so a mocked Hub transport cannot be confused with a live one.
+TRANSPORT_KIND_UNATTESTED_MANUAL_IMPORT = "UNATTESTED_MANUAL_IMPORT"
+TRANSPORT_KIND_HUB_SPOOL_RECORD = "HUB_SPOOL_RECORD"
+_PHASE_B_KNOWN_TRANSPORTS = frozenset(
+    {TRANSPORT_KIND_UNATTESTED_MANUAL_IMPORT, TRANSPORT_KIND_HUB_SPOOL_RECORD}
+)
 
 ENGINE_FACTORIES: dict[str, Callable[[], WaveEngine]] = {
     "campus": campus_external_host_engine,
@@ -386,9 +394,14 @@ def export_phase_b_artifacts(
     """Write every Phase B machine artifact from actual code, then a per-file SHA-256 receipt.
 
     ``transport_kind`` is a caller-supplied, verbatim label (e.g. ``MOCK_HUB_TEST_ONLY``) so a
-    mocked Hub can never be mistaken for a live one in the receipt.
+    mocked Hub can never be mistaken for a live one in the receipt. The label is gated by the
+    library itself: ``HUB_SPOOL_RECORD`` requires an independent Hub-attested chain on the
+    adapter (``SUBMIT_ACKED`` terminal + registry-verified record); any unknown label is
+    refused so a hostile caller cannot bypass the gate by simply claiming a different label.
     """
 
+    if not isinstance(transport_kind, str) or transport_kind not in _PHASE_B_KNOWN_TRANSPORTS:
+        raise HostBoundaryError("TRANSPORT_KIND_UNKNOWN")
     output_dir = Path(output_dir)
     engine, need = result.engine, result.need
     run_id = need.run_id
@@ -401,6 +414,11 @@ def export_phase_b_artifacts(
     terminal = adapter.store.get_terminal(host_job_id)
     if terminal is None:
         raise HostBoundaryError("TERMINAL_RESULT_MISSING")
+    if transport_kind == TRANSPORT_KIND_HUB_SPOOL_RECORD:
+        # Library-side attestation check: the CLI does the same via
+        # ``resolve_export_transport_kind`` but a programmatic caller must not be able to bypass
+        # the gate by skipping the CLI.
+        adapter.assert_hub_attested_for_export(host_job_id)
     record = terminal.hub_record
     auth_mode = adapter.registry.authentication_mode(str(record.get("issuer_id", "")))
     submissions = adapter.store.submissions(host_job_id)
@@ -554,6 +572,8 @@ __all__ = [
     "PHASE_B_LIVE_IN_PROCESS_ONLY",
     "PHASE_B_REPLAY_VERIFIED",
     "PHASE_B_REQUIRED",
+    "TRANSPORT_KIND_HUB_SPOOL_RECORD",
+    "TRANSPORT_KIND_UNATTESTED_MANUAL_IMPORT",
     "OriginManifest",
     "ResumeResult",
     "WaitingRun",

@@ -37,7 +37,12 @@ def _out(capsys) -> dict:
     return json.loads(capsys.readouterr().out)
 
 
-def test_cli_end_to_end_dry_run_default_then_explicit_effects(tmp_path, capsys):
+def test_cli_end_to_end_dry_run_default_then_explicit_effects(tmp_path, capsys, monkeypatch):
+    # Bypass the live-dispatch protocol gate for this isolated-engine CLI test: the unit under
+    # test is the host CLI's dry-run-vs-execute flow, not the ``aiye-exec submit`` argv. The
+    # unit test ``test_live_dispatch_fails_closed_when_caller_protocol_unverified`` exercises the
+    # missing-override path independently.
+    monkeypatch.setenv("SESHAT_PHASE_B_PROTOCOL_VERIFIED", "true")
     host = tmp_path / "host"
     calls: list[list[str]] = []
 
@@ -184,34 +189,147 @@ def test_cli_end_to_end_dry_run_default_then_explicit_effects(tmp_path, capsys):
     assert [item["kind"] for item in status["submissions"]][-1] == "SUBMIT_ACKED"
 
 
-def test_resume_hub_spool_transport_requires_attested_submission(tmp_path, capsys):
-    host = tmp_path / "host"
-    host.mkdir()
-    # Minimal host dir with config is built by existing helpers in the full CLI test;
-    # here we only assert the transport gate on an unprepared store path.
-    from seshat.fabric_waves.external_carrier.host_cli import TRANSPORT_HUB_SPOOL_RECORD
+def test_resume_hub_spool_transport_requires_attested_submission(tmp_path, capsys, monkeypatch):
+    """A genuine configured host dir + prepared job: HUB_TRANSPORT_UNATTESTED is the precise
+    gate, not HOST_CONFIG_INVALID / PATH_NOT_FOUND. Then a positive path: with a fully-acked
+    registry-verified terminal Hub record, ``--transport-kind HUB_SPOOL_RECORD`` succeeds.
+    """
 
+    monkeypatch.setenv("SESHAT_PHASE_B_PROTOCOL_VERIFIED", "true")
+    host = tmp_path / "host"
+    calls: list[list[str]] = []
+
+    def runner(argv, **kwargs):
+        calls.append(list(argv))
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    def cli(*args: str) -> int:
+        return run(["--host-dir", str(host), *args], environ={}, runner=runner)
+
+    from seshat.fabric_waves.external_carrier.host_cli import (
+        TRANSPORT_HUB_SPOOL_RECORD,
+    )
+
+    # Seed an origin and prepare a real job (no ACK yet).
+    assert (
+        cli(
+            "write-origin", "--engine", "campus", "--run-id", "phaseb-spool-test",
+            "--event-id", "phaseb-q", "--topic", TOPICS["campus"],
+            "--query", "reconcile divergent branches with external research carrier",
+            "--out-name", "campus-origin-spool",
+        )
+        == EXIT_OK
+    )
+    need = start_waiting_run(
+        OriginManifest.from_replay(
+            json.loads((host / "origins" / "campus-origin-spool.json").read_text())
+        )
+    ).need
+    (host / "host_config.json").write_text(
+        json.dumps(
+            {
+                "schema": CONFIG_SCHEMA,
+                "allowed_host_scopes": [need.worker_ref.host_scope],
+                "policy": {"provider": PROVIDER, "model": MODEL, "role": "analyze"},
+                "issuers": [
+                    {
+                        "issuer_id": ISSUER_ID,
+                        "hub_instance_id": HUB_INSTANCE,
+                        "allowed_providers": [PROVIDER],
+                        "allowed_models": [MODEL],
+                    }
+                ],
+                "approvals_file": "origin_approvals.json",
+                "aiye_exec_path": str(host / "bin" / "aiye-exec"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    (host / "origin_approvals.json").write_text(
+        json.dumps(
+            {
+                "schema": APPROVAL_SCHEMA,
+                "approvals": [
+                    {
+                        "request_pin_sha256": request_pin_digest(need),
+                        "request_id": need.request_id,
+                        "run_id": need.run_id,
+                        "approved_by": "owner-test",
+                        "scope": APPROVAL_SCOPE,
+                    }
+                ],
+            },
+            sort_keys=True,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    assert cli("prepare", "--origin", "origins/campus-origin-spool.json", "--execute") == EXIT_OK
+    job_id = json.loads(capsys.readouterr().out)["host_job_id"]
+    spec = HubJobSpec.model_validate(
+        HostJobStore(host / "store").get_job(job_id).dispatch["spec"]
+    )
+
+    # NEGATIVE: configured host, prepared job, NO ACK -> the transport gate fires with the
+    # EXACT stable code (no acceptance from a side-channel PATH_NOT_FOUND / HOST_CONFIG_INVALID).
+    with pytest.raises(ExternalAdmissionError) as exc:
+        cli(
+            "resume", "--host-job-id", job_id, "--execute",
+            "--output-name", "x", "--transport-kind", TRANSPORT_HUB_SPOOL_RECORD,
+        )
+    assert str(exc.value.args[0]) == "HUB_TRANSPORT_UNATTESTED"
+
+    # Manual ``HUB_SPOOL_RECORD`` strings typed against an UNACKED job must NOT be admitted even
+    # under unrelated config errors: the gate must come from the adapter, not from path noise.
+    bad_host = tmp_path / "badhost"
+    bad_host.mkdir()
+    (bad_host / "host_config.json").write_text("{}", encoding="utf-8")  # unreadable config
     with pytest.raises(ExternalAdmissionError) as exc:
         run(
             [
-                "--host-dir",
-                str(host),
-                "resume",
-                "--host-job-id",
-                "job-missing",
-                "--execute",
-                "--output-name",
-                "x",
-                "--transport-kind",
-                TRANSPORT_HUB_SPOOL_RECORD,
+                "--host-dir", str(bad_host), "resume",
+                "--host-job-id", job_id, "--execute",
+                "--output-name", "x", "--transport-kind", TRANSPORT_HUB_SPOOL_RECORD,
             ],
             environ={},
         )
     assert str(exc.value.args[0]) in {
         "HOST_CONFIG_INVALID",
-        "UNKNOWN_JOB_ID",
+        "ORIGIN_NOT_APPROVED",
         "HUB_TRANSPORT_UNATTESTED",
     }
+
+    # POSITIVE: submit through the host (mock runner returns 0), then ingest a verified Hub
+    # record, then ``--transport-kind HUB_SPOOL_RECORD`` succeeds.
+    (host / "auth.json").write_text(json.dumps(make_auth(spec)), encoding="utf-8")
+    assert (
+        cli(
+            "dispatch", "--host-job-id", job_id, "--execute",
+            "--authorization", "auth.json",
+        )
+        == EXIT_OK
+    )
+    assert calls
+    spool = host / "hub_spool" / spec.hub_job_id
+    spool.mkdir(parents=True, exist_ok=True)
+    data = good_stdout(tuple(need.source_carrier_ids))
+    (spool / "record.json").write_text(
+        make_record(spec, data).model_dump_json(), encoding="utf-8"
+    )
+    (spool / "stdout.bin").write_bytes(data)
+    assert cli("ingest", "--host-job-id", job_id, "--execute") == EXIT_OK
+
+    assert (
+        cli(
+            "resume", "--host-job-id", job_id, "--execute",
+            "--output-name", "with-spool", "--transport-kind", TRANSPORT_HUB_SPOOL_RECORD,
+        )
+        == EXIT_OK
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert "carpet.html" in payload["artifacts"]
+    receipt = json.loads((host / "artifacts" / "with-spool" / "receipt.json").read_text("utf-8"))
+    assert receipt["transport_kind"] == TRANSPORT_HUB_SPOOL_RECORD
 
 
 def test_cli_confines_file_arguments_to_host_dir(tmp_path):

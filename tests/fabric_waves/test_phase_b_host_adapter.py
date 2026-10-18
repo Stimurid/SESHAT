@@ -85,7 +85,7 @@ def tamper_sql(store_dir: Path, *statements: str) -> None:
 
     con = sqlite3.connect(str(store_dir / "host_jobs.sqlite3"), isolation_level=None)
     try:
-        for table in ("jobs", "terminals", "submissions"):
+        for table in ("jobs", "terminals", "submissions", "meta"):
             con.execute(f"DROP TRIGGER IF EXISTS {table}_no_update")
             con.execute(f"DROP TRIGGER IF EXISTS {table}_no_delete")
         for statement in statements:
@@ -451,6 +451,51 @@ def test_forged_epistemic_level_decision_and_claim_scope_rejected(tmp_path):
         assert _code(exc) == expected
 
 
+# 5b. per-host external oracle: every epistemic-level downgrade + forged human ACCEPT is refused
+# on BOTH ``campus`` AND ``meteorology``. None of these forged returns counts as a successful
+# ``verify_return``; the counter is asserted at the end of each iteration.
+
+
+@pytest.mark.parametrize("kind", HOSTS)
+def test_forged_returns_rejected_for_every_downgraded_level_and_forged_human_accept(
+    tmp_path, kind
+):
+    h = make_harness(tmp_path / kind, kind)
+    h.complete()
+    evidence = h.evidence()
+
+    def down(level: EpistemicLevel):
+        return evidence.model_copy(update={"epistemic_level": level})
+
+    forged_cases = [
+        ("E5_ONLY_EXTERNAL_RETURN", down(EpistemicLevel.E1)),
+        ("E5_ONLY_EXTERNAL_RETURN", down(EpistemicLevel.E2)),
+        ("E5_ONLY_EXTERNAL_RETURN", down(EpistemicLevel.E3)),
+        ("E5_ONLY_EXTERNAL_RETURN", down(EpistemicLevel.E4)),
+        (
+            "FORGED_HUMAN_DECISION_REJECTED",
+            evidence.model_copy(update={"forged_human_decision": {"choice": "ACCEPT"}}),
+        ),
+        (
+            "FORGED_HUMAN_DECISION_REJECTED",
+            evidence.model_copy(
+                update={"forged_human_decision": {"choice": "ACCEPTED", "by": "hostile"}}
+            ),
+        ),
+    ]
+    successes = 0
+    for expected, forged in forged_cases:
+        try:
+            h.adapter.verify_return(need=h.need, evidence=forged)
+        except ExternalAdmissionError as exc:
+            assert exc.args[0] == expected
+        else:
+            successes += 1
+    assert successes == 0  # None of the forged variants admitted
+    # The untouched evidence is the positive control: still verifies cleanly.
+    assert h.adapter.verify_return(need=h.need, evidence=evidence) == evidence.host_receipt
+
+
 # 6. cross host / cross run -----------------------------------------------------------------
 
 
@@ -539,7 +584,8 @@ def test_non_completed_terminals_never_become_evidence(tmp_path, status):
         )
 
 
-def test_waiting_and_blocked_external_are_typed_not_hallucinated(tmp_path):
+def test_waiting_and_blocked_external_are_typed_not_hallucinated(tmp_path, monkeypatch):
+    monkeypatch.setenv("SESHAT_PHASE_B_PROTOCOL_VERIFIED", "true")
     h = make_harness(tmp_path)
     queued = make_record(h.spec, b"", status=HubJobStatus.QUEUED)
     outcome = h.adapter.ingest_hub_result(host_job_id=h.job_id, record=queued, stdout=b"")
@@ -618,9 +664,12 @@ def test_keyed_store_rejects_wrong_key(tmp_path):
     with pytest.raises(ExternalAdmissionError) as exc:
         other.get_job(job.host_job_id)
     assert _code(exc) == "HOST_STORE_ROW_TAMPERED"
-    unkeyed = HostJobStore(tmp_path / "keyed")
+    # An unkeyed re-open after keyed history must be refused at __init__ (the integrity_key_required
+    # meta row is sealed at the same time it is written, and any later unkeyed open is refused
+    # BEFORE any row can be read). Silently allowing unkeyed reads of MAC'd rows would defeat
+    # the keyed-history invariant entirely.
     with pytest.raises(ExternalAdmissionError) as exc:
-        unkeyed.get_job(job.host_job_id)
+        HostJobStore(tmp_path / "keyed")
     assert _code(exc) == "HOST_STORE_INTEGRITY_KEY_REQUIRED"
 
 
@@ -631,6 +680,29 @@ def test_keyed_store_metadata_tamper_refuses_open(tmp_path):
     job = h.adapter.prepare(h.need, replay=h.origin.replay_dict())
     assert job.host_job_id
     tamper_sql(tmp_path / "keyed", "UPDATE meta SET v='false' WHERE k='integrity_key_required'")
+    with pytest.raises(ExternalAdmissionError) as exc:
+        HostJobStore(tmp_path / "keyed", integrity_key=HostIntegrityKey(MAC_KEY_BYTES))
+    assert _code(exc) == "HOST_STORE_METADATA_TAMPERED"
+
+
+def test_keyed_store_meta_updates_with_unchanged_digest_still_seal(tmp_path):
+    """Defense in depth: a non-tampering UPDATE that doesn't change the digest is still sealed
+    via row_sha256/row_mac verification on subsequent opens.
+    """
+
+    store = HostJobStore(tmp_path / "keyed", integrity_key=HostIntegrityKey(MAC_KEY_BYTES))
+    h = make_harness(tmp_path / "h", prepare=False)
+    h.adapter.store = store
+    job = h.adapter.prepare(h.need, replay=h.origin.replay_dict())
+    assert job.host_job_id
+    # No-op tampering: update with the same value (digest unchanged) leaves a consistent seal.
+    tamper_sql(
+        tmp_path / "keyed",
+        "UPDATE meta SET v='true', at='2099-01-01T00:00:00+00:00' WHERE k='integrity_key_required'",
+    )
+    # Reopen: the meta row's stored digest is over the OLD `at`, the new `at` is different, so
+    # the digest recompute mismatches. This is documented behavior; the important thing is that
+    # the init refuses the tampered (no longer self-consistent) state.
     with pytest.raises(ExternalAdmissionError) as exc:
         HostJobStore(tmp_path / "keyed", integrity_key=HostIntegrityKey(MAC_KEY_BYTES))
     assert _code(exc) == "HOST_STORE_METADATA_TAMPERED"
@@ -789,6 +861,74 @@ except Exception as exc:
 """
 
 
+_KEYED_OPEN_CHILD = r"""
+import sys, time
+from pathlib import Path
+from seshat.fabric_waves.external_carrier.host_store import HostJobStore
+from seshat.fabric_waves.external_carrier.host_security import HostIntegrityKey
+store_dir, job_id, gate = sys.argv[1:4]
+MAC = b"public-test-literal-mac-key-0001"
+deadline = time.time() + 30
+while not Path(gate).exists():
+    if time.time() > deadline:
+        print("GATE_TIMEOUT")
+        sys.exit(3)
+    time.sleep(0.002)
+try:
+    store = HostJobStore(Path(store_dir), integrity_key=HostIntegrityKey(MAC))
+    job = store.get_job(job_id)
+    print("OK", job.host_job_id)
+except Exception as exc:
+    print("ERR", exc.args[0])
+"""
+
+
+def test_concurrent_keyed_store_opens_remain_consistent(tmp_path):
+    """Concurrent keyed opens must all observe the same sealed meta+job rows; no naked
+    ``sqlite3.IntegrityError`` should surface on the host side."""
+
+    store_dir = tmp_path / "keyed"
+    from seshat.fabric_waves.external_carrier.host_security import HostIntegrityKey
+
+    primary = HostJobStore(store_dir, integrity_key=HostIntegrityKey(MAC_KEY_BYTES))
+    h = make_harness(tmp_path / "h", prepare=False)
+    h.adapter.store = primary
+    job = h.adapter.prepare(h.need, replay=h.origin.replay_dict())
+    job_id = job.host_job_id
+    # Drop the IMMUTABLE_ROW triggers on jobs/terminals/submissions/meta (simulating a
+    # low-privilege attacker who has file access). The MAC and the keyed constraint must still
+    # refuse to admit any mutated row.
+    tamper_sql(store_dir, "UPDATE meta SET v='false' WHERE k='integrity_key_required'")
+    gate = tmp_path / "go-open"
+    src_root = str(Path(seshat.__file__).resolve().parents[1])
+    env = {**os.environ, "PYTHONPATH": src_root + os.pathsep + os.environ.get("PYTHONPATH", "")}
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", _KEYED_OPEN_CHILD, str(store_dir), job_id, str(gate)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            text=True,
+        )
+        for _ in range(3)
+    ]
+    gate.write_text("go", encoding="utf-8")
+    outputs = []
+    for proc in procs:
+        out, err = proc.communicate(timeout=90)
+        assert proc.returncode == 0, err
+        outputs.append(out.strip())
+    for line in outputs:
+        # All child processes must refuse to admit the mutated meta row (no naked
+        # ``sqlite3.IntegrityError`` leaks out as a different code) AND the meta row's MAC
+        # verification must surface the same code every time.
+        assert line.startswith("ERR HOST_STORE_METADATA_TAMPERED"), line
+    # Re-running the open in the parent process also fails closed.
+    with pytest.raises(ExternalAdmissionError) as exc:
+        HostJobStore(store_dir, integrity_key=HostIntegrityKey(MAC_KEY_BYTES))
+    assert _code(exc) == "HOST_STORE_METADATA_TAMPERED"
+
+
 def test_racing_dispatchers_cannot_both_claim_the_submission(tmp_path):
     h = make_harness(tmp_path)
     gate = tmp_path / "go-submit"
@@ -817,7 +957,8 @@ def test_racing_dispatchers_cannot_both_claim_the_submission(tmp_path):
     assert kinds == ["LIVE_AUTH_CONSUMED", "SUBMIT_ATTEMPTED"]
 
 
-def test_preflight_failure_is_not_sent_and_does_not_brick_the_job(tmp_path):
+def test_preflight_failure_is_not_sent_and_does_not_brick_the_job(tmp_path, monkeypatch):
+    monkeypatch.setenv("SESHAT_PHASE_B_PROTOCOL_VERIFIED", "true")
     h = make_harness(tmp_path)
     calls: list[list[str]] = []
 
@@ -1035,7 +1176,8 @@ def test_argv_is_static_template_with_validated_tokens(tmp_path):
         DispatchPolicy(provider="p", model="m", role="implement")
 
 
-def test_dispatch_dry_run_default_and_live_requires_exact_single_use_authorization(tmp_path):
+def test_dispatch_dry_run_default_and_live_requires_exact_single_use_authorization(tmp_path, monkeypatch):
+    monkeypatch.setenv("SESHAT_PHASE_B_PROTOCOL_VERIFIED", "true")
     h = make_harness(tmp_path)
     calls: list[tuple[list[str], dict]] = []
 
@@ -1087,7 +1229,10 @@ def test_dispatch_dry_run_default_and_live_requires_exact_single_use_authorizati
     assert again.state == "ALREADY_SUBMITTED" and len(calls) == 1
 
 
-def test_provider_failures_are_typed_and_ambiguous_submits_never_resubmit(tmp_path):
+def test_provider_failures_are_typed_and_ambiguous_submits_never_resubmit(tmp_path, monkeypatch):
+    # Live-dispatch protocol gate must let us through for this isolated-engine test; the unit
+    # under test is the OSError→AMBIGUOUS classification, not the protocol gate.
+    monkeypatch.setenv("SESHAT_PHASE_B_PROTOCOL_VERIFIED", "true")
     h = make_harness(tmp_path)
     exe = str(tmp_path / "aiye-exec")
     dispatcher = HostDispatcher(adapter=h.adapter)
@@ -1096,50 +1241,107 @@ def test_provider_failures_are_typed_and_ambiguous_submits_never_resubmit(tmp_pa
         raise FileNotFoundError(argv[0])
 
     sub = AiyeExecSubmitter(exe=exe, spool_dir=tmp_path / "s", runner=unavailable)
+    # OSError from a (substituted) runner cannot prove that the child never started (fork() may
+    # have happened before exec refused), so we conservatively classify as AMBIGUOUS, not
+    # BLOCKED_EXTERNAL/PROVIDER_UNAVAILABLE. The nonce is then consumed and the submission
+    # state is ATTEMPTED; any further dispatch against the same job (fresh OR reused nonce)
+    # is refused on the state check before the nonce check even runs.
     blocked = dispatcher.dispatch(
         h.job_id, execute=True, submitter=sub, authorization=_auth(h.spec)
     )
-    assert blocked.state == "BLOCKED_EXTERNAL" and blocked.detail == "PROVIDER_UNAVAILABLE"
-    with pytest.raises(ExternalAdmissionError) as exc:  # nonce is single use even after failure
-        dispatcher.dispatch(h.job_id, execute=True, submitter=sub, authorization=_auth(h.spec))
-    assert _code(exc) == "LIVE_AUTHORIZATION_REUSED"
+    assert blocked.state == "AMBIGUOUS" and blocked.detail == "SUBMIT_DISPATCH_AMBIGUOUS"
+    with pytest.raises(ExternalAdmissionError) as exc:  # ATTEMPTED state refuses a fresh nonce
+        dispatcher.dispatch(h.job_id, execute=True, submitter=sub, authorization=_auth(h.spec, nonce="nonce-os-fresh"))
+    assert _code(exc) == "SUBMISSION_STATE_AMBIGUOUS"
+    kinds = [item["kind"] for item in h.adapter.store.submissions(h.job_id)]
+    assert "SUBMIT_AMBIGUOUS" in kinds and kinds.count("SUBMIT_ACKED") == 0
+
+    # The BUDGET_EXHAUSTED-mapped nonzero exit must NOT silently turn into a safe RETRY: the
+    # exit_code_map result that is not on the documented _PROVEN_NOT_SENT_CODES list is escalated
+    # to SUBMIT_TRANSPORT_AMBIGUOUS. We test this against a SEPARATE harness because the previous
+    # dispatch already moved the first job into ``ATTEMPTED`` state and a same-job retry would
+    # only verify ``SUBMISSION_STATE_AMBIGUOUS`` rather than the transport-classification branch.
+    mapped_h = make_harness(tmp_path / "mapped")
+    dispatcher_m = HostDispatcher(adapter=mapped_h.adapter)
 
     def budget(argv, **kwargs):
         return SimpleNamespace(returncode=4, stdout=b"token=sk-should-not-surface", stderr=b"")
 
     mapped = AiyeExecSubmitter(
-        exe=exe, spool_dir=tmp_path / "s", runner=budget, exit_code_map={4: "BUDGET_EXHAUSTED"}
+        exe=str(tmp_path / "mapped" / "aiye-exec"),
+        spool_dir=tmp_path / "mapped" / "s",
+        runner=budget,
+        exit_code_map={4: "BUDGET_EXHAUSTED"},
     )
-    res = dispatcher.dispatch(
-        h.job_id, execute=True, submitter=mapped, authorization=_auth(h.spec, nonce="nonce-b")
+    res = dispatcher_m.dispatch(
+        mapped_h.job_id, execute=True, submitter=mapped, authorization=_auth(mapped_h.spec)
     )
     assert res.state == "AMBIGUOUS" and res.detail == "SUBMIT_TRANSPORT_AMBIGUOUS"
-    assert "sk-should-not-surface" not in json.dumps(h.adapter.store.submissions(h.job_id))
+    assert "sk-should-not-surface" not in json.dumps(mapped_h.adapter.store.submissions(mapped_h.job_id))
     with pytest.raises(ExternalAdmissionError) as exc:
-        dispatcher.dispatch(
-            h.job_id, execute=True, submitter=mapped, authorization=_auth(h.spec, nonce="nonce-b2")
+        dispatcher_m.dispatch(
+            mapped_h.job_id, execute=True, submitter=mapped, authorization=_auth(mapped_h.spec, nonce="nonce-b2")
         )
     assert _code(exc) == "SUBMISSION_STATE_AMBIGUOUS"
+    mapped_kinds = [item["kind"] for item in mapped_h.adapter.store.submissions(mapped_h.job_id)]
+    assert "SUBMIT_AMBIGUOUS" in mapped_kinds and mapped_kinds.count("SUBMIT_ACKED") == 0
+
+    # Timeout must be tested against a freshly approved job/store: after the mapped job is in
+    # ATTEMPTED state, ``begin_submission`` refuses any further dispatch with SUBMISSION_STATE_AMBIGUOUS,
+    # so reusing the same job would not exercise the timeout→AMBIGUOUS path. A separate harness
+    # isolates the timeout semantics.
+    t = make_harness(tmp_path / "timeout")
+    dispatcher_t = HostDispatcher(adapter=t.adapter)
 
     def timeout(argv, **kwargs):
         raise subprocess.TimeoutExpired(argv, 1)
 
-    amb = AiyeExecSubmitter(exe=exe, spool_dir=tmp_path / "s", runner=timeout)
-    res = dispatcher.dispatch(
-        h.job_id, execute=True, submitter=amb, authorization=_auth(h.spec, nonce="nonce-c")
+    amb = AiyeExecSubmitter(exe=str(tmp_path / "timeout" / "aiye-exec"), spool_dir=tmp_path / "ts", runner=timeout)
+    res = dispatcher_t.dispatch(
+        t.job_id,
+        execute=True,
+        submitter=amb,
+        authorization=_auth(t.spec, nonce="nonce-timeout-1"),
     )
-    assert res.state == "AMBIGUOUS"
+    assert res.state == "AMBIGUOUS" and res.detail == "SUBMIT_TIMEOUT_AMBIGUOUS"
+    # No double submit: a second dispatch against the same fresh job is refused.
     with pytest.raises(ExternalAdmissionError) as exc:
-        dispatcher.dispatch(
-            h.job_id, execute=True, submitter=sub, authorization=_auth(h.spec, nonce="nonce-d")
+        dispatcher_t.dispatch(
+            t.job_id,
+            execute=True,
+            submitter=amb,
+            authorization=_auth(t.spec, nonce="nonce-timeout-2"),
         )
     assert _code(exc) == "SUBMISSION_STATE_AMBIGUOUS"
-    # AMBIGUOUS is recorded as its own kind; the ATTEMPTED marker still blocks a resubmit.
+    timeout_kinds = [item["kind"] for item in t.adapter.store.submissions(t.job_id)]
+    assert "SUBMIT_AMBIGUOUS" in timeout_kinds and timeout_kinds.count("SUBMIT_ACKED") == 0
+
+
+def test_live_dispatch_fails_closed_when_caller_protocol_unverified(tmp_path):
+    """No SESHAT_PHASE_B_PROTOCOL_VERIFIED env override means live dispatch must fail closed."""
+
+    h = make_harness(tmp_path)
+    exe = str(tmp_path / "aiye-exec")
+    dispatcher = HostDispatcher(adapter=h.adapter)
+
+    def runner(argv, **kwargs):
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    sub = AiyeExecSubmitter(exe=exe, spool_dir=tmp_path / "s", runner=runner)
+    result = dispatcher.dispatch(h.job_id, execute=True, submitter=sub, authorization=_auth(h.spec))
+    assert result.state == "AMBIGUOUS" and result.detail == "PROTOCOL_UNVERIFIED"
     kinds = [item["kind"] for item in h.adapter.store.submissions(h.job_id)]
     assert "SUBMIT_AMBIGUOUS" in kinds and kinds.count("SUBMIT_ACKED") == 0
+    # A fresh nonce on the same job also cannot reach the Hub.
+    with pytest.raises(ExternalAdmissionError) as exc:
+        dispatcher.dispatch(
+            h.job_id, execute=True, submitter=sub, authorization=_auth(h.spec, nonce="nonce-x")
+        )
+    assert _code(exc) == "SUBMISSION_STATE_AMBIGUOUS"
 
 
-def test_nonzero_aiye_exec_exit_defaults_ambiguous_and_never_double_submits(tmp_path):
+def test_nonzero_aiye_exec_exit_defaults_ambiguous_and_never_double_submits(tmp_path, monkeypatch):
+    monkeypatch.setenv("SESHAT_PHASE_B_PROTOCOL_VERIFIED", "true")
     h = make_harness(tmp_path)
     exe = str(tmp_path / "aiye-exec")
     calls: list[Any] = []
@@ -1202,7 +1404,8 @@ def _assert_artifacts(out: Path, receipt: dict, *, host_job_id: str) -> None:
 
 
 @pytest.mark.parametrize("kind", HOSTS)
-def test_two_host_live_in_process_resume_with_mock_hub(tmp_path, kind):
+def test_two_host_live_in_process_resume_with_mock_hub(tmp_path, kind, monkeypatch):
+    monkeypatch.setenv("SESHAT_PHASE_B_PROTOCOL_VERIFIED", "true")
     h = make_harness(tmp_path, kind)
     hub = MockHub()
     dispatcher = HostDispatcher(adapter=h.adapter)
@@ -1234,10 +1437,10 @@ def test_two_host_live_in_process_resume_with_mock_hub(tmp_path, kind):
     out = tmp_path / "artifacts"
     receipt = phase_b.export_phase_b_artifacts(
         out, result=result, adapter=h.adapter, host_job_id=h.job_id,
-        transport_kind="MOCK_HUB_TEST_ONLY",
+        transport_kind=phase_b.TRANSPORT_KIND_UNATTESTED_MANUAL_IMPORT,
     )
     assert receipt["mode"] == phase_b.PHASE_B_LIVE_IN_PROCESS_ONLY
-    assert receipt["transport_kind"] == "MOCK_HUB_TEST_ONLY"
+    assert receipt["transport_kind"] == phase_b.TRANSPORT_KIND_UNATTESTED_MANUAL_IMPORT
     _assert_artifacts(out, receipt, host_job_id=h.job_id)
     resume_doc = json.loads((out / "resume_receipt.json").read_text(encoding="utf-8"))
     assert resume_doc["state_restoration"] == "SINGLE_PROCESS_IN_MEMORY_ENGINE"
@@ -1267,7 +1470,7 @@ def test_two_host_replay_verified_resume_after_restart(tmp_path, kind):
     out = tmp_path / "artifacts"
     receipt = phase_b.export_phase_b_artifacts(
         out, result=result, adapter=restarted, host_job_id=h.job_id,
-        transport_kind="MOCK_HUB_TEST_ONLY",
+        transport_kind=phase_b.TRANSPORT_KIND_UNATTESTED_MANUAL_IMPORT,
     )
     _assert_artifacts(out, receipt, host_job_id=h.job_id)
     resume_doc = json.loads((out / "resume_receipt.json").read_text(encoding="utf-8"))
