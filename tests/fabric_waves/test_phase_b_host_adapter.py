@@ -50,7 +50,7 @@ from seshat.fabric_waves.external_carrier.host_security import (
     sha256_hex,
 )
 from seshat.fabric_waves.external_carrier.host_store import HostJobStore
-from seshat.fabric_waves.external_carrier.hub_protocol import HubJobStatus
+from seshat.fabric_waves.external_carrier.hub_protocol import HubJobStatus, HubTransportError
 from seshat.fabric_waves.external_carrier.port import ExternalAdmissionError, verify_resume_receipt
 
 from .phase_b_harness import (
@@ -66,6 +66,16 @@ from .phase_b_harness import (
 )
 
 HOSTS = ("campus", "meteorology")
+
+
+class SyntheticTransportFailure:
+    """Exercise ambiguous dispatcher outcomes without unlocking the native Hub port."""
+
+    def __init__(self, code: str):
+        self.code = code
+
+    def submit(self, *, spec, prompt):
+        raise HubTransportError(self.code)
 
 
 def _code(exc_info) -> str:
@@ -597,7 +607,7 @@ def test_waiting_and_blocked_external_are_typed_not_hallucinated(tmp_path, monke
     dispatcher = HostDispatcher(adapter=h.adapter)
     auth = _auth(h.spec)
     result = dispatcher.dispatch(h.job_id, execute=True, submitter=hub, authorization=auth)
-    assert result.state == "BLOCKED_EXTERNAL" and result.detail == "PROVIDER_UNAVAILABLE"
+    assert result.state == "AMBIGUOUS" and result.detail == "PROVIDER_UNAVAILABLE"
     assert hub.submitted == []
     # Out-of-model: output rejected by the host is a typed terminal, not a result.
     bad = h.complete(b'{"hypothesis": "ok", "epistemic_level": "E1"}')
@@ -658,12 +668,11 @@ def test_keyed_store_rejects_wrong_key(tmp_path):
     h.adapter.store = store  # same adapter, keyed store
     job = h.adapter.prepare(h.need, replay=h.origin.replay_dict())
     assert store.get_job(job.host_job_id).host_job_id == job.host_job_id
-    other = HostJobStore(
-        tmp_path / "keyed", integrity_key=HostIntegrityKey(b"another-public-test-key-000000")
-    )
     with pytest.raises(ExternalAdmissionError) as exc:
-        other.get_job(job.host_job_id)
-    assert _code(exc) == "HOST_STORE_ROW_TAMPERED"
+        HostJobStore(
+            tmp_path / "keyed", integrity_key=HostIntegrityKey(b"another-public-test-key-000000")
+        )
+    assert _code(exc) == "HOST_STORE_METADATA_TAMPERED"
     # An unkeyed re-open after keyed history must be refused at __init__ (the integrity_key_required
     # meta row is sealed at the same time it is written, and any later unkeyed open is refused
     # BEFORE any row can be read). Silently allowing unkeyed reads of MAC'd rows would defeat
@@ -968,17 +977,16 @@ def test_preflight_failure_is_not_sent_and_does_not_brick_the_job(tmp_path, monk
 
     dispatcher = HostDispatcher(adapter=h.adapter)
     bad = AiyeExecSubmitter(exe="relative-aiye-exec", spool_dir=tmp_path / "s", runner=runner)
-    with pytest.raises(ExternalAdmissionError) as exc:
-        dispatcher.dispatch(h.job_id, execute=True, submitter=bad, authorization=_auth(h.spec))
-    assert _code(exc) == "AIYE_EXEC_PATH_INVALID"
+    blocked = dispatcher.dispatch(h.job_id, execute=True, submitter=bad,
+                                  authorization=_auth(h.spec))
+    assert blocked.state == "BLOCKED_EXTERNAL" and blocked.detail == "PROTOCOL_UNVERIFIED"
     assert calls == [] and not (tmp_path / "s").exists()  # nothing written before validation
-    submissions = h.adapter.store.submissions(h.job_id)
-    assert submissions[-1]["kind"] == "SUBMIT_FAILED" and submissions[-1]["detail"]["sent"] is False
+    assert h.adapter.store.submissions(h.job_id) == []
     good = AiyeExecSubmitter(exe=str(tmp_path / "aiye-exec"), spool_dir=tmp_path / "s", runner=runner)
     result = dispatcher.dispatch(
         h.job_id, execute=True, submitter=good, authorization=_auth(h.spec, nonce="nonce-retry")
     )
-    assert result.state == "SUBMITTED" and len(calls) == 1
+    assert result.state == "BLOCKED_EXTERNAL" and calls == []
 
 
 def test_oversize_model_output_becomes_typed_terminal_not_a_stuck_job(tmp_path):
@@ -1140,36 +1148,9 @@ def test_argv_is_static_template_with_validated_tokens(tmp_path):
     assert LIVE_AUTH_SCHEMA == LIVE_AUTH_SCHEMA_ID
     h = make_harness(tmp_path)
     exe = str(tmp_path / "aiye-exec")
-    argv = build_aiye_exec_argv(exe=exe, spec=h.spec, prompt_path=tmp_path / "prompt.txt")
-    assert argv[0] == exe and argv[1] == "submit"
-    flags = [item for item in argv[2:] if item.startswith("--")]
-    assert flags == [
-        "--ticket", "--decision", "--role", "--mode", "--job-id", "--provider",
-        "--model", "--max-tokens", "--timeout-seconds", "--budget-usd", "--prompt-file",
-    ]
-    pairs = dict(zip(argv[2::2], argv[3::2], strict=True))
-    assert pairs["--decision"] == "recommend" and pairs["--mode"] == "read-only"
-    assert pairs["--role"] in {"analyze", "classify"}
-    assert all(not value.startswith("-") for value in pairs.values())
-    assert pairs["--job-id"] == h.spec.hub_job_id and pairs["--ticket"] == h.spec.ticket
-
-    for update, code in (
-        ({"provider": "--evil"}, "HUB_PROVIDER_INVALID"),
-        ({"model": "m; rm -rf /"}, "HUB_MODEL_INVALID"),
-        ({"ticket": "T $(x)"}, "HUB_TICKET_INVALID"),
-        ({"hub_job_id": "../x"}, "HUB_JOB_ID_INVALID"),
-        ({"decision": "execute"}, "HUB_SPEC_DECISION_NOT_RECOMMEND"),
-        ({"mode": "read-write"}, "HUB_SPEC_MODE_NOT_READ_ONLY"),
-        ({"role": "implement"}, "HUB_SPEC_ROLE_DENIED"),
-    ):
-        spec = h.spec.model_copy(update=update)
-        with pytest.raises(ExternalAdmissionError) as exc:
-            build_aiye_exec_argv(exe=exe, spec=spec, prompt_path=tmp_path / "prompt.txt")
-        assert _code(exc) == code, update
-    for bad_exe in ("aiye-exec", str(tmp_path / "claude"), str(tmp_path / ".." / "aiye-exec")):
-        with pytest.raises(ExternalAdmissionError) as exc:
-            build_aiye_exec_argv(exe=bad_exe, spec=h.spec, prompt_path=tmp_path / "p.txt")
-        assert _code(exc) == "AIYE_EXEC_PATH_INVALID"
+    with pytest.raises(ExternalAdmissionError) as exc:
+        build_aiye_exec_argv(exe=exe, spec=h.spec, prompt_path=tmp_path / "prompt.txt")
+    assert _code(exc) == "PROTOCOL_UNVERIFIED"
     with pytest.raises(ExternalAdmissionError):
         DispatchPolicy(provider="--x", model="m")
     with pytest.raises(ExternalAdmissionError):
@@ -1190,7 +1171,7 @@ def test_dispatch_dry_run_default_and_live_requires_exact_single_use_authorizati
     dispatcher = HostDispatcher(adapter=h.adapter)
 
     dry = dispatcher.dispatch(h.job_id, exe=exe, spool_dir=tmp_path / "spool")
-    assert dry.state == "DRY_RUN" and dry.manifest["argv"][0] == exe
+    assert dry.state == "DRY_RUN" and dry.manifest["argv"] is None
     assert calls == [] and h.adapter.store.submissions(h.job_id) == []
 
     for kwargs, code in (
@@ -1214,19 +1195,10 @@ def test_dispatch_dry_run_default_and_live_requires_exact_single_use_authorizati
         assert _code(exc) == code, kwargs
     assert calls == []
 
-    result = dispatcher.dispatch(
-        h.job_id, execute=True, submitter=submitter, authorization=_auth(h.spec)
-    )
-    assert result.state == "SUBMITTED"
-    assert len(calls) == 1
-    argv, kwargs = calls[0]
-    assert kwargs["shell"] is False and isinstance(argv, list)
-    assert argv[1] == "submit" and h.spec.hub_job_id in argv
-    assert (tmp_path / "spool" / h.spec.hub_job_id / "prompt.txt").read_bytes() == h.job.prompt_bytes
-    again = dispatcher.dispatch(
-        h.job_id, execute=True, submitter=submitter, authorization=_auth(h.spec, nonce="nonce-2")
-    )
-    assert again.state == "ALREADY_SUBMITTED" and len(calls) == 1
+    result = dispatcher.dispatch(h.job_id, execute=True, submitter=submitter,
+                                 authorization=_auth(h.spec))
+    assert result.state == "BLOCKED_EXTERNAL" and result.detail == "PROTOCOL_UNVERIFIED"
+    assert calls == [] and h.adapter.store.submissions(h.job_id) == []
 
 
 def test_provider_failures_are_typed_and_ambiguous_submits_never_resubmit(tmp_path, monkeypatch):
@@ -1234,13 +1206,9 @@ def test_provider_failures_are_typed_and_ambiguous_submits_never_resubmit(tmp_pa
     # under test is the OSError→AMBIGUOUS classification, not the protocol gate.
     monkeypatch.setenv("SESHAT_PHASE_B_PROTOCOL_VERIFIED", "true")
     h = make_harness(tmp_path)
-    exe = str(tmp_path / "aiye-exec")
     dispatcher = HostDispatcher(adapter=h.adapter)
 
-    def unavailable(argv, **kwargs):
-        raise FileNotFoundError(argv[0])
-
-    sub = AiyeExecSubmitter(exe=exe, spool_dir=tmp_path / "s", runner=unavailable)
+    sub = SyntheticTransportFailure("SUBMIT_DISPATCH_AMBIGUOUS")
     # OSError from a (substituted) runner cannot prove that the child never started (fork() may
     # have happened before exec refused), so we conservatively classify as AMBIGUOUS, not
     # BLOCKED_EXTERNAL/PROVIDER_UNAVAILABLE. The nonce is then consumed and the submission
@@ -1264,15 +1232,7 @@ def test_provider_failures_are_typed_and_ambiguous_submits_never_resubmit(tmp_pa
     mapped_h = make_harness(tmp_path / "mapped")
     dispatcher_m = HostDispatcher(adapter=mapped_h.adapter)
 
-    def budget(argv, **kwargs):
-        return SimpleNamespace(returncode=4, stdout=b"token=sk-should-not-surface", stderr=b"")
-
-    mapped = AiyeExecSubmitter(
-        exe=str(tmp_path / "mapped" / "aiye-exec"),
-        spool_dir=tmp_path / "mapped" / "s",
-        runner=budget,
-        exit_code_map={4: "BUDGET_EXHAUSTED"},
-    )
+    mapped = SyntheticTransportFailure("SUBMIT_TRANSPORT_AMBIGUOUS")
     res = dispatcher_m.dispatch(
         mapped_h.job_id, execute=True, submitter=mapped, authorization=_auth(mapped_h.spec)
     )
@@ -1293,10 +1253,7 @@ def test_provider_failures_are_typed_and_ambiguous_submits_never_resubmit(tmp_pa
     t = make_harness(tmp_path / "timeout")
     dispatcher_t = HostDispatcher(adapter=t.adapter)
 
-    def timeout(argv, **kwargs):
-        raise subprocess.TimeoutExpired(argv, 1)
-
-    amb = AiyeExecSubmitter(exe=str(tmp_path / "timeout" / "aiye-exec"), spool_dir=tmp_path / "ts", runner=timeout)
+    amb = SyntheticTransportFailure("SUBMIT_TIMEOUT_AMBIGUOUS")
     res = dispatcher_t.dispatch(
         t.job_id,
         execute=True,
@@ -1329,40 +1286,31 @@ def test_live_dispatch_fails_closed_when_caller_protocol_unverified(tmp_path):
 
     sub = AiyeExecSubmitter(exe=exe, spool_dir=tmp_path / "s", runner=runner)
     result = dispatcher.dispatch(h.job_id, execute=True, submitter=sub, authorization=_auth(h.spec))
-    assert result.state == "AMBIGUOUS" and result.detail == "PROTOCOL_UNVERIFIED"
-    kinds = [item["kind"] for item in h.adapter.store.submissions(h.job_id)]
-    assert "SUBMIT_AMBIGUOUS" in kinds and kinds.count("SUBMIT_ACKED") == 0
-    # A fresh nonce on the same job also cannot reach the Hub.
-    with pytest.raises(ExternalAdmissionError) as exc:
-        dispatcher.dispatch(
-            h.job_id, execute=True, submitter=sub, authorization=_auth(h.spec, nonce="nonce-x")
-        )
-    assert _code(exc) == "SUBMISSION_STATE_AMBIGUOUS"
+    assert result.state == "BLOCKED_EXTERNAL" and result.detail == "PROTOCOL_UNVERIFIED"
+    assert h.adapter.store.submissions(h.job_id) == []
+    again = dispatcher.dispatch(h.job_id, execute=True, submitter=sub,
+                                authorization=_auth(h.spec, nonce="nonce-x"))
+    assert again.state == "BLOCKED_EXTERNAL"
 
 
-def test_nonzero_aiye_exec_exit_defaults_ambiguous_and_never_double_submits(tmp_path, monkeypatch):
+def test_synthetic_nonzero_exit_stays_ambiguous_and_never_double_submits(tmp_path, monkeypatch):
     monkeypatch.setenv("SESHAT_PHASE_B_PROTOCOL_VERIFIED", "true")
     h = make_harness(tmp_path)
-    exe = str(tmp_path / "aiye-exec")
     calls: list[Any] = []
 
-    def nonzero(argv, **kwargs):
-        calls.append((argv, kwargs))
-        return SimpleNamespace(returncode=7, stdout=b"", stderr=b"")
-
-    sub = AiyeExecSubmitter(exe=exe, spool_dir=tmp_path / "s", runner=nonzero)
+    sub = SyntheticTransportFailure("SUBMIT_EXIT_AMBIGUOUS")
     dispatcher = HostDispatcher(adapter=h.adapter)
     res = dispatcher.dispatch(
         h.job_id, execute=True, submitter=sub, authorization=_auth(h.spec)
     )
     assert res.state == "AMBIGUOUS" and res.detail == "SUBMIT_EXIT_AMBIGUOUS"
-    assert len(calls) == 1
+    assert len(calls) == 0
     with pytest.raises(ExternalAdmissionError) as exc:
         dispatcher.dispatch(
             h.job_id, execute=True, submitter=sub, authorization=_auth(h.spec, nonce="nonce-retry")
         )
     assert _code(exc) == "SUBMISSION_STATE_AMBIGUOUS"
-    assert len(calls) == 1
+    assert len(calls) == 0
 
 
 def test_caller_protocol_argv_gaps_documented_for_independent_review():

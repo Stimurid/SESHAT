@@ -400,16 +400,10 @@ class TrustedHubHostAdapter:
     def assert_hub_attested_for_export(self, host_job_id: str) -> None:
         """Require an independently verified Hub chain before labelling transport as Hub-attested."""
 
-        if self.store.submission_state(host_job_id) != "ACKED":
-            raise HostBoundaryError("HUB_TRANSPORT_UNATTESTED")
-        terminal = self.store.get_terminal(host_job_id)
-        if terminal is None or terminal.status != "COMPLETED":
-            raise HostBoundaryError("HUB_TRANSPORT_UNATTESTED")
-        job = self.load_job(host_job_id)
-        record = parse_hub_record(terminal.hub_record)
-        self.registry.verify_record(
-            record=record, spec=self._spec(job), stdout=terminal.stdout_bytes
-        )
+        # Normalized spool records and local ACK rows can be minted by an operator. Until a
+        # native Hub-issued ID and immutable issuer ledger are verified against the original
+        # host request, neither the CLI nor the library may claim HUB_SPOOL_RECORD.
+        raise HostBoundaryError("HUB_TRANSPORT_UNATTESTED")
 
     def build_evidence_return(self, host_job_id: str) -> AgentEvidenceReturn:
         """Deterministically rebuild the E5 return for a COMPLETED terminal."""

@@ -180,6 +180,19 @@ class HostJobStore:
         self._key = integrity_key
         con = self._connect()
         try:
+            # v1 created an unsealed two-column meta table. It cannot be upgraded merely by
+            # adding columns: the original key requirement and schema value were never
+            # authenticated. Refuse before any DDL or WAL setting changes its evidence.
+            existing = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'"
+            ).fetchone()
+            had_meta = existing is not None
+            if existing is not None:
+                columns = {row[1] for row in con.execute("PRAGMA table_info(meta)")}
+                if columns == {"k", "v"}:
+                    raise HostBoundaryError("HOST_STORE_LEGACY_MIGRATION_REQUIRED")
+                if columns != {"k", "v", "at", "row_sha256", "row_mac"}:
+                    raise HostBoundaryError("HOST_STORE_SCHEMA_MISMATCH")
             con.execute("PRAGMA journal_mode=WAL")
             con.executescript(_DDL)
             for trigger in _TRIGGERS:
@@ -194,6 +207,8 @@ class HostJobStore:
                 "SELECT v, at, row_sha256, row_mac FROM meta WHERE k='schema'"
             ).fetchone()
             if schema_row is None:
+                if had_meta:
+                    raise HostBoundaryError("HOST_STORE_METADATA_MISSING")
                 values = {"k": "schema", "v": STORE_SCHEMA}
                 digest, mac = self._seal("meta", values, at)
                 con.execute(
@@ -207,6 +222,18 @@ class HostJobStore:
             key_row = con.execute(
                 "SELECT v, at, row_sha256, row_mac FROM meta WHERE k=?", (META_INTEGRITY_KEY_REQUIRED,)
             ).fetchone()
+            if key_row is None:
+                row_counts = [
+                    con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                    for table in ("jobs", "submissions", "terminals")
+                ]
+                if self._key is not None and any(row_counts):
+                    raise HostBoundaryError("HOST_STORE_INTEGRITY_UPGRADE_REQUIRED")
+                if any(
+                    con.execute(f"SELECT 1 FROM {table} WHERE row_mac!='' LIMIT 1").fetchone()
+                    for table in ("jobs", "submissions", "terminals")
+                ):
+                    raise HostBoundaryError("HOST_STORE_METADATA_MISSING")
             if self._key is not None:
                 if key_row is None:
                     values = {"k": META_INTEGRITY_KEY_REQUIRED, "v": "true"}
@@ -318,21 +345,19 @@ class HostJobStore:
         self._check_seal("jobs", values, created, digest, mac)
 
     def _check_meta_seal(self, key: str, value: str, at: str, digest: Any, mac: Any) -> None:
-        """Verify a single meta row's seal at init.
-
-        Only the **content digest** is checked at init — it has zero dependence on the operator
-        key, so an attacker who ``DROP TRIGGER`` + ``UPDATE`` the meta value (a typical
-        ``integrity_key_required`` poisoning) cannot forge a row whose digest still matches.
-        The MAC is sealed at the same time (and the row is sealed at first insert); MAC
-        verification is deferred to row-read time so a wrong key on a keyed DB stays
-        permissive at init (``test_keyed_store_rejects_wrong_key`` contract) while still
-        refusing the row read with ``HOST_STORE_ROW_TAMPERED``.
-        """
+        """Verify the metadata digest and MAC before selecting a trust mode."""
 
         if not isinstance(digest, str) or not digest:
             raise HostBoundaryError("HOST_STORE_PARTIAL_ROW")
         recomputed = _row_material("meta", {"k": key, "v": value}, at)
         if recomputed != digest:
+            raise HostBoundaryError("HOST_STORE_METADATA_TAMPERED")
+        if mac:
+            if self._key is None:
+                raise HostBoundaryError("HOST_STORE_INTEGRITY_KEY_REQUIRED")
+            if not self._key.verify(digest, mac):
+                raise HostBoundaryError("HOST_STORE_METADATA_TAMPERED")
+        elif self._key is not None:
             raise HostBoundaryError("HOST_STORE_METADATA_TAMPERED")
 
     # -- jobs -----------------------------------------------------------------------------

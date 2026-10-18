@@ -11,6 +11,7 @@ import pytest
 from seshat.fabric_waves.external_carrier.host_adapter import APPROVAL_SCHEMA, APPROVAL_SCOPE
 from seshat.fabric_waves.external_carrier.host_cli import (
     CONFIG_SCHEMA,
+    EXIT_BLOCKED,
     EXIT_OK,
     EXIT_WAITING,
     run,
@@ -27,9 +28,7 @@ from .phase_b_harness import (
     MODEL,
     PROVIDER,
     TOPICS,
-    good_stdout,
     make_auth,
-    make_record,
 )
 
 
@@ -38,11 +37,7 @@ def _out(capsys) -> dict:
 
 
 def test_cli_end_to_end_dry_run_default_then_explicit_effects(tmp_path, capsys, monkeypatch):
-    # Bypass the live-dispatch protocol gate for this isolated-engine CLI test: the unit under
-    # test is the host CLI's dry-run-vs-execute flow, not the ``aiye-exec submit`` argv. The
-    # unit test ``test_live_dispatch_fails_closed_when_caller_protocol_unverified`` exercises the
-    # missing-override path independently.
-    monkeypatch.setenv("SESHAT_PHASE_B_PROTOCOL_VERIFIED", "true")
+    monkeypatch.setenv("SESHAT_PHASE_B_PROTOCOL_VERIFIED", "true")  # cannot unlock native submit
     host = tmp_path / "host"
     calls: list[list[str]] = []
 
@@ -130,11 +125,11 @@ def test_cli_end_to_end_dry_run_default_then_explicit_effects(tmp_path, capsys, 
         HostJobStore(host / "store").get_job(job_id).dispatch["spec"]
     )
 
-    # dispatch: dry run builds the static argv but never calls the runner
+    # Dry run records the gap without advertising invalid native flags.
     assert cli("dispatch", "--host-job-id", job_id) == EXIT_OK
     dispatch_dry = _out(capsys)
     assert dispatch_dry["state"] == "DRY_RUN" and dispatch_dry["dry_run"] is True
-    assert dispatch_dry["manifest"]["argv"][1] == "submit"
+    assert dispatch_dry["manifest"]["argv"] is None
     assert dispatch_dry["manifest"]["protocol_status"] == "UNVERIFIED_AGAINST_CALLER_PROTOCOL"
     assert calls == []
 
@@ -146,53 +141,18 @@ def test_cli_end_to_end_dry_run_default_then_explicit_effects(tmp_path, capsys, 
     (host / "auth.json").write_text(json.dumps(make_auth(spec)), encoding="utf-8")
     assert (
         cli("dispatch", "--host-job-id", job_id, "--execute", "--authorization", "auth.json")
-        == EXIT_OK
+        == EXIT_BLOCKED
     )
-    assert _out(capsys)["state"] == "SUBMITTED"
-    assert len(calls) == 1 and calls[0][1] == "submit"
-
-    # ingest: no Hub record yet -> typed WAITING (not a hallucinated result)
+    assert _out(capsys)["detail"] == "PROTOCOL_UNVERIFIED"
+    assert calls == []
+    assert HostJobStore(host / "store").submissions(job_id) == []
     assert cli("ingest", "--host-job-id", job_id) == EXIT_WAITING
     assert _out(capsys)["state"] == "WAITING"
-
-    spool = host / "hub_spool" / spec.hub_job_id
-    spool.mkdir(parents=True, exist_ok=True)
-    data = good_stdout(tuple(need.source_carrier_ids))
-    (spool / "record.json").write_text(make_record(spec, data).model_dump_json(), encoding="utf-8")
-    (spool / "stdout.bin").write_bytes(data)
-
-    assert cli("ingest", "--host-job-id", job_id) == EXIT_OK
-    ingest_dry = _out(capsys)
-    assert ingest_dry["state"] == "COMPLETED" and ingest_dry["wrote"] is False
-    assert HostJobStore(host / "store").get_terminal(job_id) is None
-
-    assert cli("ingest", "--host-job-id", job_id, "--execute") == EXIT_OK
-    assert _out(capsys)["wrote"] is True
-    assert HostJobStore(host / "store").get_terminal(job_id).status == "COMPLETED"
-
-    # resume: verified replay; artifacts only with --execute
-    assert cli("resume", "--host-job-id", job_id) == EXIT_OK
-    resume_dry = _out(capsys)
-    assert resume_dry["mode"] == "PHASE_B_REPLAY_VERIFIED" and resume_dry["dry_run"] is True
-    assert not (host / "artifacts").exists()
-
-    assert cli("resume", "--host-job-id", job_id, "--execute", "--output-name", "run1") == EXIT_OK
-    done = _out(capsys)
-    assert "carpet.html" in done["artifacts"] and "terminal_output_sha.jsonl" in done["artifacts"]
-    receipt = json.loads((host / "artifacts" / "run1" / "receipt.json").read_text("utf-8"))
-    assert receipt["transport_kind"] == "UNATTESTED_MANUAL_IMPORT"
-    assert receipt["mode"] == "PHASE_B_REPLAY_VERIFIED"
-
-    assert cli("status", "--host-job-id", job_id) == EXIT_OK
-    status = _out(capsys)
-    assert status["terminal_status"] == "COMPLETED"
-    assert [item["kind"] for item in status["submissions"]][-1] == "SUBMIT_ACKED"
 
 
 def test_resume_hub_spool_transport_requires_attested_submission(tmp_path, capsys, monkeypatch):
     """A genuine configured host dir + prepared job: HUB_TRANSPORT_UNATTESTED is the precise
-    gate, not HOST_CONFIG_INVALID / PATH_NOT_FOUND. Then a positive path: with a fully-acked
-    registry-verified terminal Hub record, ``--transport-kind HUB_SPOOL_RECORD`` succeeds.
+    gate, even when no terminal exists and an environment override is present.
     """
 
     monkeypatch.setenv("SESHAT_PHASE_B_PROTOCOL_VERIFIED", "true")
@@ -220,6 +180,7 @@ def test_resume_hub_spool_transport_requires_attested_submission(tmp_path, capsy
         )
         == EXIT_OK
     )
+    assert _out(capsys)["state"] == "WRITTEN"
     need = start_waiting_run(
         OriginManifest.from_replay(
             json.loads((host / "origins" / "campus-origin-spool.json").read_text())
@@ -299,37 +260,15 @@ def test_resume_hub_spool_transport_requires_attested_submission(tmp_path, capsy
         "HUB_TRANSPORT_UNATTESTED",
     }
 
-    # POSITIVE: submit through the host (mock runner returns 0), then ingest a verified Hub
-    # record, then ``--transport-kind HUB_SPOOL_RECORD`` succeeds.
+    # A local env switch and a fake runner cannot create an attested Hub submission.
     (host / "auth.json").write_text(json.dumps(make_auth(spec)), encoding="utf-8")
-    assert (
-        cli(
-            "dispatch", "--host-job-id", job_id, "--execute",
-            "--authorization", "auth.json",
-        )
-        == EXIT_OK
-    )
-    assert calls
-    spool = host / "hub_spool" / spec.hub_job_id
-    spool.mkdir(parents=True, exist_ok=True)
-    data = good_stdout(tuple(need.source_carrier_ids))
-    (spool / "record.json").write_text(
-        make_record(spec, data).model_dump_json(), encoding="utf-8"
-    )
-    (spool / "stdout.bin").write_bytes(data)
-    assert cli("ingest", "--host-job-id", job_id, "--execute") == EXIT_OK
-
-    assert (
-        cli(
-            "resume", "--host-job-id", job_id, "--execute",
-            "--output-name", "with-spool", "--transport-kind", TRANSPORT_HUB_SPOOL_RECORD,
-        )
-        == EXIT_OK
-    )
-    payload = json.loads(capsys.readouterr().out)
-    assert "carpet.html" in payload["artifacts"]
-    receipt = json.loads((host / "artifacts" / "with-spool" / "receipt.json").read_text("utf-8"))
-    assert receipt["transport_kind"] == TRANSPORT_HUB_SPOOL_RECORD
+    assert cli("dispatch", "--host-job-id", job_id, "--execute", "--authorization", "auth.json") == EXIT_BLOCKED
+    assert _out(capsys)["detail"] == "PROTOCOL_UNVERIFIED"
+    assert calls == []
+    with pytest.raises(ExternalAdmissionError) as exc:
+        cli("resume", "--host-job-id", job_id, "--execute", "--output-name", "with-spool",
+            "--transport-kind", TRANSPORT_HUB_SPOOL_RECORD)
+    assert str(exc.value.args[0]) == "HUB_TRANSPORT_UNATTESTED"
 
 
 def test_cli_confines_file_arguments_to_host_dir(tmp_path):

@@ -329,6 +329,13 @@ def run(
         return EXIT_WAITING if outcome["state"] == "WAITING" else EXIT_OK
 
     if args.command == "resume":
+        # Check the requested transport claim before replay, so an unattested label is
+        # refused by its own gate even when no terminal has been imported yet.
+        transport_kind = None
+        if args.execute:
+            transport_kind = resolve_export_transport_kind(
+                adapter, args.host_job_id, args.transport_kind
+            )
         result = resume_by_replay(
             adapter=adapter, host_job_id=args.host_job_id, factories=factories
         )
@@ -341,9 +348,6 @@ def run(
         }
         if args.execute:
             name = require_safe_token(args.output_name or args.host_job_id, code="OUT_NAME_INVALID")
-            transport_kind = resolve_export_transport_kind(
-                adapter, args.host_job_id, args.transport_kind
-            )
             receipt = export_phase_b_artifacts(
                 host_dir / "artifacts" / name,
                 result=result,

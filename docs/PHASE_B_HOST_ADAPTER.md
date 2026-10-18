@@ -38,7 +38,7 @@ Task source: [issue #60](https://github.com/Stimurid/SESHAT/issues/60). Base:
 | `host_envelope.py` | outbound gate (E5-only, DRILLBACK-only, two allow-listed public synthetic carriers, versions + content current, bounded excerpts, budgets clamped) and the untrusted-answer parser (closed schema `external.hypothesis.v1`, authority-spoof keys/text rejected, lone surrogates rejected) |
 | `host_store.py` | `HostJobStore`: ORIGINAL canonical request bytes, pins, owner origin, Hub spec, prompt, source digests, replay material; immutable rows (triggers); row digests (+ optional HMAC); first-writer terminal CAS; atomic `begin_submission` |
 | `host_adapter.py` | `TrustedHubHostAdapter` implements `ExecutorPort`; `prepare`/`preview`, `ingest_hub_result`, `build_evidence_return`, `verify_return`, `recheck_outbound` |
-| `host_dispatcher.py` | fixed-template `aiye-exec` argv builder, `AiyeExecSubmitter`, `SpoolHubFetcher`, single-use live authorization, `HostDispatcher` |
+| `host_dispatcher.py` | hard-denied native `aiye-exec` argv/submission pending an authenticated ID bridge; `SpoolHubFetcher`, single-use live authorization, `HostDispatcher` |
 | `phase_b.py` | `resume_live`, `resume_by_replay`, causal assertions, machine artifact export |
 | `host_cli.py` | `seshat-fabric-external` (`write-origin`, `prepare`, `dispatch`, `ingest`, `resume`, `status`) |
 
@@ -70,23 +70,18 @@ traces the waiting activation. Both `campus` and `meteorology` use the same engi
 * Terminal CAS across processes: `BEGIN IMMEDIATE` + primary key; identical re-record is
   idempotent, a different one raises `TERMINAL_RESULT_ALREADY_ISSUED`. Failed/cancelled/timeout
   and host-rejected model output are typed terminals and never become evidence.
-* Dispatch: dry run is the default in every command. Live submission needs `--execute`, a
-  coordinator authorization bound to the exact job/spec/prompt digests plus a source-review digest
-  (single use, expiring), a configured absolute `aiye-exec` path, and a fresh outbound re-gate.
-  Claiming the right to submit is one atomic transaction, so racing dispatchers cannot both send.
-  Any subprocess outcome that may have created a Hub job (timeout, connection drop, unknown or
-  unmapped non-zero exit) is recorded `SUBMIT_AMBIGUOUS` and never resubmitted. Only locally
-  verified pre-send failures are `SUBMIT_FAILED` with `sent: false` and may retry with fresh auth.
+* Dispatch: dry run is the default. Native submission is hard denied with
+  `PROTOCOL_UNVERIFIED`, regardless of environment variables or JSON switches. It records no
+  attempted send and does not call the runner. Synthetic test submitters still exercise the
+  single-use authorization and atomic submission claim. After any synthetic transport error
+  whose delivery cannot be disproved, the attempt stays `SUBMIT_AMBIGUOUS` and cannot retry.
 * Store integrity: once a host-private HMAC key is used, `meta.integrity_key_required=true` is set
   and unkeyed opens or reads of MAC'd rows raise `HOST_STORE_INTEGRITY_KEY_REQUIRED`.
 * Artifact export: CLI `resume --execute` defaults `transport_kind` to `UNATTESTED_MANUAL_IMPORT`.
-  `HUB_SPOOL_RECORD` is accepted only when the job has `SUBMIT_ACKED` and a registry-verified
-  terminal Hub record (`--transport-kind` explicit).
-* argv is a fixed template; tokens are validated (no leading dash, no shell metacharacters);
-  `shell=False`; nothing from a StoneEvent, request text or model output reaches argv; child
-  stdout/stderr are never copied into the store or logs.
-* Provider unavailable / budget exhausted surface as typed `BLOCKED_EXTERNAL`; absence of a Hub
-  record is typed `WAITING`. Neither produces a result.
+  `HUB_SPOOL_RECORD` is hard denied in both CLI and library exports. A locally minted ACK and
+  normalized spool record cannot certify official Hub issuance.
+* No native argv is generated. The dry-run manifest reports the protocol gap and `argv: null`.
+  Absence of a Hub record is typed `WAITING` and produces no result.
 
 ## Machine artifacts (written by `export_phase_b_artifacts`, per-file SHA-256 in `receipt.json`)
 
@@ -112,11 +107,19 @@ modified. Note: pre-existing `F401` in `hosts.py`/`ledger.py` is not touched by 
 
 ## Known limits (honest)
 
-* **Hub protocol unverified.** `CALLER_PROTOCOL.md` was outside the permitted workspace. The
+* **Hub protocol unverified.** AORUS `CALLER_PROTOCOL.md` was read for the G1 repair. It confirms
+  that native Hub submission assigns a new `jx-...` ID; the current normalized SESHAT spec
+  presumes that ID before submission. The
   `aiye-exec submit` flag spelling, the exit-code mapping (`exit_code_map`) and the normalized
   record schema (`aiye.hub.job_record.normalized.v1`, produced by a Hub-to-spool bridge that does not
   exist yet) are **placeholders pinned in one place** and flagged `UNVERIFIED_AGAINST_CALLER_PROTOCOL`
-  in every dispatch manifest. Review before any live call.
+  in every dispatch manifest. Native submission stays blocked until a trusted bridge binds the
+  exact original request and real Hub-issued ID to an independently authenticated terminal.
+* **Legacy SQLite:** the original two-column `meta(k,v)` table was not sealed. Opening it now
+  raises `HOST_STORE_LEGACY_MIGRATION_REQUIRED` before DDL or journal-mode changes, preserving
+  original jobs, submission attempts and terminals. An authorized, independently audited
+  forward migration is still required. Keyed metadata is MAC-checked on open; missing key
+  metadata with existing rows refuses an implicit integrity upgrade.
 * Config, approvals and live-authorization documents are plain JSON in the host directory; only
   store rows and Hub records can be MAC'd. Directory ACLs are the control.
 * SQLite digests detect edits, not whole-row deletion by an attacker who can also drop triggers.

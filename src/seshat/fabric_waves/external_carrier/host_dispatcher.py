@@ -1,15 +1,9 @@
-"""HOST-ONLY safe dispatcher and result-ingest logic. DRY RUN is the default everywhere.
+"""HOST-ONLY dispatcher and result-ingest logic; native Hub submission is hard denied.
 
-* No shell: argv is a fixed template; every variable is a validated token or an integer.
-* No arbitrary flags: nothing from a StoneEvent, ResearchNeed text or model output reaches argv.
-* Real submission requires ALL of: ``execute=True``, a single-use coordinator authorization
-  bound to this exact job/spec/prompt digest and a source-review digest, a configured
-  absolute ``aiye-exec`` path, and a passing outbound re-gate. Authoring this module did not
-  call any Hub or model; tests use a mocked submitter and runner.
-
-ASSUMPTION (unverified): the ``aiye-exec submit`` flag spelling in ``build_aiye_exec_argv`` is
-a placeholder pinned in ONE place. It must be checked against
-``aiye-local-executor/CALLER_PROTOCOL.md`` by the coordinator before any live use.
+The normalized job spec assumes a Hub ID before submit, while the official Hub issues one
+after submit. Until an authenticated bridge binds both IDs and original receipts, no
+environment variable or caller option may turn this module into a chargeable submitter.
+Synthetic submitters retain the durable replay and concurrency test surface.
 """
 
 from __future__ import annotations
@@ -29,7 +23,6 @@ from seshat.fabric_waves.external_carrier.host_adapter import (
 )
 from seshat.fabric_waves.external_carrier.host_security import (
     HostBoundaryError,
-    atomic_write_bytes,
     read_file_under,
     require_safe_token,
     sha256_hex,
@@ -45,35 +38,7 @@ from seshat.fabric_waves.external_carrier.hub_protocol import (
 
 LIVE_AUTH_SCHEMA = "seshat.live_dispatch_authorization.v1"
 ASSUMED_PROTOCOL_STATUS = "UNVERIFIED_AGAINST_CALLER_PROTOCOL"
-# Hard-fail-closed gate for live dispatch. The actual official ``aiye-exec submit`` argv template
-# could NOT be verified against AORUS ``services/aiye-local-executor/CALLER_PROTOCOL.md`` from the
-# authoring workspace. Live dispatch must therefore raise ``PROTOCOL_UNVERIFIED`` rather than
-# spoofing an unverified argv. ``CallerProtocolVerifier`` is the only approved override path.
-PROTOCOL_VERIFIED_ENV = "SESHAT_PHASE_B_PROTOCOL_VERIFIED"
-# Transport outcomes that may have created a Hub job; never allow a second paid submit.
-_AMBIGUOUS_CODES = frozenset(
-    {
-        "SUBMIT_TIMEOUT_AMBIGUOUS",
-        "SUBMIT_EXIT_AMBIGUOUS",
-        "SUBMIT_TRANSPORT_AMBIGUOUS",
-        "PROTOCOL_UNVERIFIED",
-    }
-)
-# Only pre-send, locally verified failures (no subprocess started or provably rejected before send).
-# ``PROVIDER_UNAVAILABLE`` is REACHED only after the OS already attempted exec and refused: the
-# command line is gone and stdin/stdout were never consumed, so retry with fresh auth is safe.
-_PROVEN_NOT_SENT_CODES = frozenset(
-    {
-        "PROVIDER_UNAVAILABLE",
-        "PROMPT_DIGEST_MISMATCH",
-        "AIYE_EXEC_PATH_INVALID",
-        "PROMPT_PATH_NOT_ABSOLUTE",
-        "HUB_TICKET_INVALID",
-        "HUB_JOB_ID_INVALID",
-        "HUB_PROVIDER_INVALID",
-        "HUB_MODEL_INVALID",
-    }
-)
+# A native receipt bridge must replace the hard denial in code after independent review.
 _MAX_RECORD_BYTES = 64_000
 
 # The expected official submit flags recorded by an independent reviewer after reading the live
@@ -142,22 +107,9 @@ def caller_protocol_argv_gaps() -> tuple[str, ...]:
 
 
 def caller_protocol_unverified() -> bool:
-    """True unless an independent review flipped the verification gate to ``True``.
+    """The native Hub receipt bridge is absent; configuration cannot authorize dispatch."""
 
-    The flag is read from process environment to keep it out of the host JSON config and away
-    from operator-editable files. Setting ``SESHAT_PHASE_B_PROTOCOL_VERIFIED=true`` does NOT
-    constitute scientific-method acceptance; it is a host-controlled engineering gate that must
-    be flipped only after reading the live ``aiye-exec submit --help`` output and updating
-    ``build_aiye_exec_argv`` to match.
-    """
-
-    import os as _os
-
-    return _os.environ.get(PROTOCOL_VERIFIED_ENV, "").lower() not in {"1", "true", "yes"}
-
-
-def _cents(value: int) -> str:
-    return f"{value // 100}.{value % 100:02d}"
+    return True
 
 
 def validate_exe_path(exe: str | Path) -> str:
@@ -173,41 +125,9 @@ def validate_exe_path(exe: str | Path) -> str:
 
 
 def build_aiye_exec_argv(*, exe: str | Path, spec: HubJobSpec, prompt_path: Path) -> list[str]:
-    """Fixed-template argv for the official Hub path. No user-supplied flags.
+    """Refuse an argv until native Hub job IDs and receipts are bound to the host job."""
 
-    recommend decision, role analyze|classify, read-only mode, unique ticket and job id,
-    explicit provider/model and a hard budget.
-    """
-
-    spec.assert_static_policy()
-    if not Path(prompt_path).is_absolute():
-        raise HostBoundaryError("PROMPT_PATH_NOT_ABSOLUTE")
-    return [
-        validate_exe_path(exe),
-        "submit",
-        "--ticket",
-        require_safe_token(spec.ticket, code="HUB_TICKET_INVALID"),
-        "--decision",
-        spec.decision,
-        "--role",
-        spec.role,
-        "--mode",
-        spec.mode,
-        "--job-id",
-        require_safe_token(spec.hub_job_id, code="HUB_JOB_ID_INVALID"),
-        "--provider",
-        require_safe_token(spec.provider, code="HUB_PROVIDER_INVALID", extra=":/"),
-        "--model",
-        require_safe_token(spec.model, code="HUB_MODEL_INVALID", extra=":/"),
-        "--max-tokens",
-        str(int(spec.max_tokens)),
-        "--timeout-seconds",
-        str(int(spec.max_time_seconds)),
-        "--budget-usd",
-        _cents(int(spec.max_cost_cents)),
-        "--prompt-file",
-        str(prompt_path),
-    ]
+    raise HostBoundaryError("PROTOCOL_UNVERIFIED")
 
 
 @dataclass
@@ -220,47 +140,10 @@ class AiyeExecSubmitter:
     exit_code_map: Mapping[int, str] = field(default_factory=dict)
 
     def submit(self, *, spec: HubJobSpec, prompt: bytes) -> None:
-        # Hard-fail closed: the official ``aiye-exec submit`` argv template was NOT independently
-        # verified in this workspace. Every ambiguous gap is reported, and no live argv is built
-        # until an independent reviewer flips ``SESHAT_PHASE_B_PROTOCOL_VERIFIED``. We never spoof
-        # the Hub-issued ``hub_job_id``; the actual Hub assigns ``jx-...`` identifiers after dispatch.
-        if caller_protocol_unverified():
-            raise HubTransportError("PROTOCOL_UNVERIFIED")
-        if sha256_hex(prompt) != spec.prompt_sha256:
-            raise HostBoundaryError("PROMPT_DIGEST_MISMATCH")
-        # Validate every token (and build argv) BEFORE any file is written.
-        prompt_path = (Path(self.spool_dir) / spec.hub_job_id / "prompt.txt").resolve()
-        argv = build_aiye_exec_argv(exe=self.exe, spec=spec, prompt_path=prompt_path)
-        atomic_write_bytes(prompt_path, prompt)
-        try:
-            completed = self.runner(
-                argv,
-                shell=False,
-                capture_output=True,
-                stdin=subprocess.DEVNULL,
-                timeout=spec.max_time_seconds + 60,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            raise HubTransportError("SUBMIT_TIMEOUT_AMBIGUOUS") from None
-        except OSError:
-            # OSError after the child was forked may still mean the child ran (fork before exec);
-            # we cannot prove NOT_SENT, so the conservative classification is AMBIGUOUS. The
-            # caller must issue a new, separately approved job to retry, never reuse this nonce.
-            raise HubTransportError("SUBMIT_DISPATCH_AMBIGUOUS") from None
-        code = int(getattr(completed, "returncode", 1))
-        if code != 0:
-            # stderr/stdout are deliberately not propagated: they may echo credentials.
-            mapped = self.exit_code_map.get(code)
-            if mapped is None:
-                # Unmapped nonzero exit is always ambiguous: the child has produced stderr we
-                # will not surface, so we cannot prove the chargeable model call did NOT run.
-                raise HubTransportError("SUBMIT_EXIT_AMBIGUOUS")
-            if mapped not in _PROVEN_NOT_SENT_CODES:
-                # Caller-mapped code that is not in the documented pre-send whitelist cannot be
-                # trusted as ``NOT_SENT``: the child had already launched.
-                raise HubTransportError("SUBMIT_TRANSPORT_AMBIGUOUS")
-            raise HubTransportError(mapped)
+        # The Hub issues its own jx-id. The normalized spec currently invents one before
+        # submission and cannot bind an official terminal to the original request. This guard
+        # is deliberately independent of environment variables, config and caller arguments.
+        raise HubTransportError("PROTOCOL_UNVERIFIED")
 
 
 @dataclass
@@ -370,13 +253,6 @@ class HostDispatcher:
         spec = self._adapter.spec_for(job)
         request = job.request()
         argv: list[str] | None = None
-        if exe is not None:
-            prompt_path = (
-                Path(spool_dir if spool_dir is not None else Path.cwd()).resolve()
-                / spec.hub_job_id
-                / "prompt.txt"
-            )
-            argv = build_aiye_exec_argv(exe=exe, spec=spec, prompt_path=prompt_path)
         return {
             "protocol_status": ASSUMED_PROTOCOL_STATUS,
             "host_job_id": job.host_job_id,
@@ -430,6 +306,10 @@ class HostDispatcher:
                 "ALREADY_SUBMITTED", host_job_id, spec.hub_job_id, "IDEMPOTENT", manifest
             )
         nonce = verify_live_authorization(authorization, spec=spec, now_iso=self._clock())
+        if isinstance(submitter, AiyeExecSubmitter):
+            return DispatchResult(
+                "BLOCKED_EXTERNAL", host_job_id, spec.hub_job_id, "PROTOCOL_UNVERIFIED", manifest
+            )
         try:
             # One IMMEDIATE transaction: racing dispatchers cannot both reach the Hub.
             store.begin_submission(
@@ -450,23 +330,16 @@ class HostDispatcher:
         try:
             submitter.submit(spec=spec, prompt=job.prompt_bytes)
         except (HostBoundaryError, OSError) as exc:
-            # Raised by our own pre-send validation: provably NOT sent, so a fresh authorization
-            # may retry. (Errors from the Hub path itself surface as HubTransportError.)
-            code = exc.code if isinstance(exc, HostBoundaryError) else "SUBMIT_PREFLIGHT_FAILED"
-            store.record_submission(host_job_id, "SUBMIT_FAILED", {"code": code, "sent": False})
-            if isinstance(exc, HostBoundaryError):
-                raise
-            raise HostBoundaryError(code) from None
+            # A custom submitter may raise after its child started. Without independent
+            # pre-send evidence, neither exception proves the Hub did not create a job.
+            code = exc.code if isinstance(exc, HostBoundaryError) else "SUBMIT_OSERROR_AMBIGUOUS"
+            store.record_submission(host_job_id, "SUBMIT_AMBIGUOUS", {"code": code})
+            return DispatchResult("AMBIGUOUS", host_job_id, spec.hub_job_id, code, manifest)
         except HubTransportError as exc:
-            if exc.code in _AMBIGUOUS_CODES or exc.code not in _PROVEN_NOT_SENT_CODES:
-                store.record_submission(host_job_id, "SUBMIT_AMBIGUOUS", {"code": exc.code})
-                return DispatchResult("AMBIGUOUS", host_job_id, spec.hub_job_id, exc.code, manifest)
-            store.record_submission(
-                host_job_id, "SUBMIT_FAILED", {"code": exc.code, "sent": False}
-            )
-            return DispatchResult(
-                "BLOCKED_EXTERNAL", host_job_id, spec.hub_job_id, exc.code, manifest
-            )
+            # Transport error strings are not proof that nothing was sent. Once the atomic
+            # claim has been recorded, all such failures prohibit another paid attempt.
+            store.record_submission(host_job_id, "SUBMIT_AMBIGUOUS", {"code": exc.code})
+            return DispatchResult("AMBIGUOUS", host_job_id, spec.hub_job_id, exc.code, manifest)
         store.record_submission(host_job_id, "SUBMIT_ACKED", {"hub_job_id": spec.hub_job_id})
         return DispatchResult("SUBMITTED", host_job_id, spec.hub_job_id, "ACKED", manifest)
 
@@ -510,8 +383,6 @@ class HostDispatcher:
 __all__ = [
     "ASSUMED_PROTOCOL_STATUS",
     "LIVE_AUTH_SCHEMA",
-    "_AMBIGUOUS_CODES",
-    "_PROVEN_NOT_SENT_CODES",
     "caller_protocol_argv_gaps",
     "AiyeExecSubmitter",
     "DispatchResult",
