@@ -179,6 +179,7 @@ class HostRuntime:
     def __init__(self, configuration: HostConfiguration):
         self._lock = RLock()
         self._cache = {}
+        self._report_records = {}
         self._epoch = None
         self.rebuild_count = 0
         self.install(configuration)
@@ -225,6 +226,7 @@ class HostRuntime:
                          if self._configuration.temporal else None)
                 if epoch != self._epoch:
                     self._cache.clear()
+                    self._report_records.clear()
                     self._epoch = epoch
                 # The request manifest is not a trust root or an epoch oracle.
                 key = request.canonical_json
@@ -292,9 +294,20 @@ class HostRuntime:
                         sha256=self._configuration.primary.sha256),
                         declared_fields=source.declared_fields)
                     self._cache[key] = build_corpus_space(request, manifest, records, _Rights(grant))
+                    self._report_records[key] = tuple(records)
                     self.rebuild_count += 1
                 return self._cache[key].model_copy(deep=True)
         return select
+
+    def _report_inputs(self, request, *, authenticated_caller, authorized_view):
+        """Owner-only report port; use the same rights and source epoch as selection."""
+        with self._lock:
+            snapshot = self.session(authenticated_caller=authenticated_caller,
+                                    authorized_view=authorized_view)(request)
+            selected = {m.object_id for m in snapshot.members}
+            records = self._report_records[request.canonical_json]
+            return snapshot, tuple(r.model_copy(deep=True) for r in records
+                                   if r.research_object.object_id in selected)
 
     def attest_package(self) -> PackageAttestation:
         with self._lock:
