@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from seshat.fabric_waves.contracts import EpistemicLevel
 from seshat.fabric_waves.external_carrier.contracts import (
     AgentEvidenceReturn,
     AgentTaskRequest,
@@ -116,7 +117,7 @@ def verify_resume_receipt(
             raise ExternalAdmissionError("E5_SOURCE_CLAIM_OUTSIDE_REQUEST_SCOPE")
     if receipt.evidence_return.forged_human_decision:
         raise ExternalAdmissionError("FORGED_HUMAN_DECISION_REJECTED")
-    if receipt.evidence_return.epistemic_level.value == "E1":
+    if receipt.evidence_return.epistemic_level != EpistemicLevel.E5:
         raise ExternalAdmissionError("E5_ONLY_EXTERNAL_RETURN")
     digest_material = material_hash(receipt.evidence_return.proposal_payload)
     if digest_material != receipt.evidence_return.result_digest:

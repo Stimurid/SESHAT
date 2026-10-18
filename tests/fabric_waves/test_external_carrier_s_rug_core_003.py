@@ -5,7 +5,14 @@ import threading
 
 import pytest
 
-from seshat.fabric_waves.contracts import FabricRunOutcome, MethodBodyRef, StoneEvent, StoneEventKind, WaveBudget
+from seshat.fabric_waves.contracts import (
+    ActivationOutcome,
+    FabricRunOutcome,
+    MethodBodyRef,
+    StoneEvent,
+    StoneEventKind,
+    WaveBudget,
+)
 from seshat.fabric_waves.engine import WaveEngineConfigurationError
 from seshat.fabric_waves.external_carrier.contracts import (
     EpistemicLevel,
@@ -232,15 +239,24 @@ def test_portfolio_runnable():
     assert engines["campus"].external_ledger.evidence_returns
 
 
-def test_e5_cannot_present_as_e1():
+@pytest.mark.parametrize(
+    "forged_level",
+    [
+        EpistemicLevel.E1,
+        EpistemicLevel.E2,
+        EpistemicLevel.E3,
+        EpistemicLevel.E4,
+    ],
+)
+def test_non_e5_epistemic_levels_rejected(forged_level):
     engine = campus_external_host_engine()
     engine.run(run_id="e5", budget=BUDGET, initial_stone=_query("campus-facility-utilization"))
     need = engine.external_ledger.research_needs[-1]
     fake = FakeHostExecutor(host_scope=need.worker_ref.host_scope)
     job_id = fake.dispatch(need)
     evidence = fake.synthesize_return(need=need, job_id=job_id, proposal={"hypothesis": "x"})
-    evidence = evidence.model_copy(update={"epistemic_level": EpistemicLevel.E1})
-    with pytest.raises(ExternalAdmissionError):
+    evidence = evidence.model_copy(update={"epistemic_level": forged_level})
+    with pytest.raises(ExternalAdmissionError, match="E5_ONLY_EXTERNAL_RETURN"):
         verify_resume_receipt(
             ledger=engine.external_ledger,
             receipt=ExternalResumeReceipt(
@@ -248,6 +264,8 @@ def test_e5_cannot_present_as_e1():
             ),
             port=fake,
         )
+    assert not engine.external_ledger.evidence_returns
+    assert not any(r.object_type == "external.proposal" for r in engine.sediment.all_records())
 
 
 def test_ledger_source_pin_tamper_after_dispatch_denied():
@@ -402,12 +420,11 @@ def test_wait_checkpoint_roundtrip(tmp_path):
     assert restored.ledger.research_needs[0].request_id == wait.request_id
 
 
-def _external_oracle_scene():
+def _external_oracle_scene(*, terminal: bool = True):
     from seshat.contracts import RawAccessPolicy
     from seshat.fabric_waves.external_carrier.contracts import (
         AgentTaskRequest,
         WorkerCarrierRef,
-        material_hash,
     )
     from seshat.fabric_waves.external_carrier.ledger import ExternalCarrierLedger
 
@@ -437,9 +454,11 @@ def _external_oracle_scene():
     ledger.register_need(need)
     host = FakeHostExecutor(host_scope=worker.host_scope)
     job_id = host.dispatch(need)
-    evidence = host.synthesize_return(
-        need=need, job_id=job_id, proposal={"hypothesis": "original", "scope": "synthetic"}
-    )
+    evidence = None
+    if terminal:
+        evidence = host.synthesize_return(
+            need=need, job_id=job_id, proposal={"hypothesis": "original", "scope": "synthetic"}
+        )
     return ledger, host, need, evidence
 
 
@@ -682,8 +701,8 @@ def test_idempotent_terminal_synthesize_replays_same_return():
 
 
 def test_concurrent_terminal_synthesize_first_write_wins():
-    ledger, host, need, _evidence = _external_oracle_scene()
-    job_id = host.dispatch(need)
+    ledger, host, need, _evidence = _external_oracle_scene(terminal=False)
+    job_id = host._job_id_for(need)
     arrival = threading.Barrier(2)
     outcomes: list[object] = []
 
@@ -731,9 +750,81 @@ def _waiting_external_activation(engine, run_id: str, request_id: str):
     return next(
         activation
         for activation in engine.ledger.activations_for_run(run_id)
-        if activation.outcome.value == "WAITING_EXTERNAL"
+        if activation.outcome is ActivationOutcome.WAITING_EXTERNAL
         and activation.error_detail == request_id
     )
+
+
+def _assert_verified_e5_causal_resume(
+    engine,
+    *,
+    run_id: str,
+    host_id: str,
+    beta_obs_id: str,
+    need,
+    wait_activation,
+    activation_ids_before: set[str],
+    beta_version_before: str | None,
+) -> None:
+    integrate_thread = f"external-integrate-{host_id}"
+    reconcile_thread = f"reconcile-{host_id}"
+    research_thread = f"external-research-{host_id}"
+
+    assert wait_activation.outcome is ActivationOutcome.WAITING_EXTERNAL
+    assert wait_activation.thread_id == research_thread
+    assert wait_activation.wave_id == need.wave_id
+    assert wait_activation.error_detail == need.request_id
+    assert engine._external_wait_activation(run_id, need.request_id) == wait_activation
+
+    new_fired = [
+        activation
+        for activation in engine.ledger.activations_for_run(run_id)
+        if activation.activation_id not in activation_ids_before
+        and activation.outcome is ActivationOutcome.FIRED
+    ]
+    downstream = [a for a in new_fired if a.thread_id in {integrate_thread, reconcile_thread}]
+    assert len(downstream) == 2
+    assert {a.thread_id for a in downstream} == {integrate_thread, reconcile_thread}
+
+    external_events = [
+        event
+        for event in engine.ledger.events
+        if event.run_id == run_id and "external-return" in event.event_id
+    ]
+    assert external_events
+    event = external_events[-1]
+    assert event.parent_activation_id == wait_activation.activation_id
+    assert event.consumed_by_wave_id is not None
+    resume_wave = next(
+        wave
+        for wave in engine.ledger.waves
+        if wave.run_id == run_id and wave.wave_id == event.consumed_by_wave_id
+    )
+    assert resume_wave.triggering_event_id == event.event_id
+    assert integrate_thread in resume_wave.fired_thread_ids
+
+    proposal = next(
+        record for record in engine.sediment.all_records() if record.object_type == "external.proposal"
+    )
+    assert proposal.epistemic_level is EpistemicLevel.E5
+    assert tuple(sorted(proposal.source_carrier_refs)) == tuple(sorted(need.source_carrier_ids))
+    ledger_need = next(
+        item for item in engine.external_ledger.research_needs if item.request_id == need.request_id
+    )
+    assert ledger_need.source_versions == need.source_versions
+    assert ledger_need.wave_id == need.wave_id
+    assert any(
+        entry.startswith(f"parent_activation:{wait_activation.activation_id}")
+        for entry in proposal.provenance
+    )
+    assert any(entry.startswith(f"parent_wave:{need.wave_id}") for entry in proposal.provenance)
+
+    if beta_version_before is not None:
+        assert engine.sediment.version_map().get(beta_obs_id) == beta_version_before
+
+    resonances = engine.ledger.resonances_for_run(run_id)
+    assert resonances
+    assert any(wait_activation.activation_id in r.trace_activation_ids for r in resonances)
 
 
 def test_resume_external_stone_parents_waiting_activation_campus():
@@ -741,7 +832,8 @@ def test_resume_external_stone_parents_waiting_activation_campus():
     engine.run(run_id="causal-campus", budget=BUDGET, initial_stone=_query("campus-facility-utilization"))
     need = engine.external_ledger.research_needs[-1]
     wait_activation = _waiting_external_activation(engine, "causal-campus", need.request_id)
-    assert wait_activation.wave_id == need.wave_id
+    activation_ids_before = {a.activation_id for a in engine.ledger.activations_for_run("causal-campus")}
+    beta_version_before = engine.sediment.version_map().get("obs-campus-beta")
     fake = FakeHostExecutor(host_scope=need.worker_ref.host_scope)
     job_id = fake.dispatch(need)
     evidence = fake.synthesize_return(
@@ -749,33 +841,25 @@ def test_resume_external_stone_parents_waiting_activation_campus():
         job_id=job_id,
         proposal={"hypothesis": "calibration drift", "branch_focus": "alpha"},
     )
-    engine.resume_external_evidence(
+    assert evidence.epistemic_level is EpistemicLevel.E5
+    record = engine.resume_external_evidence(
         receipt=ExternalResumeReceipt(
             request_id=need.request_id, run_id="causal-campus", evidence_return=evidence
         ),
         budget=BUDGET,
         port=fake,
     )
-    external_events = [
-        event
-        for event in engine.ledger.events
-        if event.run_id == "causal-campus" and "external-return" in event.event_id
-    ]
-    assert external_events
-    event = external_events[-1]
-    assert event.parent_activation_id == wait_activation.activation_id
-    assert event.consumed_by_wave_id is not None
-    assert event.consumed_by_wave_id in {
-        wave.wave_id for wave in engine.ledger.waves if wave.run_id == "causal-campus"
-    }
-    proposal = next(
-        record for record in engine.sediment.all_records() if record.object_type == "external.proposal"
+    assert record.outcome in {FabricRunOutcome.CONVERGED, FabricRunOutcome.SATURATED}
+    _assert_verified_e5_causal_resume(
+        engine,
+        run_id="causal-campus",
+        host_id="campus",
+        beta_obs_id="obs-campus-beta",
+        need=need,
+        wait_activation=wait_activation,
+        activation_ids_before=activation_ids_before,
+        beta_version_before=beta_version_before,
     )
-    assert any(
-        entry.startswith(f"parent_activation:{wait_activation.activation_id}")
-        for entry in proposal.provenance
-    )
-    assert any(entry.startswith(f"parent_wave:{need.wave_id}") for entry in proposal.provenance)
 
 
 def test_resume_external_stone_parents_waiting_activation_meteorology():
@@ -787,7 +871,8 @@ def test_resume_external_stone_parents_waiting_activation_meteorology():
     )
     need = engine.external_ledger.research_needs[-1]
     wait_activation = _waiting_external_activation(engine, "causal-met", need.request_id)
-    assert wait_activation.wave_id == need.wave_id
+    activation_ids_before = {a.activation_id for a in engine.ledger.activations_for_run("causal-met")}
+    beta_version_before = engine.sediment.version_map().get("obs-met-beta")
     fake = FakeHostExecutor(host_scope=need.worker_ref.host_scope)
     job_id = fake.dispatch(need)
     evidence = fake.synthesize_return(
@@ -795,16 +880,21 @@ def test_resume_external_stone_parents_waiting_activation_meteorology():
         job_id=job_id,
         proposal={"hypothesis": "icing asymmetry", "domain": "meteorology"},
     )
-    engine.resume_external_evidence(
+    record = engine.resume_external_evidence(
         receipt=ExternalResumeReceipt(
             request_id=need.request_id, run_id="causal-met", evidence_return=evidence
         ),
         budget=BUDGET,
         port=fake,
     )
-    external_events = [
-        event
-        for event in engine.ledger.events
-        if event.run_id == "causal-met" and "external-return" in event.event_id
-    ]
-    assert external_events[-1].parent_activation_id == wait_activation.activation_id
+    assert record.outcome in {FabricRunOutcome.CONVERGED, FabricRunOutcome.SATURATED}
+    _assert_verified_e5_causal_resume(
+        engine,
+        run_id="causal-met",
+        host_id="met",
+        beta_obs_id="obs-met-beta",
+        need=need,
+        wait_activation=wait_activation,
+        activation_ids_before=activation_ids_before,
+        beta_version_before=beta_version_before,
+    )
