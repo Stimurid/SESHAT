@@ -16,6 +16,7 @@ dependencies = [
 seshat-fabric-demo = "seshat.fabric_waves.demo:main"
 seshat-fabric-operator = "seshat.fabric_waves.operator:main"
 seshat-carpet-portfolio = "seshat.fabric_waves.carpet_portfolio:main"
+seshat-fabric-external = "seshat.fabric_waves.external_carrier.host_cli:main"
 
 [project.optional-dependencies]
 dev = [
