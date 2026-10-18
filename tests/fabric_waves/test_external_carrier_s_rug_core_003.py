@@ -1,6 +1,5 @@
 """S-RUG-CORE-003 Phase A: external worker carrier negative and demo gates."""
 
-import json
 import threading
 
 import pytest

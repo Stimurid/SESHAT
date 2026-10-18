@@ -13,7 +13,6 @@ from seshat.fabric_waves.external_carrier.contracts import (
     AgentTaskRequest,
     ExternalRequestStatus,
     HostJobEvidence,
-    HostJobReceipt,
     WorkerCarrierRef,
     material_hash,
 )

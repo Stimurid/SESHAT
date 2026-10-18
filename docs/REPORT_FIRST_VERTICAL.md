@@ -42,15 +42,21 @@ For a serial batch:
 ```sh
 docker create --name seshat-batch-smoke --network none --user 65532:65532 seshat-report:local python -m seshat.batch_demo --fixture meteorology --scientific --output /tmp/batch
 docker start -a seshat-batch-smoke
-docker cp seshat-batch-smoke:/tmp/batch ./synthetic-batch
+# Preview only. The complete batch directory is PRIVATE operator state.
+docker cp seshat-batch-smoke:/tmp/batch/items/r01-readable/report.md ./synthetic-preview-r01.md
+docker cp seshat-batch-smoke:/tmp/batch/items/r01-readable/report.html ./synthetic-preview-r01.html
 docker rm seshat-batch-smoke
 ```
 
-Inspect `synthetic-batch/items/r01-readable/report.md` and
-`synthetic-batch/batch_receipt.json`. Resumption requires
-the original batch directory, manifest, and the same source and scientific
-input digests. The `batch.py` API exposes `resume_batch` for an owner-controlled
-persistent volume. Do not place private source or method bodies in this image.
+Inspect `synthetic-preview-r01.md` and `synthetic-preview-r01.html` only.
+The full batch directory, including `manifest.json`, `batch_ledger.sqlite`,
+and private whole-source/rights/temporal digests, remains within an owner-
+controlled volume and is NEVER copied as a public artifact. On resume the
+manifest identity and scientific asset digests are pinned; live source rights
+and source contents are rechecked, and changed visible state is recomposed.
+The source-pins are not required to remain byte-identical on resume.
+The `batch.py` API exposes `resume_batch` for this private volume.
+Never put private source or method bodies in a public container image.
 
 The content hash is checked against owner-provided bytes. For non-synthetic
 sources, page coordinates remain an owner assertion at this interface. Before

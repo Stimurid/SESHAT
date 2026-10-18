@@ -13,7 +13,7 @@ from seshat.fabric_waves.carpet_hosts import (
     _question,
     _read_carrier,
 )
-from seshat.fabric_waves.contracts import EpistemicLevel, MethodBodyRef, StoneEventKind
+from seshat.fabric_waves.contracts import EpistemicLevel, StoneEventKind
 from seshat.fabric_waves.engine import WaveEngine
 from seshat.fabric_waves.external_carrier.contracts import (
     AgentTaskRequest,

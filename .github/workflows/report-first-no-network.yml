@@ -1,0 +1,63 @@
+name: Report-first offline synthetic smoke
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-report-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact proposed source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Record source identity
+        shell: bash
+        run: |
+          git rev-parse HEAD
+          git rev-parse 'HEAD^{tree}'
+      - name: Build synthetic-only image (no private assets)
+        shell: bash
+        run: docker build --pull=false -f Dockerfile.report -t seshat-report:pr .
+      - name: Offline unprivileged R01 text-generation smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker create --name seshat-report-r01-ci --network none --read-only --user 65532:65532 --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m seshat-report:pr
+          docker start -a seshat-report-r01-ci
+          test "$(docker inspect -f '{{.State.ExitCode}}' seshat-report-r01-ci)" = 0
+          docker cp seshat-report-r01-ci:/tmp/report/report.md "$RUNNER_TEMP/report.md"
+          docker cp seshat-report-r01-ci:/tmp/report/report.html "$RUNNER_TEMP/report.html"
+          grep -q 'OWNER_AUTHORED_UNREVIEWED' "$RUNNER_TEMP/report.md"
+          grep -q 'Осадки в горном водосборе' "$RUNNER_TEMP/report.md"
+          grep -q 'Температура прибрежного слоя' "$RUNNER_TEMP/report.md"
+          docker rm seshat-report-r01-ci
+      - name: Offline unprivileged serial batch smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker create --name seshat-report-batch-ci --network none --read-only --user 65532:65532 --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m seshat-report:pr python -m seshat.batch_demo --fixture meteorology --scientific --output /tmp/batch
+          docker start -a seshat-report-batch-ci
+          test "$(docker inspect -f '{{.State.ExitCode}}' seshat-report-batch-ci)" = 0
+          # Copy ONLY one synthetic prose preview; never the private batch root.
+          docker cp seshat-report-batch-ci:/tmp/batch/items/r01-readable/report.md "$RUNNER_TEMP/batch-preview.md"
+          grep -q 'OWNER_AUTHORED_UNREVIEWED' "$RUNNER_TEMP/batch-preview.md"
+          docker rm seshat-report-batch-ci
+      - name: Offline report and batch security tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --read-only --user 65532:65532 --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m seshat-report:pr python -m pytest -q -p no:cacheprovider tests/test_reports.py tests/test_batch.py tests/test_scientific_report.py
+          docker run --rm --network none --read-only --user 65532:65532 --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m seshat-report:pr python -m ruff check --no-cache .
+      - name: Print scope boundary
+        shell: bash
+        run: |
+          echo 'TESTED=OFFLINE_SYNTHETIC_ONLY'
+          echo 'SCIENTIFIC_ACCEPTANCE=NOT_PERFORMED'
+          echo 'HUB_ISSUER=NOT_TESTED'
+          echo 'CUSTOMER_RELEASE=NOT_AUTHORIZED'

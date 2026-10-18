@@ -3,8 +3,6 @@ import json
 import os
 import subprocess
 import sys
-from copy import deepcopy
-from pathlib import Path
 
 import pytest
 
@@ -139,7 +137,7 @@ def test_source_pin_change_marks_stale_and_rebuilds(tmp_path):
     source, rights, temporal = synthetic_packages(host)
     source["records"][0]["fields"][0]["value"] = "Visible title mutation"
     from seshat.report_demo import pin_package
-    from seshat.corpus_host import HostConfiguration, HostRuntime
+    from seshat.corpus_host import HostConfiguration
 
     runtime.install(HostConfiguration(
         host_id=host,
@@ -254,3 +252,30 @@ def test_template_change_invalidates_item_fingerprint(tmp_path):
         })})
     fp3 = item_input_fingerprint(manifest, changed_sel)
     assert fp3 != fp1
+
+def test_private_batch_manifest_never_confused_with_customer_report(tmp_path):
+    fixture_dir = tmp_path / 'fixture'
+    fixture_dir.mkdir()
+    runtime = install_fixture(fixture_dir, 'meteorology')
+    manifest = demo_manifest('meteorology', runtime, batch_id='private-ledger')
+    root = tmp_path / 'owner-private-batch'
+    run_batch(root, manifest, runtime, caller_id='demo', rights_scope='synthetic-public')
+    private = (root / 'manifest.json').read_bytes()
+    # These are internal reconciliation pins; customers must never receive
+    # the batch directory wholesale, only separately approved report text.
+    assert b'rights_sha256' in private
+    assert b'primary_sha256' in private
+    for item in manifest.items:
+        item_dir = root / 'items' / item.item_id
+        for name in ('report.json', 'report.html', 'receipt.json'):
+            raw = (item_dir / name).read_bytes()
+            assert b'rights_sha256' not in raw
+            assert b'primary_sha256' not in raw
+            assert b'temporal_sha256' not in raw
+    # Batch-level index/receipts are internal by contract, but their
+    # cleartext contents must not accidentally dump private source pins.
+    for name in ('index.json', 'batch_receipt.json'):
+        raw = (root / name).read_bytes()
+        assert b'rights_sha256' not in raw
+        assert b'primary_sha256' not in raw
+        assert b'temporal_sha256' not in raw

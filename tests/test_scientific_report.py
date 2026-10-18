@@ -165,3 +165,69 @@ def test_scientific_batch_replay_verifies_markdown(tmp_path):
                      scientific_assets=(asset,),
                      scientific_sources=synthetic_source_contents(runtime, asset),
                      method_bodies=synthetic_method_bodies())
+
+
+@pytest.mark.parametrize("asset_change", [
+    {"caller_id": "unauthorized-caller"},
+    {"rights_scope": "other-tenant"},
+    {"object_id": "unselected-research-object"},
+])
+def test_wrong_scientific_asset_authority_is_invisible(tmp_path, asset_change):
+    runtime, asset, request, _ = _compose(tmp_path)
+    baseline = report_session(runtime, authenticated_caller="demo",
+                              authorized_view="synthetic-public")(request)
+    denied = asset.model_copy(update={
+        **asset_change, "producer_id": "PRIVATE_SCIENCE_MUST_NOT_LEAK"})
+    report = report_session(
+        runtime, authenticated_caller="demo", authorized_view="synthetic-public",
+        scientific_assets=(denied,),
+        scientific_sources=synthetic_source_contents(runtime, asset),
+        method_bodies=synthetic_method_bodies(),
+    )(request)
+    assert report.status == "PARTIAL_METADATA"
+    assert "report.md" not in artifacts(report)
+    assert artifacts(report) == artifacts(baseline)
+    for raw in artifacts(report).values():
+        assert b"PRIVATE_SCIENCE_MUST_NOT_LEAK" not in raw
+
+
+def test_multiple_visible_scientific_assets_fail_closed(tmp_path):
+    runtime, asset, request, _ = _compose(tmp_path)
+    baseline = report_session(runtime, authenticated_caller="demo",
+                              authorized_view="synthetic-public")(request)
+    conflicting = asset.model_copy(update={
+        "analytic_state_version": "different-and-unreviewed",
+        "producer_id": "PRIVATE_DUPLICATE_DO_NOT_RENDER"})
+    report = report_session(
+        runtime, authenticated_caller="demo", authorized_view="synthetic-public",
+        scientific_assets=(asset, conflicting),
+        scientific_sources=synthetic_source_contents(runtime, asset),
+        method_bodies=synthetic_method_bodies(),
+    )(request)
+    assert report.status == "PARTIAL_METADATA"
+    assert "report.md" not in artifacts(report)
+    assert artifacts(report) == artifacts(baseline)
+    for raw in artifacts(report).values():
+        assert b"PRIVATE_DUPLICATE_DO_NOT_RENDER" not in raw
+
+
+def test_science_asset_after_rights_revocation_cannot_render(tmp_path):
+    import json
+    from seshat.corpus_host import HostConfiguration
+    from seshat.report_demo import pin_package
+
+    runtime, asset, request, compose = _compose(tmp_path)
+    assert compose(request).status == "SOURCE_GROUNDED_UNREVIEWED"
+    cfg = runtime._configuration
+    rights = json.loads(cfg.rights.path.read_text(encoding="utf-8"))
+    rights["epoch"] = "after-access-revocation"
+    for grant in rights["grants"]:
+        grant["object_ids"] = []
+        grant["carrier_ids"] = []
+    runtime.install(HostConfiguration(
+        host_id=cfg.host_id, primary=cfg.primary,
+        rights=pin_package(tmp_path / "rights-revoked.json", rights),
+        temporal=cfg.temporal,
+    ))
+    with pytest.raises(ValueError, match="R01_REQUIRES_ONE_RESEARCH_OBJECT"):
+        compose(request)

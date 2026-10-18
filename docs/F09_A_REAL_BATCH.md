@@ -10,7 +10,22 @@ Status: **F09A1 engineering slice** on F08 base `d7f80b3`. Not F09B concurrency,
 - Synthetic hosts via `report_demo.install_fixture` (`sechenovka-like`, `meteorology`)
 - CLI: `python -m seshat.batch_demo --fixture HOST --output NEW_DIR [--resume]`
 
-## Public artifacts per batch directory
+## Owner-private batch state — NEVER copy this whole directory to a customer
+
+The local batch root is an **internal, access-controlled operator volume**,
+not a customer deliverable. Its `manifest.json` intentionally contains
+private whole-source, rights and temporal SHA pins (`source_pins`) needed
+for resume; `batch_ledger.sqlite` also contains internal operational state.
+Comparing such pins across private runs may reveal hidden changes, so the
+directory and its receipts MUST NOT be published wholesale.
+
+Customers receive only a separately rights-reviewed **human-readable report**
+(`report.md` and/or `report.html`) after the required science-owner decision.
+For a fully synthetic public demonstration, copy only the selected report
+file(s) into a **distinct** preview directory with UNREVIEWED banners.
+Do not copy the batch root, manifest, ledger, JSON or raw carrier files.
+
+### Private operator artifacts per batch directory
 
 | File | Role |
 |------|------|

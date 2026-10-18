@@ -125,7 +125,8 @@ def render_markdown(asset: ScientificReportAsset) -> str:
 
 
 def render_html(asset: ScientificReportAsset) -> str:
-    e = lambda value: escape(str(value), quote=True)
+    def e(value):
+        return escape(str(value), quote=True)
     parts = ["<!doctype html><html lang=\"ru\"><meta charset=\"utf-8\">",
              "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; "
              "style-src 'unsafe-inline'\">",
