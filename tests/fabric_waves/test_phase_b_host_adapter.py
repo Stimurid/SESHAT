@@ -314,7 +314,7 @@ def test_source_rights_revocation_blocks_prepare_dispatch_and_return(tmp_path):
         h.adapter.verify_return(need=h.need, evidence=evidence)
     assert _code(exc) == "SOURCE_CONTENT_UNAVAILABLE"
     with pytest.raises(ExternalAdmissionError) as exc:
-        HostDispatcher(adapter=h.adapter).dispatch(h.job_id)
+        HostDispatcher(synthetic_only=True, adapter=h.adapter).dispatch(h.job_id)
     assert _code(exc) == "SOURCE_CONTENT_UNAVAILABLE"
     receipt = ExternalResumeReceipt(
         request_id=h.need.request_id, run_id=h.need.run_id, evidence_return=evidence
@@ -604,7 +604,7 @@ def test_waiting_and_blocked_external_are_typed_not_hallucinated(tmp_path, monke
 
     hub = MockHub()
     hub.fail_with = "PROVIDER_UNAVAILABLE"
-    dispatcher = HostDispatcher(adapter=h.adapter)
+    dispatcher = HostDispatcher(synthetic_only=True, adapter=h.adapter)
     auth = _auth(h.spec)
     result = dispatcher.dispatch(h.job_id, execute=True, submitter=hub, authorization=auth)
     assert result.state == "AMBIGUOUS" and result.detail == "PROVIDER_UNAVAILABLE"
@@ -627,7 +627,7 @@ def test_partial_and_tampered_job_rows_are_refused(tmp_path):
     for call in (
         lambda: h.adapter.load_job(h.job_id),
         lambda: h.adapter.authoritative_dispatch(job_id=h.job_id),
-        lambda: HostDispatcher(adapter=h.adapter).dispatch(h.job_id),
+        lambda: HostDispatcher(synthetic_only=True, adapter=h.adapter).dispatch(h.job_id),
     ):
         with pytest.raises(ExternalAdmissionError) as exc:
             call()
@@ -975,7 +975,7 @@ def test_preflight_failure_is_not_sent_and_does_not_brick_the_job(tmp_path, monk
         calls.append(list(argv))
         return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
-    dispatcher = HostDispatcher(adapter=h.adapter)
+    dispatcher = HostDispatcher(synthetic_only=True, adapter=h.adapter)
     bad = AiyeExecSubmitter(exe="relative-aiye-exec", spool_dir=tmp_path / "s", runner=runner)
     blocked = dispatcher.dispatch(h.job_id, execute=True, submitter=bad,
                                   authorization=_auth(h.spec))
@@ -1060,7 +1060,7 @@ def test_restarted_host_ignores_forged_spool_and_marker_files(tmp_path):
     restarted = make_adapter(
         tmp_path, h.need, h.authority, store_name="store"  # same on-disk store, new instance
     )
-    dispatcher = HostDispatcher(adapter=restarted)
+    dispatcher = HostDispatcher(synthetic_only=True, adapter=restarted)
     with pytest.raises(ExternalAdmissionError) as exc:
         dispatcher.ingest(h.job_id, fetcher=SpoolHubFetcher(tmp_path / "hub_spool"), execute=True)
     assert _code(exc) == "HUB_RECEIPT_UNKNOWN_ISSUER"
@@ -1168,7 +1168,7 @@ def test_dispatch_dry_run_default_and_live_requires_exact_single_use_authorizati
 
     exe = str(tmp_path / "aiye-exec")
     submitter = AiyeExecSubmitter(exe=exe, spool_dir=tmp_path / "spool", runner=runner)
-    dispatcher = HostDispatcher(adapter=h.adapter)
+    dispatcher = HostDispatcher(synthetic_only=True, adapter=h.adapter)
 
     dry = dispatcher.dispatch(h.job_id, exe=exe, spool_dir=tmp_path / "spool")
     assert dry.state == "DRY_RUN" and dry.manifest["argv"] is None
@@ -1206,7 +1206,7 @@ def test_provider_failures_are_typed_and_ambiguous_submits_never_resubmit(tmp_pa
     # under test is the OSError→AMBIGUOUS classification, not the protocol gate.
     monkeypatch.setenv("SESHAT_PHASE_B_PROTOCOL_VERIFIED", "true")
     h = make_harness(tmp_path)
-    dispatcher = HostDispatcher(adapter=h.adapter)
+    dispatcher = HostDispatcher(synthetic_only=True, adapter=h.adapter)
 
     sub = SyntheticTransportFailure("SUBMIT_DISPATCH_AMBIGUOUS")
     # OSError from a (substituted) runner cannot prove that the child never started (fork() may
@@ -1230,7 +1230,7 @@ def test_provider_failures_are_typed_and_ambiguous_submits_never_resubmit(tmp_pa
     # dispatch already moved the first job into ``ATTEMPTED`` state and a same-job retry would
     # only verify ``SUBMISSION_STATE_AMBIGUOUS`` rather than the transport-classification branch.
     mapped_h = make_harness(tmp_path / "mapped")
-    dispatcher_m = HostDispatcher(adapter=mapped_h.adapter)
+    dispatcher_m = HostDispatcher(synthetic_only=True, adapter=mapped_h.adapter)
 
     mapped = SyntheticTransportFailure("SUBMIT_TRANSPORT_AMBIGUOUS")
     res = dispatcher_m.dispatch(
@@ -1251,7 +1251,7 @@ def test_provider_failures_are_typed_and_ambiguous_submits_never_resubmit(tmp_pa
     # so reusing the same job would not exercise the timeout→AMBIGUOUS path. A separate harness
     # isolates the timeout semantics.
     t = make_harness(tmp_path / "timeout")
-    dispatcher_t = HostDispatcher(adapter=t.adapter)
+    dispatcher_t = HostDispatcher(synthetic_only=True, adapter=t.adapter)
 
     amb = SyntheticTransportFailure("SUBMIT_TIMEOUT_AMBIGUOUS")
     res = dispatcher_t.dispatch(
@@ -1279,7 +1279,7 @@ def test_live_dispatch_fails_closed_when_caller_protocol_unverified(tmp_path):
 
     h = make_harness(tmp_path)
     exe = str(tmp_path / "aiye-exec")
-    dispatcher = HostDispatcher(adapter=h.adapter)
+    dispatcher = HostDispatcher(synthetic_only=True, adapter=h.adapter)
 
     def runner(argv, **kwargs):
         return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
@@ -1299,7 +1299,7 @@ def test_synthetic_nonzero_exit_stays_ambiguous_and_never_double_submits(tmp_pat
     calls: list[Any] = []
 
     sub = SyntheticTransportFailure("SUBMIT_EXIT_AMBIGUOUS")
-    dispatcher = HostDispatcher(adapter=h.adapter)
+    dispatcher = HostDispatcher(synthetic_only=True, adapter=h.adapter)
     res = dispatcher.dispatch(
         h.job_id, execute=True, submitter=sub, authorization=_auth(h.spec)
     )
@@ -1356,7 +1356,7 @@ def test_two_host_live_in_process_resume_with_mock_hub(tmp_path, kind, monkeypat
     monkeypatch.setenv("SESHAT_PHASE_B_PROTOCOL_VERIFIED", "true")
     h = make_harness(tmp_path, kind)
     hub = MockHub()
-    dispatcher = HostDispatcher(adapter=h.adapter)
+    dispatcher = HostDispatcher(synthetic_only=True, adapter=h.adapter)
     assert dispatcher.dispatch(h.job_id).state == "DRY_RUN" and hub.submitted == []
     sent = dispatcher.dispatch(
         h.job_id, execute=True, submitter=hub, authorization=_auth(h.spec)

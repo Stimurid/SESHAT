@@ -64,7 +64,7 @@ def test_oserror_after_attempt_is_ambiguous_and_cannot_retry(tmp_path):
         def submit(self, *, spec, prompt):
             raise OSError("child status unknown")
 
-    dispatcher = HostDispatcher(adapter=harness.adapter)
+    dispatcher = HostDispatcher(synthetic_only=True, adapter=harness.adapter)
     first = dispatcher.dispatch(harness.job_id, execute=True,
                                 submitter=StartedThenFailed(),
                                 authorization=make_auth(harness.spec))

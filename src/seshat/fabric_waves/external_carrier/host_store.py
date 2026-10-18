@@ -502,6 +502,85 @@ class HostJobStore:
     def submission_state(self, host_job_id: str) -> str:
         return self.derive_submission_state([item["kind"] for item in self.submissions(host_job_id)])
 
+    def claim_native_launch(self, host_job_id: str, *, spec_sha256: str) -> None:
+        """Consume the dispatcher claim once, durably, before touching the subprocess.
+
+        This second claim protects the transport API itself, including a fresh transport
+        instance after a lost response. There is deliberately no automatic reset API.
+        """
+        if self._key is None:
+            raise HostBoundaryError("NATIVE_STORE_KEY_REQUIRED")
+        with self._tx() as con:
+            self._validate_job_seal(con, host_job_id)
+            rows = con.execute(
+                "SELECT kind, detail_json, at, row_sha256, row_mac FROM submissions "
+                "WHERE host_job_id=? ORDER BY seq", (host_job_id,),
+            ).fetchall()
+            attempted = False
+            for kind, detail, at, digest, mac in rows:
+                self._check_seal("submissions", {
+                    "host_job_id": host_job_id, "kind": kind, "detail_json": detail,
+                }, at, digest, mac)
+                if kind in {"NATIVE_LAUNCH_CLAIMED", "SUBMIT_ACKED", "SUBMIT_AMBIGUOUS"}:
+                    raise HostBoundaryError("NATIVE_LAUNCH_ALREADY_CLAIMED")
+                if kind == "SUBMIT_ATTEMPTED":
+                    attempted = self._load_json(detail, expect=dict).get(
+                        "spec_sha256"
+                    ) == spec_sha256
+            if not attempted:
+                raise HostBoundaryError("NATIVE_DISPATCH_CLAIM_REQUIRED")
+            at = utc_now_iso()
+            detail = canonical_json({"spec_sha256": spec_sha256})
+            values = {"host_job_id": host_job_id, "kind": "NATIVE_LAUNCH_CLAIMED",
+                      "detail_json": detail}
+            digest, mac = self._seal("submissions", values, at)
+            con.execute(
+                "INSERT INTO submissions (host_job_id, kind, detail_json, at, row_sha256, row_mac) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (host_job_id, "NATIVE_LAUNCH_CLAIMED", detail, at, digest, mac),
+            )
+
+    def bind_native(self, host_job_id: str, admission: dict[str, Any]) -> None:
+        """Persist independently verified identity without rewriting the original spec.
+
+        BEGIN IMMEDIATE serializes competing binding attempts across processes. The
+        same native job cannot satisfy two original jobs. No keyless native history.
+        """
+        if self._key is None:
+            raise HostBoundaryError("NATIVE_STORE_KEY_REQUIRED")
+        detail = canonical_json(admission)
+        with self._tx() as con:
+            self._validate_job_seal(con, host_job_id)
+            rows = con.execute(
+                "SELECT host_job_id, detail_json, at, row_sha256, row_mac "
+                "FROM submissions WHERE kind='NATIVE_BOUND'"
+            ).fetchall()
+            for job_id, previous, at, digest, mac in rows:
+                self._check_seal("submissions", {
+                    "host_job_id": job_id, "kind": "NATIVE_BOUND", "detail_json": previous,
+                }, at, digest, mac)
+                parsed = self._load_json(previous, expect=dict)
+                if job_id == host_job_id:
+                    if previous != detail:
+                        raise HostBoundaryError("NATIVE_BINDING_CONFLICT")
+                    return
+                if parsed.get("native_job_id") == admission.get("native_job_id"):
+                    raise HostBoundaryError("NATIVE_JOB_ALREADY_BOUND")
+            at = utc_now_iso()
+            values = {"host_job_id": host_job_id, "kind": "NATIVE_BOUND", "detail_json": detail}
+            digest, mac = self._seal("submissions", values, at)
+            con.execute(
+                "INSERT INTO submissions (host_job_id, kind, detail_json, at, row_sha256, row_mac) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (host_job_id, "NATIVE_BOUND", detail, at, digest, mac),
+            )
+
+    def native_binding(self, host_job_id: str) -> dict[str, Any] | None:
+        rows = [r["detail"] for r in self.submissions(host_job_id) if r["kind"] == "NATIVE_BOUND"]
+        if len(rows) > 1:
+            raise HostBoundaryError("NATIVE_BINDING_CONFLICT")
+        return rows[0] if rows else None
+
     def begin_submission(
         self,
         host_job_id: str,

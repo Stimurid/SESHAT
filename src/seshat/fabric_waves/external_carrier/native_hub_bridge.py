@@ -1,42 +1,17 @@
-"""Reviewable OUTBOUND half of a real AORUS Hub issuer bridge. NOT WIRED IN.
+"""Host-only native transport. Direct submit is denied without a durable dispatcher claim.
 
-Status (2026-10-19): this module is a standalone, independently unit-tested
-implementation of the "trusted official Hub caller" vertical (G1 requirement 2 in
-docs/G1_HUB_BRIDGE_VERTICAL_20261019.md). It is deliberately **not** imported by
-``host_cli.py`` or ``host_dispatcher.HostDispatcher``. Two independent gates already
-refuse any live native submission today:
-
-* ``host_dispatcher.AiyeExecSubmitter.submit`` unconditionally raises
-  ``PROTOCOL_UNVERIFIED``.
-* ``host_dispatcher.HostDispatcher.dispatch`` refuses *any* ``isinstance(submitter,
-  AiyeExecSubmitter)`` before calling ``.submit`` at all (see
-  ``test_live_dispatch_fails_closed_when_caller_protocol_unverified``), independent of
-  environment variables or constructor arguments.
-
-This module does not touch either gate and is not reachable from any existing code
-path. The exact ``aiye-exec submit`` flag set implemented below (``--agent auto --kind
-reasoning --mode audit|code --role <analyze|classify> --ticket ... [--decision-id ...]
---prompt-file ... --max-seconds N --client ... --project-target ...``) was supplied
-directly by the task owner in the G1 handoff; it was **not** independently
-re-confirmed against ``CALLER_PROTOCOL.md`` or a live ``aiye-exec submit --help`` in
-this authoring session, because that file lives outside this worktree's permitted
-read scope (see docs/G1_HUB_BRIDGE_VERTICAL_20261019.md, "What was NOT verified").
-A coordinator with independent access to CALLER_PROTOCOL.md must confirm the flag set
-before anyone wires this module into ``host_cli.py``.
-
-This module also does not implement the INBOUND/verification half (reading a real
-``spec.json`` / ``status.json`` / ``receipt.json`` / ``stdout.log`` under the host-owned
-jobs root and mapping it onto ``HubJobRecord``): that mapping is security-sensitive and
-guessing its field names would be worse than leaving it undone. See the open-questions
-doc for what a future ``NativeHubFetcher`` needs.
+The CLI response is an untrusted locator, never an attestation. NativeHubBridge binds
+it through an independently provisioned host authority before dispatcher ACK/ingest.
+No host authority, signing key or live authorization is provisioned by this module.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -51,6 +26,7 @@ from seshat.fabric_waves.external_carrier.host_security import (
     sha256_hex,
 )
 from seshat.fabric_waves.external_carrier.hub_protocol import HubJobSpec, HubTransportError
+from seshat.fabric_waves.external_carrier.host_store import HostJobStore
 
 # Fixed by the owner-supplied contract; never taken from caller input so no argument
 # can select a different agent or job kind.
@@ -60,7 +36,33 @@ NATIVE_ALLOWED_MODES: frozenset[str] = frozenset({"audit", "code"})
 # ``--mode read-only`` is explicitly invalid against the real CLI per the owner
 # handoff; this module never emits it (``NATIVE_ALLOWED_MODES`` excludes it) and the
 # existing ``HubJobSpec.mode`` sentinel ("read-only") is never forwarded as a flag.
-_NATIVE_JOB_ID_PATTERN = re.compile(r"^jx-[0-9a-f]{6,40}$")
+_NATIVE_JOB_ID_PATTERN = re.compile(r"^jx-[0-9a-f]{12}$")
+
+
+@dataclass(frozen=True)
+class NativePythonLauncher:
+    """Host-pinned official Python and executor.py; never cmd.exe or shell text.
+
+    Pins must come from the trusted host installation, not a request/model response.
+    Dependencies and directory ACLs remain the host publisher's responsibility.
+    """
+
+    python: Path
+    executor: Path
+    python_sha256: str
+    executor_sha256: str
+
+    def prefix(self) -> list[str]:
+        for path, digest in ((self.python, self.python_sha256),
+                             (self.executor, self.executor_sha256)):
+            if (not path.is_absolute() or path.is_symlink() or ".." in path.parts
+                    or not path.is_file() or sha256_hex(path.read_bytes()) != digest):
+                raise HostBoundaryError("NATIVE_LAUNCHER_PIN_MISMATCH")
+        if self.python.name.lower() not in {"python", "python3", "python.exe"}:
+            raise HostBoundaryError("NATIVE_LAUNCHER_INVALID")
+        if self.executor.name != "executor.py":
+            raise HostBoundaryError("NATIVE_LAUNCHER_INVALID")
+        return [str(self.python), "-E", "-s", str(self.executor)]
 
 
 @dataclass(frozen=True)
@@ -157,7 +159,7 @@ def _parse_native_job_id(stdout: bytes) -> str | None:
         return None
     if not isinstance(document, dict):
         return None
-    candidate = document.get("job_id", document.get("jx_id"))
+    candidate = document.get("job_id")
     if not isinstance(candidate, str) or not _NATIVE_JOB_ID_PATTERN.fullmatch(candidate):
         return None
     return candidate
@@ -165,7 +167,7 @@ def _parse_native_job_id(stdout: bytes) -> str | None:
 
 @dataclass
 class NativeAiyeExecSubmitter:
-    """Real ``aiye-exec submit`` caller. NOT wired into HostDispatcher -- see module docstring.
+    """Claimed native transport, used only inside the integrated NativeHubBridge.
 
     Every outcome other than a clean exit-0 with a parseable ``jx-...`` id in stdout
     raises ``HubTransportError``/``HostBoundaryError`` and leaves ``last_result`` unset,
@@ -183,6 +185,9 @@ class NativeAiyeExecSubmitter:
     decision_id: str | None = None
     runner: Callable[..., Any] = subprocess.run
     timeout_margin_seconds: int = 30
+    store: HostJobStore | None = None
+    launcher: NativePythonLauncher | None = None
+    environ: Mapping[str, str] | None = None
     last_result: NativeSubmitResult | None = field(default=None, init=False, repr=False)
 
     def submit(self, *, spec: HubJobSpec, prompt: bytes) -> None:
@@ -190,12 +195,21 @@ class NativeAiyeExecSubmitter:
             text = prompt.decode("utf-8")
         except UnicodeDecodeError:
             raise HostBoundaryError("NATIVE_SUBMIT_PROMPT_NOT_UTF8") from None
-        scan_text(text, direction="OUTBOUND")
+        scan_text(text, direction="OUTBOUND", environ=(
+            self.environ if self.environ is not None else os.environ
+        ))
+        self.last_result = None
+        if self.store is None or self.launcher is None:
+            raise HostBoundaryError("NATIVE_DISPATCH_CLAIM_REQUIRED")
+        if sha256_hex(prompt) != spec.prompt_sha256:
+            raise HostBoundaryError("NATIVE_PROMPT_BINDING_MISMATCH")
+        if self.mode != "audit":
+            raise HostBoundaryError("NATIVE_SUBMIT_MODE_INVALID")
+        prefix = self.launcher.prefix()
         host_job_id = require_safe_token(
             spec.host_job_id, code="NATIVE_SUBMIT_HOST_JOB_ID_INVALID"
         )
         prompt_path = Path(self.spool_dir) / f"{host_job_id}.prompt.txt"
-        atomic_write_bytes(prompt_path, prompt)
         argv = build_native_submit_argv(
             exe=self.exe,
             spec=spec,
@@ -206,6 +220,11 @@ class NativeAiyeExecSubmitter:
             max_seconds=spec.max_time_seconds,
             decision_id=self.decision_id,
         )
+        # Validate all local inputs before consuming the claim. Once consumed, any
+        # failure (including before spawn) requires host recovery, never another send.
+        self.store.claim_native_launch(spec.host_job_id, spec_sha256=spec.spec_sha256())
+        atomic_write_bytes(prompt_path, prompt)
+        argv = prefix + argv[1:]
         try:
             completed = self.runner(
                 argv,
@@ -242,3 +261,67 @@ __all__ = [
     "NativeSubmitResult",
     "build_native_submit_argv",
 ]
+
+
+class NativeHubBridge:
+    """Dispatcher transport with host-only authority and read-only ghost recovery.
+
+    Construct only in a trusted host bootstrap after review. The naked transport
+    is never accepted by HostDispatcher. A launch certificate must be independently
+    issued for the exact authorization and installation pins before any paid attempt.
+    """
+
+    def __init__(self, *, adapter, transport: NativeAiyeExecSubmitter, authority) -> None:
+        self.adapter = adapter
+        self.transport = transport
+        self.authority = authority
+        if transport.store is not adapter.store or adapter.native_authority is not authority:
+            raise HostBoundaryError("NATIVE_BRIDGE_HOST_MISMATCH")
+
+    def preflight(self, spec: HubJobSpec, authorization: Mapping[str, Any]) -> None:
+        from seshat.fabric_waves.external_carrier.contracts import material_hash
+
+        launcher = self.transport.launcher
+        if launcher is None:
+            raise HostBoundaryError("NATIVE_LAUNCHER_REQUIRED")
+        launcher.prefix()
+        cert = self.authority._certificate(spec, "launch")
+        if (cert.get("authorization_sha256") != material_hash(dict(authorization))
+                or cert.get("python_sha256") != launcher.python_sha256
+                or cert.get("executor_sha256") != launcher.executor_sha256
+                or cert.get("client") != self.transport.client
+                or cert.get("project_target") != self.transport.project_target
+                or cert.get("decision_id") != self.transport.decision_id):
+            raise HostBoundaryError("NATIVE_LAUNCH_NOT_AUTHORIZED")
+
+    def submit(self, *, spec: HubJobSpec, prompt: bytes) -> None:
+        self.transport.submit(spec=spec, prompt=prompt)
+        result = self.transport.last_result
+        if result is None:
+            raise HubTransportError("SUBMIT_RESPONSE_UNPARSEABLE_AMBIGUOUS")
+        self.recover(spec.host_job_id, native_job_id=result.native_job_id)
+
+    def recover(self, host_job_id: str, *, native_job_id: str | None = None) -> dict:
+        """No subprocess, no retry: find only the host-signed original for this claim."""
+        job = self.adapter.load_job(host_job_id)
+        spec = self.adapter._spec(job)
+        rows = self.adapter.store.submissions(host_job_id)
+        auth = [r for r in rows if r["kind"] == "LIVE_AUTH_CONSUMED"]
+        attempts = [r for r in rows if r["kind"] == "SUBMIT_ATTEMPTED"]
+        launches = [r for r in rows if r["kind"] == "NATIVE_LAUNCH_CLAIMED"]
+        if len(auth) != 1 or len(attempts) != 1 or len(launches) != 1:
+            raise HostBoundaryError("NATIVE_DISPATCH_CLAIM_REQUIRED")
+        admission = self.authority.admission(
+            spec, nonce=auth[0]["detail"]["nonce"], attempted_at=attempts[0]["at"],
+            native_job_id=native_job_id,
+        )
+        self.adapter.store.bind_native(host_job_id, admission)
+        return admission
+
+    def fetch(self, *, hub_job_id: str):
+        # Never look up by a caller-controlled filesystem path or CLI job_path.
+        for job_id in self.adapter.store.list_job_ids():
+            binding = self.adapter.store.native_binding(job_id)
+            if binding is not None and binding["native_job_id"] == hub_job_id:
+                return self.adapter.native_original(job_id)
+        raise HostBoundaryError("NATIVE_JOB_NOT_BOUND")

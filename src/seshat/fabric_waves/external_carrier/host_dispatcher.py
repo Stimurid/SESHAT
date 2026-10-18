@@ -1,9 +1,7 @@
-"""HOST-ONLY dispatcher and result-ingest logic; native Hub submission is hard denied.
+"""Host dispatcher: native execution requires the integrated, host-attested bridge.
 
-The normalized job spec assumes a Hub ID before submit, while the official Hub issues one
-after submit. Until an authenticated bridge binds both IDs and original receipts, no
-environment variable or caller option may turn this module into a chargeable submitter.
-Synthetic submitters retain the durable replay and concurrency test surface.
+Unconfigured production callers fail closed. Synthetic transport injection is an
+explicit test-only constructor option, never exposed through CLI or environment.
 """
 
 from __future__ import annotations
@@ -244,9 +242,11 @@ class HostDispatcher:
         *,
         adapter: TrustedHubHostAdapter,
         clock: Callable[[], str] = utc_now_iso,
+        synthetic_only: bool = False,
     ) -> None:
         self._adapter = adapter
         self._clock = clock
+        self._synthetic_only = synthetic_only
 
     def manifest(self, host_job_id: str, *, exe: str | None, spool_dir: Path | None) -> dict[str, Any]:
         job = self._adapter.load_job(host_job_id)
@@ -290,7 +290,9 @@ class HostDispatcher:
         spool_dir: Path | None = None,
     ) -> DispatchResult:
         job = self._adapter.load_job(host_job_id)
-        spec = self._adapter.spec_for(job)
+        # Authorization always binds the immutable PRE-submission spec, including
+        # when another process has bound the native ID but has not yet written ACK.
+        spec = self._adapter._spec(job)
         # Fresh outbound gate in BOTH modes: dry run reports exactly what live would send.
         self._adapter.recheck_outbound(job)
         manifest = self.manifest(host_job_id, exe=exe, spool_dir=spool_dir)
@@ -303,13 +305,26 @@ class HostDispatcher:
         store = self._adapter.store
         if store.submission_state(host_job_id) == "ACKED":
             return DispatchResult(
-                "ALREADY_SUBMITTED", host_job_id, spec.hub_job_id, "IDEMPOTENT", manifest
+                "ALREADY_SUBMITTED", host_job_id,
+                self._adapter.spec_for(job).hub_job_id, "IDEMPOTENT", manifest
             )
         nonce = verify_live_authorization(authorization, spec=spec, now_iso=self._clock())
-        if isinstance(submitter, AiyeExecSubmitter):
+        from seshat.fabric_waves.external_carrier.native_hub_bridge import (
+            NativeAiyeExecSubmitter, NativeHubBridge,
+        )
+
+        # Production is an allow-list of the integrated bridge, never a deny-list
+        # of known process callers. Test transports require an explicit test mode.
+        native = type(submitter) is NativeHubBridge
+        if (isinstance(submitter, (AiyeExecSubmitter, NativeAiyeExecSubmitter))
+                or (not native and not self._synthetic_only)):
             return DispatchResult(
                 "BLOCKED_EXTERNAL", host_job_id, spec.hub_job_id, "PROTOCOL_UNVERIFIED", manifest
             )
+        if native:
+            if self._synthetic_only or submitter.adapter is not self._adapter:
+                raise HostBoundaryError("NATIVE_BRIDGE_HOST_MISMATCH")
+            submitter.preflight(spec, authorization)
         try:
             # One IMMEDIATE transaction: racing dispatchers cannot both reach the Hub.
             store.begin_submission(
@@ -340,8 +355,9 @@ class HostDispatcher:
             # claim has been recorded, all such failures prohibit another paid attempt.
             store.record_submission(host_job_id, "SUBMIT_AMBIGUOUS", {"code": exc.code})
             return DispatchResult("AMBIGUOUS", host_job_id, spec.hub_job_id, exc.code, manifest)
-        store.record_submission(host_job_id, "SUBMIT_ACKED", {"hub_job_id": spec.hub_job_id})
-        return DispatchResult("SUBMITTED", host_job_id, spec.hub_job_id, "ACKED", manifest)
+        verified_id = self._adapter.spec_for(self._adapter.load_job(host_job_id)).hub_job_id
+        store.record_submission(host_job_id, "SUBMIT_ACKED", {"hub_job_id": verified_id})
+        return DispatchResult("SUBMITTED", host_job_id, verified_id, "ACKED", manifest)
 
     def ingest(
         self,

@@ -263,6 +263,7 @@ def run(
     environ: Mapping[str, str] | None = None,
     runner: Callable[..., Any] = subprocess.run,
     factories: Mapping[str, Callable[[], WaveEngine]] | None = None,
+    native_bridge_factory: Callable[[TrustedHubHostAdapter], Any] | None = None,
 ) -> int:
     args = _parser().parse_args(argv)
     env = environ if environ is not None else os.environ
@@ -280,6 +281,9 @@ def run(
     adapter, config = build_adapter(host_dir, environ=env, factories=factories)
     dispatcher = HostDispatcher(adapter=adapter)
     spool = host_dir / "hub_spool"
+    # Only an independently reviewed host bootstrap may provide this factory.
+    # No JSON flag, environment variable or model output selects/loads Python code.
+    native_bridge = native_bridge_factory(adapter) if native_bridge_factory else None
 
     if args.command == "prepare":
         origin = OriginManifest.from_replay(_read_json(host_dir, args.origin))
@@ -297,10 +301,12 @@ def run(
         submitter = None
         exe = config.get("aiye_exec_path")
         if args.execute:
-            if not args.authorization or not exe:
+            if not args.authorization or (not exe and native_bridge is None):
                 raise HostBoundaryError("LIVE_DISPATCH_NOT_AUTHORIZED")
             authorization = _read_json(host_dir, args.authorization)
-            submitter = AiyeExecSubmitter(exe=str(exe), spool_dir=spool, runner=runner)
+            submitter = native_bridge or AiyeExecSubmitter(
+                exe=str(exe), spool_dir=spool, runner=runner
+            )
         result = dispatcher.dispatch(
             args.host_job_id,
             execute=bool(args.execute),
@@ -322,8 +328,11 @@ def run(
         return EXIT_BLOCKED if result.state in {"BLOCKED_EXTERNAL", "AMBIGUOUS"} else EXIT_OK
 
     if args.command == "ingest":
+        if native_bridge is not None and args.execute:
+            native_bridge.recover(args.host_job_id)
         outcome = dispatcher.ingest(
-            args.host_job_id, fetcher=SpoolHubFetcher(spool), execute=bool(args.execute)
+            args.host_job_id, fetcher=native_bridge or SpoolHubFetcher(spool),
+            execute=bool(args.execute)
         )
         _emit(outcome)
         return EXIT_WAITING if outcome["state"] == "WAITING" else EXIT_OK

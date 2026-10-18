@@ -136,6 +136,7 @@ class TrustedHubHostAdapter:
         allowed_host_scopes: frozenset[str],
         limits: HostLimits | None = None,
         environ: Mapping[str, str] | None = None,
+        native_authority=None,
     ) -> None:
         if not allowed_host_scopes:
             raise HostBoundaryError("HOST_SCOPES_REQUIRED")
@@ -147,6 +148,7 @@ class TrustedHubHostAdapter:
         self._scopes = frozenset(allowed_host_scopes)
         self.limits = limits or HostLimits()
         self._environ = environ
+        self.native_authority = native_authority
 
     # -- helpers -----------------------------------------------------------------------
 
@@ -181,7 +183,43 @@ class TrustedHubHostAdapter:
         return job
 
     def spec_for(self, job: JobRecord) -> HubJobSpec:
-        return self._spec(job)
+        spec = self._spec(job)
+        binding = self.store.native_binding(job.host_job_id)
+        if binding is not None:
+            if self.native_authority is None:
+                raise HostBoundaryError("NATIVE_AUTHORITY_REQUIRED")
+            spec = spec.model_copy(update={"hub_job_id": binding["native_job_id"]})
+        return spec
+
+    def native_original(self, host_job_id: str) -> tuple[HubJobRecord, bytes]:
+        job = self.load_job(host_job_id)
+        binding = self.store.native_binding(host_job_id)
+        if self.native_authority is None or binding is None:
+            raise HostBoundaryError("HUB_TRANSPORT_UNATTESTED")
+        rows = self.store.submissions(host_job_id)
+        auth = [r for r in rows if r["kind"] == "LIVE_AUTH_CONSUMED"]
+        attempts = [r for r in rows if r["kind"] == "SUBMIT_ATTEMPTED"]
+        if len(auth) != 1 or len(attempts) != 1:
+            raise HostBoundaryError("NATIVE_DISPATCH_CLAIM_REQUIRED")
+        original_spec = self._spec(job)
+        fresh = self.native_authority.admission(
+            original_spec, nonce=auth[0]["detail"]["nonce"], attempted_at=attempts[0]["at"],
+            native_job_id=binding["native_job_id"],
+        )
+        if fresh != binding:
+            raise HostBoundaryError("NATIVE_BINDING_CONFLICT")
+        return self.native_authority.terminal(original_spec, fresh, self.registry)
+
+    def _verify_native_if_bound(self, job, record, stdout) -> None:
+        binding = self.store.native_binding(job.host_job_id)
+        attempted = any(r["kind"] == "NATIVE_LAUNCH_CLAIMED"
+                        for r in self.store.submissions(job.host_job_id))
+        if attempted and binding is None:
+            raise HostBoundaryError("NATIVE_JOB_NOT_BOUND")
+        if binding is not None:
+            original, data = self.native_original(job.host_job_id)
+            if original != record or data != stdout:
+                raise HostBoundaryError("NATIVE_TERMINAL_BINDING_MISMATCH")
 
     # -- ExecutorPort -----------------------------------------------------------------
 
@@ -321,7 +359,8 @@ class TrustedHubHostAdapter:
 
         job = self.load_job(host_job_id)
         request = job.request()
-        spec = self._spec(job)
+        spec = self.spec_for(job)
+        self._verify_native_if_bound(job, record, stdout)
         self.registry.verify_record(record=record, spec=spec, stdout=stdout)
         if record.status in NON_TERMINAL_STATUSES:
             return IngestOutcome("WAITING", record.status.value, "", None, None, False)
@@ -372,7 +411,7 @@ class TrustedHubHostAdapter:
         record: HubJobRecord,
         terminal: TerminalRecord,
     ) -> HostJobEvidence:
-        spec = self._spec(job)
+        spec = self.spec_for(job)
         return HostJobEvidence(
             job_id=job.host_job_id,
             host_scope=request.worker_ref.host_scope,
@@ -400,10 +439,13 @@ class TrustedHubHostAdapter:
     def assert_hub_attested_for_export(self, host_job_id: str) -> None:
         """Require an independently verified Hub chain before labelling transport as Hub-attested."""
 
-        # Normalized spool records and local ACK rows can be minted by an operator. Until a
-        # native Hub-issued ID and immutable issuer ledger are verified against the original
-        # host request, neither the CLI nor the library may claim HUB_SPOOL_RECORD.
-        raise HostBoundaryError("HUB_TRANSPORT_UNATTESTED")
+        # Normalized spool records and local ACK rows alone are never sufficient.
+        # Revalidate the independently attested originals even for library exports.
+        record, stdout = self.native_original(host_job_id)
+        terminal = self.store.get_terminal(host_job_id)
+        if (terminal is None or terminal.hub_record != record.model_dump(mode="json")
+                or terminal.stdout_bytes != stdout):
+            raise HostBoundaryError("HUB_TRANSPORT_UNATTESTED")
 
     def build_evidence_return(self, host_job_id: str) -> AgentEvidenceReturn:
         """Deterministically rebuild the E5 return for a COMPLETED terminal."""
@@ -416,6 +458,7 @@ class TrustedHubHostAdapter:
         if terminal.status != "COMPLETED" or terminal.payload is None:
             raise HostBoundaryError("HOST_JOB_NOT_COMPLETED")
         record = parse_hub_record(terminal.hub_record)
+        self._verify_native_if_bound(job, record, terminal.stdout_bytes)
         host_job = self._host_job_evidence(
             job=job, request=request, record=record, terminal=terminal
         )
@@ -521,7 +564,8 @@ class TrustedHubHostAdapter:
         record = parse_hub_record(terminal.hub_record)
         if record.receipt_sha256() != terminal.receipt_sha256:
             raise HostBoundaryError("HOST_STORE_ROW_TAMPERED")
-        spec = self._spec(job)
+        spec = self.spec_for(job)
+        self._verify_native_if_bound(job, record, terminal.stdout_bytes)
         self.registry.verify_record(record=record, spec=spec, stdout=terminal.stdout_bytes)
         payload = parse_model_output(
             terminal.stdout_bytes, need=request, limits=self.limits, environ=self._env()
