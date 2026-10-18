@@ -183,11 +183,23 @@ def test_hidden_denied_mutation_does_not_change_public_batch_bytes(tmp_path):
     root = tmp_path / "batch"
     run_batch(root, manifest, runtime, caller_id="demo", rights_scope="synthetic-public")
     baseline = (root / "items" / "r03-corpus" / "report.json").read_bytes()
-    source, rights, temporal = synthetic_packages(host)
+    # Use the ACTUALLY INSTALLED fixture, not synthetic_packages() placeholders:
+    # install_fixture() rewrites each visible carrier hash to its source-page bytes.
+    source = json.loads((scratch / "source.json").read_text(encoding="utf-8"))
+    rights = json.loads((scratch / "rights.json").read_text(encoding="utf-8"))
+    temporal = json.loads((scratch / "temporal.json").read_text(encoding="utf-8"))
+    visible_before = {
+        row["research_object"]["object_id"]: tuple(
+            carrier["content_sha256"] for carrier in row["carriers"])
+        for row in source["records"]
+    }
     hidden = {"research_object": {"object_id": "DENIED-ID"}, "fields": None, "carriers": None}
-    source = deepcopy(source)
     source["records"] = [hidden, *source["records"]]
-    rights = deepcopy(rights)
+    assert {
+        row["research_object"]["object_id"]: tuple(
+            carrier["content_sha256"] for carrier in row["carriers"])
+        for row in source["records"] if row["research_object"]["object_id"] != "DENIED-ID"
+    } == visible_before
     rights["epoch"] = "PRIVATE-EPOCH"
     from seshat.report_demo import pin_package
     from seshat.corpus_host import HostConfiguration
