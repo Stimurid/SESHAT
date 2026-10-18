@@ -12,7 +12,7 @@ import pytest
 from seshat.fabric_waves.external_carrier.host_security import HostBoundaryError, sha256_hex
 from seshat.fabric_waves.external_carrier.hub_protocol import HubTransportError
 from seshat.fabric_waves.external_carrier.native_hub_bridge import (
-    NATIVE_SUBMIT_AGENT,
+    NATIVE_SUBMIT_AGENTS,
     NATIVE_SUBMIT_KIND,
     NativeAiyeExecSubmitter,
     NativePythonLauncher,
@@ -55,8 +55,12 @@ def test_argv_matches_owner_contract_and_omits_banned_flags(tmp_path):
     )
     assert argv[0] == str(_exe(tmp_path))
     assert argv[1] == "submit"
-    pairs = dict(zip(argv[2::2], argv[3::2], strict=True))
-    assert pairs["--agent"] == NATIVE_SUBMIT_AGENT == "auto"
+    assert "--sensitive" in argv
+    paired = [token for token in argv[2:] if token != "--sensitive"]
+    pairs = dict(zip(paired[::2], paired[1::2], strict=True))
+    assert pairs["--agent"] == h.spec.provider == "codex2"
+    assert pairs["--agent"] in NATIVE_SUBMIT_AGENTS
+    assert pairs["--model"] == h.spec.model == "gpt-6-sol"
     assert pairs["--kind"] == NATIVE_SUBMIT_KIND == "reasoning"
     assert pairs["--mode"] == "audit"
     assert pairs["--role"] == h.spec.role == "analyze"
@@ -91,6 +95,28 @@ def test_decision_id_included_only_when_given(tmp_path):
     )
     i = argv.index("--decision-id")
     assert argv[i + 1] == "rec-0001"
+
+
+@pytest.mark.parametrize("provider,model,code", [
+    ("auto", "gpt-6-sol", "NATIVE_SUBMIT_PROVIDER_UNSUPPORTED"),
+    ("mock-provider", "gpt-6-sol", "NATIVE_SUBMIT_PROVIDER_UNSUPPORTED"),
+    ("codex2", "", "NATIVE_SUBMIT_MODEL_INVALID"),
+    ("codex2", "--other", "NATIVE_SUBMIT_MODEL_INVALID"),
+])
+def test_unpinned_route_refused_before_transport_or_claim(tmp_path, provider, model, code):
+    h = make_harness(tmp_path, mac=True)
+    spec = h.spec.model_copy(update={"provider": provider, "model": model})
+    calls = []
+    submitter = NativeAiyeExecSubmitter(
+        exe=str(_exe(tmp_path)), spool_dir=tmp_path / "spool", mode="audit",
+        client="SESHAT_CARPET", project_target="SESHAT", store=_claim(h),
+        launcher=_launcher(tmp_path), runner=lambda *a, **k: calls.append(a), environ={},
+    )
+    with pytest.raises(HostBoundaryError, match=code):
+        submitter.submit(spec=spec, prompt=h.job.prompt_bytes)
+    assert calls == []
+    assert not any(r["kind"] == "NATIVE_LAUNCH_CLAIMED"
+                   for r in h.adapter.store.submissions(h.job_id))
 
 
 def test_read_only_and_unknown_modes_refused(tmp_path):

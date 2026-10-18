@@ -10,16 +10,19 @@ import pytest
 
 from seshat.fabric_waves.external_carrier.contracts import material_hash, utc_now_iso
 from seshat.fabric_waves.external_carrier.host_dispatcher import HostDispatcher
+from seshat.fabric_waves.external_carrier.host_envelope import FabricStoreSourceAuthority
 from seshat.fabric_waves.external_carrier.host_security import HostBoundaryError, sha256_hex
 from seshat.fabric_waves.external_carrier.host_store import HostJobStore
 from seshat.fabric_waves.external_carrier.native_hub_authority import NativeHubAuthority
 from seshat.fabric_waves.external_carrier.native_hub_bridge import (
     NativeAiyeExecSubmitter, NativeHubBridge,
 )
-from seshat.fabric_waves.external_carrier.phase_b import resume_by_replay
+from seshat.fabric_waves.external_carrier.phase_b import (
+    PHASE_B_REPLAY_VERIFIED, OriginManifest, resume_by_replay, start_waiting_run,
+)
 
 from .phase_b_harness import (
-    HUB_INSTANCE, good_stdout, make_auth, make_harness, make_record,
+    HUB_INSTANCE, good_stdout, make_adapter, make_auth, make_harness, make_record,
 )
 from .test_native_hub_bridge import _launcher
 
@@ -74,6 +77,8 @@ class FixtureHost:
         assert argv[:3] == [str(self.transport.launcher.python), "-E", "-s"]
         assert "--job-id" not in argv
         h = self.h
+        assert argv[argv.index("--agent") + 1] == h.spec.provider
+        assert argv[argv.index("--model") + 1] == h.spec.model
         now = utc_now_iso()
         folder = self.jobs / JID
         folder.mkdir(parents=True)
@@ -148,6 +153,64 @@ def test_ghost_recovery_is_read_only_and_survives_new_transport(tmp_path):
     assert result["state"] == "COMPLETED" and f.calls == 1
 
 
+@pytest.mark.parametrize("engine_kind", ["campus", "meteorology"])
+def test_native_cold_restart_rebuilds_entire_chain_and_original_wait(tmp_path, engine_kind):
+    f = FixtureHost(tmp_path, engine_kind, outcome="ghost")
+    original_request = f.h.job.request_bytes
+    original_wait_wave = f.h.need.wave_id
+    original_wait_activation = f.h.waiting.engine.ledger.activations_for_run(
+        f.h.origin.run_id
+    )
+    assert f.dispatch().state == "AMBIGUOUS"
+    assert f.calls == 1
+
+    # Process boundary: reconstruct every consumer from durable replay material.
+    # The original fixture's adapter, authority, bridge and WaveEngine are unused.
+    persisted = HostJobStore(tmp_path / "store", integrity_key=f.h.mac_key).get_job(f.h.job_id)
+    origin = OriginManifest.from_replay(persisted.replay)
+    waiting = start_waiting_run(origin)
+    assert waiting.need.wave_id == original_wait_wave
+    assert waiting.need.request_id == f.h.need.request_id
+    authority = NativeHubAuthority(
+        tmp_path / "originals", tmp_path / "issuer", f.h.mac_key,
+        HUB_INSTANCE, "SESHAT_CARPET", "SESHAT",
+    )
+    adapter = make_adapter(
+        tmp_path, waiting.need, FabricStoreSourceAuthority(waiting.engine.carrier_store),
+        mac=True,
+    )
+    adapter.native_authority = authority
+    calls = []
+    transport = NativeAiyeExecSubmitter(
+        exe=str(tmp_path / "aiye-exec"), spool_dir=tmp_path / "prompts-after-restart",
+        mode="audit", client="SESHAT_CARPET", project_target="SESHAT",
+        store=adapter.store, launcher=_launcher(tmp_path),
+        runner=lambda *a, **k: calls.append(a), environ={},
+    )
+    bridge = NativeHubBridge(adapter=adapter, transport=transport, authority=authority)
+    assert adapter.load_job(f.h.job_id).request_bytes == original_request
+    assert bridge.recover(f.h.job_id)["native_job_id"] == JID
+    with pytest.raises(HostBoundaryError, match="NATIVE_LAUNCH_ALREADY_CLAIMED"):
+        adapter.store.claim_native_launch(f.h.job_id, spec_sha256=f.h.spec.spec_sha256())
+    result = HostDispatcher(adapter=adapter).ingest(
+        f.h.job_id, fetcher=bridge, execute=True,
+    )
+    assert result["state"] == "COMPLETED"
+    adapter.assert_hub_attested_for_export(f.h.job_id)
+    resumed = resume_by_replay(adapter=adapter, host_job_id=f.h.job_id)
+    assert resumed.mode == PHASE_B_REPLAY_VERIFIED
+    assert resumed.need.request_id == waiting.need.request_id
+    assert resumed.facts["wait_wave_id"] == original_wait_wave
+    assert resumed.facts["wait_activation_id"] in {
+        a.activation_id for a in original_wait_activation
+    }
+    assert len(resumed.facts["downstream_fired_threads"]) == 2
+    assert resumed.facts["proposal_epistemic_level"] == "E5"
+    assert sum(r["kind"] == "SUBMIT_ATTEMPTED"
+               for r in adapter.store.submissions(f.h.job_id)) == 1
+    assert f.calls == 1 and calls == []
+
+
 def test_raw_native_and_unknown_submitters_fail_closed(tmp_path):
     f = FixtureHost(tmp_path)
     for submitter in (f.transport, SimpleNamespace(submit=lambda **kw: pytest.fail("called"))):
@@ -164,6 +227,15 @@ def test_direct_native_requires_durable_claim(tmp_path):
     with pytest.raises(HostBoundaryError, match="NATIVE_DISPATCH_CLAIM_REQUIRED"):
         f.transport.submit(spec=f.h.spec, prompt=f.h.job.prompt_bytes)
     assert f.calls == 0
+
+
+def test_route_registry_mismatch_refused_before_authorization(tmp_path, monkeypatch):
+    f = FixtureHost(tmp_path)
+    monkeypatch.setattr(f.h.adapter.registry, "provider_model_allowed", lambda *a: False)
+    with pytest.raises(HostBoundaryError, match="HUB_PROVIDER_NOT_ALLOWED"):
+        f.dispatch()
+    assert f.calls == 0
+    assert f.h.adapter.store.submissions(f.h.job_id) == []
 
 
 @pytest.mark.parametrize("name", ["spec.json", "status.json", "receipt.json", "stdout.log"])

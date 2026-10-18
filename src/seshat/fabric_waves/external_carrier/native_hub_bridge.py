@@ -28,9 +28,14 @@ from seshat.fabric_waves.external_carrier.host_security import (
 from seshat.fabric_waves.external_carrier.hub_protocol import HubJobSpec, HubTransportError
 from seshat.fabric_waves.external_carrier.host_store import HostJobStore
 
-# Fixed by the owner-supplied contract; never taken from caller input so no argument
-# can select a different agent or job kind.
-NATIVE_SUBMIT_AGENT = "auto"
+# Match the verified local executor submit parser. The provider comes only from
+# the host-persisted spec; the job kind remains fixed by this adapter.
+# Exact choices in the pinned executor.py submit parser. An unknown provider must
+# fail before the durable launch claim, rather than falling back to Hub routing.
+NATIVE_SUBMIT_AGENTS: frozenset[str] = frozenset({
+    "claude", "cursor", "codex", "codex2", "opencode", "openrouter",
+    "tyumgu", "anthropic",
+})
 NATIVE_SUBMIT_KIND = "reasoning"
 NATIVE_ALLOWED_MODES: frozenset[str] = frozenset({"audit", "code"})
 # ``--mode read-only`` is explicitly invalid against the real CLI per the owner
@@ -101,6 +106,10 @@ def build_native_submit_argv(
     if role not in ALLOWED_HUB_ROLES:
         raise HostBoundaryError("NATIVE_SUBMIT_ROLE_INVALID")
     ticket = require_safe_token(spec.ticket, code="NATIVE_SUBMIT_TICKET_INVALID")
+    provider = require_safe_token(spec.provider, code="NATIVE_SUBMIT_PROVIDER_INVALID")
+    if provider not in NATIVE_SUBMIT_AGENTS:
+        raise HostBoundaryError("NATIVE_SUBMIT_PROVIDER_UNSUPPORTED")
+    model = require_safe_token(spec.model, code="NATIVE_SUBMIT_MODEL_INVALID", extra=":/+")
     client_token = require_safe_token(client, code="NATIVE_SUBMIT_CLIENT_INVALID")
     project_token = require_safe_token(
         project_target, code="NATIVE_SUBMIT_PROJECT_TARGET_INVALID"
@@ -119,8 +128,13 @@ def build_native_submit_argv(
     argv = [
         exe_text,
         "submit",
+        # The official router's owner pin can replace a named agent and clear
+        # its model. Sensitive jobs bypass that override in the pinned parser.
+        "--sensitive",
         "--agent",
-        NATIVE_SUBMIT_AGENT,
+        provider,
+        "--model",
+        model,
         "--kind",
         NATIVE_SUBMIT_KIND,
         "--mode",
@@ -255,7 +269,7 @@ class NativeAiyeExecSubmitter:
 
 __all__ = [
     "NATIVE_ALLOWED_MODES",
-    "NATIVE_SUBMIT_AGENT",
+    "NATIVE_SUBMIT_AGENTS",
     "NATIVE_SUBMIT_KIND",
     "NativeAiyeExecSubmitter",
     "NativeSubmitResult",
@@ -285,6 +299,17 @@ class NativeHubBridge:
         if launcher is None:
             raise HostBoundaryError("NATIVE_LAUNCHER_REQUIRED")
         launcher.prefix()
+        # Check the exact route while authorization is still unconsumed. The
+        # native submitter repeats this check before its durable launch claim.
+        if not self.adapter.registry.provider_model_allowed(spec.provider, spec.model):
+            raise HostBoundaryError("HUB_PROVIDER_NOT_ALLOWED")
+        build_native_submit_argv(
+            exe=self.transport.exe, spec=spec,
+            prompt_path=Path(self.transport.spool_dir) / f"{spec.host_job_id}.prompt.txt",
+            mode=self.transport.mode, client=self.transport.client,
+            project_target=self.transport.project_target,
+            max_seconds=spec.max_time_seconds, decision_id=self.transport.decision_id,
+        )
         cert = self.authority._certificate(spec, "launch")
         if (cert.get("authorization_sha256") != material_hash(dict(authorization))
                 or cert.get("python_sha256") != launcher.python_sha256

@@ -42,8 +42,8 @@ from seshat.fabric_waves.external_carrier.phase_b import OriginManifest, start_w
 BUDGET = WaveBudget(max_waves=40, max_activations=80, max_stone_events=80)
 ISSUER_ID = "mock-hub-issuer"
 HUB_INSTANCE = "mock-hub-instance-1"
-PROVIDER = "mock-provider"
-MODEL = "mock-model-1"
+PROVIDER = "codex2"
+MODEL = "gpt-6-sol"
 MAC_KEY_BYTES = b"public-test-literal-mac-key-0001"
 
 TOPICS = {
