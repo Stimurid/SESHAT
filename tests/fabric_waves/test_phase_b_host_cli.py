@@ -175,13 +175,43 @@ def test_cli_end_to_end_dry_run_default_then_explicit_effects(tmp_path, capsys):
     done = _out(capsys)
     assert "carpet.html" in done["artifacts"] and "terminal_output_sha.jsonl" in done["artifacts"]
     receipt = json.loads((host / "artifacts" / "run1" / "receipt.json").read_text("utf-8"))
-    assert receipt["transport_kind"] == "HUB_SPOOL_RECORD"
+    assert receipt["transport_kind"] == "UNATTESTED_MANUAL_IMPORT"
     assert receipt["mode"] == "PHASE_B_REPLAY_VERIFIED"
 
     assert cli("status", "--host-job-id", job_id) == EXIT_OK
     status = _out(capsys)
     assert status["terminal_status"] == "COMPLETED"
     assert [item["kind"] for item in status["submissions"]][-1] == "SUBMIT_ACKED"
+
+
+def test_resume_hub_spool_transport_requires_attested_submission(tmp_path, capsys):
+    host = tmp_path / "host"
+    host.mkdir()
+    # Minimal host dir with config is built by existing helpers in the full CLI test;
+    # here we only assert the transport gate on an unprepared store path.
+    from seshat.fabric_waves.external_carrier.host_cli import TRANSPORT_HUB_SPOOL_RECORD
+
+    with pytest.raises(ExternalAdmissionError) as exc:
+        run(
+            [
+                "--host-dir",
+                str(host),
+                "resume",
+                "--host-job-id",
+                "job-missing",
+                "--execute",
+                "--output-name",
+                "x",
+                "--transport-kind",
+                TRANSPORT_HUB_SPOOL_RECORD,
+            ],
+            environ={},
+        )
+    assert str(exc.value.args[0]) in {
+        "HOST_CONFIG_INVALID",
+        "UNKNOWN_JOB_ID",
+        "HUB_TRANSPORT_UNATTESTED",
+    }
 
 
 def test_cli_confines_file_arguments_to_host_dir(tmp_path):

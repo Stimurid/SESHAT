@@ -74,8 +74,14 @@ traces the waiting activation. Both `campus` and `meteorology` use the same engi
   coordinator authorization bound to the exact job/spec/prompt digests plus a source-review digest
   (single use, expiring), a configured absolute `aiye-exec` path, and a fresh outbound re-gate.
   Claiming the right to submit is one atomic transaction, so racing dispatchers cannot both send.
-  A timeout is recorded `AMBIGUOUS` and never resubmitted. Pre-send validation failures are
-  recorded `sent: false` and can be retried with a fresh authorization.
+  Any subprocess outcome that may have created a Hub job (timeout, connection drop, unknown or
+  unmapped non-zero exit) is recorded `SUBMIT_AMBIGUOUS` and never resubmitted. Only locally
+  verified pre-send failures are `SUBMIT_FAILED` with `sent: false` and may retry with fresh auth.
+* Store integrity: once a host-private HMAC key is used, `meta.integrity_key_required=true` is set
+  and unkeyed opens or reads of MAC'd rows raise `HOST_STORE_INTEGRITY_KEY_REQUIRED`.
+* Artifact export: CLI `resume --execute` defaults `transport_kind` to `UNATTESTED_MANUAL_IMPORT`.
+  `HUB_SPOOL_RECORD` is accepted only when the job has `SUBMIT_ACKED` and a registry-verified
+  terminal Hub record (`--transport-kind` explicit).
 * argv is a fixed template; tokens are validated (no leading dash, no shell metacharacters);
   `shell=False`; nothing from a StoneEvent, request text or model output reaches argv; child
   stdout/stderr are never copied into the store or logs.

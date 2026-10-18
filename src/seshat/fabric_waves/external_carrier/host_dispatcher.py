@@ -45,8 +45,80 @@ from seshat.fabric_waves.external_carrier.hub_protocol import (
 
 LIVE_AUTH_SCHEMA = "seshat.live_dispatch_authorization.v1"
 ASSUMED_PROTOCOL_STATUS = "UNVERIFIED_AGAINST_CALLER_PROTOCOL"
-_AMBIGUOUS_CODES = frozenset({"SUBMIT_TIMEOUT_AMBIGUOUS"})
+# Transport outcomes that may have created a Hub job; never allow a second paid submit.
+_AMBIGUOUS_CODES = frozenset(
+    {
+        "SUBMIT_TIMEOUT_AMBIGUOUS",
+        "SUBMIT_EXIT_AMBIGUOUS",
+        "SUBMIT_TRANSPORT_AMBIGUOUS",
+    }
+)
+# Only pre-send, locally verified failures (no subprocess started or provably rejected before send).
+_PROVEN_NOT_SENT_CODES = frozenset(
+    {
+        "PROVIDER_UNAVAILABLE",
+        "PROMPT_DIGEST_MISMATCH",
+        "AIYE_EXEC_PATH_INVALID",
+        "PROMPT_PATH_NOT_ABSOLUTE",
+        "HUB_TICKET_INVALID",
+        "HUB_JOB_ID_INVALID",
+        "HUB_PROVIDER_INVALID",
+        "HUB_MODEL_INVALID",
+    }
+)
 _MAX_RECORD_BYTES = 64_000
+
+# READ-ONLY gap ledger vs AORUS ``aiye-local-executor/CALLER_PROTOCOL.md`` (not executed here).
+_CALLER_PROTOCOL_EXPECTED_SUBMIT_FLAGS = frozenset(
+    {
+        "--agent",
+        "--ticket",
+        "--decision-id",
+        "--role",
+        "--mode",
+        "--job-id",
+        "--provider",
+        "--model",
+        "--max-tokens",
+        "--timeout-seconds",
+        "--budget-usd",
+        "--prompt-file",
+    }
+)
+_SESHAT_SUBMIT_FLAGS = frozenset(
+    {
+        "--ticket",
+        "--decision",
+        "--role",
+        "--mode",
+        "--job-id",
+        "--provider",
+        "--model",
+        "--max-tokens",
+        "--timeout-seconds",
+        "--budget-usd",
+        "--prompt-file",
+    }
+)
+
+
+def caller_protocol_argv_gaps() -> tuple[str, ...]:
+    """Document argv mismatches; live dispatch must stay blocked until independently reviewed."""
+
+    gaps: list[str] = []
+    missing = sorted(_CALLER_PROTOCOL_EXPECTED_SUBMIT_FLAGS - _SESHAT_SUBMIT_FLAGS)
+    extra = sorted(_SESHAT_SUBMIT_FLAGS - _CALLER_PROTOCOL_EXPECTED_SUBMIT_FLAGS)
+    if "--agent" in missing:
+        gaps.append("CALLER_PROTOCOL_REQUIRES_AGENT_AUTO")
+    if "--decision-id" in missing and "--decision" in extra:
+        gaps.append("CALLER_PROTOCOL_DECISION_ID_VS_DECISION_FLAG")
+    for flag in missing:
+        if flag not in {"--agent", "--decision-id"}:
+            gaps.append(f"CALLER_PROTOCOL_MISSING_FLAG:{flag}")
+    for flag in extra:
+        if flag != "--decision":
+            gaps.append(f"SESHAT_EXTRA_FLAG:{flag}")
+    return tuple(gaps)
 
 
 def _cents(value: int) -> str:
@@ -135,7 +207,12 @@ class AiyeExecSubmitter:
         code = int(getattr(completed, "returncode", 1))
         if code != 0:
             # stderr/stdout are deliberately not propagated: they may echo credentials.
-            raise HubTransportError(self.exit_code_map.get(code, "SUBMIT_REJECTED"))
+            mapped = self.exit_code_map.get(code)
+            if mapped is None:
+                raise HubTransportError("SUBMIT_EXIT_AMBIGUOUS")
+            if mapped not in _PROVEN_NOT_SENT_CODES:
+                raise HubTransportError("SUBMIT_TRANSPORT_AMBIGUOUS")
+            raise HubTransportError(mapped)
 
 
 @dataclass
@@ -275,6 +352,7 @@ class HostDispatcher:
             "source_carrier_ids": list(request.source_carrier_ids),
             "source_versions": dict(request.source_versions),
             "argv": argv,
+            "caller_protocol_gaps": list(caller_protocol_argv_gaps()),
         }
 
     def dispatch(
@@ -332,10 +410,12 @@ class HostDispatcher:
                 raise
             raise HostBoundaryError(code) from None
         except HubTransportError as exc:
-            if exc.code in _AMBIGUOUS_CODES:
+            if exc.code in _AMBIGUOUS_CODES or exc.code not in _PROVEN_NOT_SENT_CODES:
                 store.record_submission(host_job_id, "SUBMIT_AMBIGUOUS", {"code": exc.code})
                 return DispatchResult("AMBIGUOUS", host_job_id, spec.hub_job_id, exc.code, manifest)
-            store.record_submission(host_job_id, "SUBMIT_FAILED", {"code": exc.code})
+            store.record_submission(
+                host_job_id, "SUBMIT_FAILED", {"code": exc.code, "sent": False}
+            )
             return DispatchResult(
                 "BLOCKED_EXTERNAL", host_job_id, spec.hub_job_id, exc.code, manifest
             )
@@ -382,6 +462,9 @@ class HostDispatcher:
 __all__ = [
     "ASSUMED_PROTOCOL_STATUS",
     "LIVE_AUTH_SCHEMA",
+    "_AMBIGUOUS_CODES",
+    "_PROVEN_NOT_SENT_CODES",
+    "caller_protocol_argv_gaps",
     "AiyeExecSubmitter",
     "DispatchResult",
     "HostDispatcher",

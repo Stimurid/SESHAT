@@ -619,7 +619,21 @@ def test_keyed_store_rejects_wrong_key(tmp_path):
         other.get_job(job.host_job_id)
     assert _code(exc) == "HOST_STORE_ROW_TAMPERED"
     unkeyed = HostJobStore(tmp_path / "keyed")
-    assert unkeyed.get_job(job.host_job_id).host_job_id == job.host_job_id
+    with pytest.raises(ExternalAdmissionError) as exc:
+        unkeyed.get_job(job.host_job_id)
+    assert _code(exc) == "HOST_STORE_INTEGRITY_KEY_REQUIRED"
+
+
+def test_keyed_store_metadata_tamper_refuses_open(tmp_path):
+    store = HostJobStore(tmp_path / "keyed", integrity_key=HostIntegrityKey(MAC_KEY_BYTES))
+    h = make_harness(tmp_path / "h", prepare=False)
+    h.adapter.store = store
+    job = h.adapter.prepare(h.need, replay=h.origin.replay_dict())
+    assert job.host_job_id
+    tamper_sql(tmp_path / "keyed", "UPDATE meta SET v='false' WHERE k='integrity_key_required'")
+    with pytest.raises(ExternalAdmissionError) as exc:
+        HostJobStore(tmp_path / "keyed", integrity_key=HostIntegrityKey(MAC_KEY_BYTES))
+    assert _code(exc) == "HOST_STORE_METADATA_TAMPERED"
 
 
 def test_truncated_and_malformed_spool_records_refused(tmp_path):
@@ -1099,8 +1113,13 @@ def test_provider_failures_are_typed_and_ambiguous_submits_never_resubmit(tmp_pa
     res = dispatcher.dispatch(
         h.job_id, execute=True, submitter=mapped, authorization=_auth(h.spec, nonce="nonce-b")
     )
-    assert res.state == "BLOCKED_EXTERNAL" and res.detail == "BUDGET_EXHAUSTED"
+    assert res.state == "AMBIGUOUS" and res.detail == "SUBMIT_TRANSPORT_AMBIGUOUS"
     assert "sk-should-not-surface" not in json.dumps(h.adapter.store.submissions(h.job_id))
+    with pytest.raises(ExternalAdmissionError) as exc:
+        dispatcher.dispatch(
+            h.job_id, execute=True, submitter=mapped, authorization=_auth(h.spec, nonce="nonce-b2")
+        )
+    assert _code(exc) == "SUBMISSION_STATE_AMBIGUOUS"
 
     def timeout(argv, **kwargs):
         raise subprocess.TimeoutExpired(argv, 1)
@@ -1118,6 +1137,38 @@ def test_provider_failures_are_typed_and_ambiguous_submits_never_resubmit(tmp_pa
     # AMBIGUOUS is recorded as its own kind; the ATTEMPTED marker still blocks a resubmit.
     kinds = [item["kind"] for item in h.adapter.store.submissions(h.job_id)]
     assert "SUBMIT_AMBIGUOUS" in kinds and kinds.count("SUBMIT_ACKED") == 0
+
+
+def test_nonzero_aiye_exec_exit_defaults_ambiguous_and_never_double_submits(tmp_path):
+    h = make_harness(tmp_path)
+    exe = str(tmp_path / "aiye-exec")
+    calls: list[Any] = []
+
+    def nonzero(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=7, stdout=b"", stderr=b"")
+
+    sub = AiyeExecSubmitter(exe=exe, spool_dir=tmp_path / "s", runner=nonzero)
+    dispatcher = HostDispatcher(adapter=h.adapter)
+    res = dispatcher.dispatch(
+        h.job_id, execute=True, submitter=sub, authorization=_auth(h.spec)
+    )
+    assert res.state == "AMBIGUOUS" and res.detail == "SUBMIT_EXIT_AMBIGUOUS"
+    assert len(calls) == 1
+    with pytest.raises(ExternalAdmissionError) as exc:
+        dispatcher.dispatch(
+            h.job_id, execute=True, submitter=sub, authorization=_auth(h.spec, nonce="nonce-retry")
+        )
+    assert _code(exc) == "SUBMISSION_STATE_AMBIGUOUS"
+    assert len(calls) == 1
+
+
+def test_caller_protocol_argv_gaps_documented_for_independent_review():
+    from seshat.fabric_waves.external_carrier.host_dispatcher import caller_protocol_argv_gaps
+
+    gaps = caller_protocol_argv_gaps()
+    assert "CALLER_PROTOCOL_REQUIRES_AGENT_AUTO" in gaps
+    assert "CALLER_PROTOCOL_DECISION_ID_VS_DECISION_FLAG" in gaps
 
 
 # 15. two-host E5 re-entry: live in-process and replay-verified -----------------------------

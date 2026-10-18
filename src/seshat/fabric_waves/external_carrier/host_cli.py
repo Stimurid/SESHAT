@@ -62,6 +62,8 @@ CONFIG_SCHEMA = "seshat.host_config.v1"
 CONFIG_NAME = "host_config.json"
 _MAX_DOC_BYTES = 256_000
 EXIT_OK, EXIT_REFUSED, EXIT_WAITING, EXIT_BLOCKED = 0, 2, 10, 11
+TRANSPORT_UNATTESTED_MANUAL_IMPORT = "UNATTESTED_MANUAL_IMPORT"
+TRANSPORT_HUB_SPOOL_RECORD = "HUB_SPOOL_RECORD"
 
 
 class _UnionAuthority:
@@ -170,6 +172,20 @@ def _emit(payload: Mapping[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2, default=str))
 
 
+def resolve_export_transport_kind(
+    adapter: TrustedHubHostAdapter, host_job_id: str, explicit: str | None
+) -> str:
+    if explicit is None:
+        return TRANSPORT_UNATTESTED_MANUAL_IMPORT
+    kind = require_safe_token(explicit, code="TRANSPORT_KIND_INVALID")
+    if kind == TRANSPORT_HUB_SPOOL_RECORD:
+        adapter.assert_hub_attested_for_export(host_job_id)
+        return kind
+    if kind == TRANSPORT_UNATTESTED_MANUAL_IMPORT:
+        return kind
+    raise HostBoundaryError("TRANSPORT_KIND_UNKNOWN")
+
+
 def _origin_from_args(args: argparse.Namespace) -> OriginManifest:
     return OriginManifest(
         engine_kind=args.engine,
@@ -223,6 +239,14 @@ def _parser() -> argparse.ArgumentParser:
     res.add_argument("--host-job-id", required=True)
     res.add_argument("--execute", action="store_true")
     res.add_argument("--output-name", default=None)
+    res.add_argument(
+        "--transport-kind",
+        default=None,
+        help=(
+            "Verbatim export label; default UNATTESTED_MANUAL_IMPORT. "
+            "HUB_SPOOL_RECORD requires a verified Hub submission chain."
+        ),
+    )
 
     stat = sub.add_parser("status", help="Show persisted job state")
     stat.add_argument("--host-job-id", required=True)
@@ -313,12 +337,15 @@ def run(
         }
         if args.execute:
             name = require_safe_token(args.output_name or args.host_job_id, code="OUT_NAME_INVALID")
+            transport_kind = resolve_export_transport_kind(
+                adapter, args.host_job_id, args.transport_kind
+            )
             receipt = export_phase_b_artifacts(
                 host_dir / "artifacts" / name,
                 result=result,
                 adapter=adapter,
                 host_job_id=args.host_job_id,
-                transport_kind="HUB_SPOOL_RECORD",
+                transport_kind=transport_kind,
             )
             payload["artifacts"] = sorted(receipt["artifact_file_digests"])
         _emit(payload)

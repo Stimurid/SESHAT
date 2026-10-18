@@ -37,6 +37,7 @@ from seshat.fabric_waves.external_carrier.host_security import (
 
 STORE_SCHEMA = "seshat_host_job_store_v1"
 STORE_FILENAME = "host_jobs.sqlite3"
+META_INTEGRITY_KEY_REQUIRED = "integrity_key_required"
 
 TERMINAL_STATUSES = ("COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUTPUT_REJECTED")
 
@@ -183,6 +184,19 @@ class HostJobStore:
                 row = con.execute("SELECT v FROM meta WHERE k='schema'").fetchone()
             if row is None or row[0] != STORE_SCHEMA:
                 raise HostBoundaryError("HOST_STORE_SCHEMA_MISMATCH")
+            key_req = con.execute(
+                "SELECT v FROM meta WHERE k=?", (META_INTEGRITY_KEY_REQUIRED,)
+            ).fetchone()
+            if self._key is not None:
+                if key_req is None:
+                    con.execute(
+                        "INSERT INTO meta (k, v) VALUES (?, ?)",
+                        (META_INTEGRITY_KEY_REQUIRED, "true"),
+                    )
+                elif key_req[0] != "true":
+                    raise HostBoundaryError("HOST_STORE_METADATA_TAMPERED")
+            elif key_req is not None and key_req[0] == "true":
+                raise HostBoundaryError("HOST_STORE_INTEGRITY_KEY_REQUIRED")
         finally:
             con.close()
 
@@ -221,9 +235,13 @@ class HostJobStore:
             raise HostBoundaryError("HOST_STORE_PARTIAL_ROW")
         if _row_material(table, values, created) != digest:
             raise HostBoundaryError("HOST_STORE_ROW_TAMPERED")
-        if self._key is not None:
-            if not isinstance(mac, str) or not mac or not self._key.verify(digest, mac):
+        if isinstance(mac, str) and mac:
+            if self._key is None:
+                raise HostBoundaryError("HOST_STORE_INTEGRITY_KEY_REQUIRED")
+            if not self._key.verify(digest, mac):
                 raise HostBoundaryError("HOST_STORE_ROW_TAMPERED")
+        elif self._key is not None:
+            raise HostBoundaryError("HOST_STORE_ROW_TAMPERED")
 
     @staticmethod
     def _load_json(text: Any, *, expect: type) -> Any:
@@ -371,7 +389,7 @@ class HostJobStore:
         for kind in kinds:
             if kind == "SUBMIT_ACKED":
                 return "ACKED"
-            if kind == "SUBMIT_ATTEMPTED":
+            if kind in {"SUBMIT_ATTEMPTED", "SUBMIT_AMBIGUOUS"}:
                 state = "ATTEMPTED"
             elif kind == "SUBMIT_FAILED":
                 state = "FAILED"

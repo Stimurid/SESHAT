@@ -86,12 +86,16 @@ def verify_resume_receipt(
         raise ExternalAdmissionError("LEDGER_DISPATCH_PIN_MISMATCH")
     if need.admissible_evidence_classes != authoritative.admissible_evidence_classes:
         raise ExternalAdmissionError("LEDGER_DISPATCH_PIN_MISMATCH")
+    if receipt.evidence_return.forged_human_decision:
+        raise ExternalAdmissionError("FORGED_HUMAN_DECISION_REJECTED")
+    if receipt.evidence_return.epistemic_level != EpistemicLevel.E5:
+        raise ExternalAdmissionError("E5_ONLY_EXTERNAL_RETURN")
+    if "E5" not in authoritative.admissible_evidence_classes:
+        raise ExternalAdmissionError("ADMISSIBLE_EVIDENCE_CLASS_DENIED")
     _validate_proposal_schema(
         schema_id=authoritative.expected_output_schema,
         payload=receipt.evidence_return.proposal_payload,
     )
-    if "E5" not in authoritative.admissible_evidence_classes:
-        raise ExternalAdmissionError("ADMISSIBLE_EVIDENCE_CLASS_DENIED")
     if authoritative.source_carrier_ids:
         missing = [
             cid
@@ -103,6 +107,10 @@ def verify_resume_receipt(
         for cid in authoritative.source_versions:
             if cid not in authoritative.source_carrier_ids:
                 raise ExternalAdmissionError("SOURCE_SCOPE_MISMATCH")
+    allowed_sources = set(authoritative.source_carrier_ids)
+    for claim in receipt.evidence_return.source_claim_refs:
+        if claim not in allowed_sources:
+            raise ExternalAdmissionError("E5_SOURCE_CLAIM_OUTSIDE_REQUEST_SCOPE")
     port.verify_return(need=authoritative, evidence=receipt.evidence_return)
     expected_binding = compute_host_binding_hash(
         request=authoritative,
@@ -111,14 +119,6 @@ def verify_resume_receipt(
     )
     if receipt.evidence_return.host_receipt.binding_hash != expected_binding:
         raise ExternalAdmissionError("BINDING_HASH_INVALID")
-    allowed_sources = set(authoritative.source_carrier_ids)
-    for claim in receipt.evidence_return.source_claim_refs:
-        if claim not in allowed_sources:
-            raise ExternalAdmissionError("E5_SOURCE_CLAIM_OUTSIDE_REQUEST_SCOPE")
-    if receipt.evidence_return.forged_human_decision:
-        raise ExternalAdmissionError("FORGED_HUMAN_DECISION_REJECTED")
-    if receipt.evidence_return.epistemic_level != EpistemicLevel.E5:
-        raise ExternalAdmissionError("E5_ONLY_EXTERNAL_RETURN")
     digest_material = material_hash(receipt.evidence_return.proposal_payload)
     if digest_material != receipt.evidence_return.result_digest:
         raise ExternalAdmissionError("RESULT_DIGEST_MISMATCH")
