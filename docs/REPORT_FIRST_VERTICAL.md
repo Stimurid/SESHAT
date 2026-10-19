@@ -95,8 +95,12 @@ system. The synthetic MethodBody separates two explicit PAGE-tagged source
 statements, not a human dissertation; it cannot infer scientific merit. Its
 versioned callable is registered in the G1 registry; the separate readable
 `method_definition` bytes are pinned in F08, but their SHA-256 is NOT a code
-signature of the callable. The registered G1 signature is recorded separately
-in a private FabricReportBridgeReceipt. **Human scientific acceptance remains
+signature of the callable. The G1 registry tag hashes id/version/class,
+NOT the executable callable; it is recorded only as a registry identity tag
+in a private FabricReportBridgeReceipt marked `executable_method_attested=NO`.
+Real documents are blocked until independent deployment/executable attestation is
+available. Synthetic page verification additionally requires an explicit
+trusted `locator_verifier=SYNTHETIC_PAGE_TAG_V1`. **Human scientific acceptance remains
 NOT_ASSERTED**. Source locators for this fixture are flagged
 `VERIFIED_IN_SYNTHETIC_SOURCE`; real PDF page locators are at most
 `OWNER_ASSERTED` until a document-specific verifier checks them.
@@ -110,7 +114,10 @@ Broader corpora, binary PDF page mapping, historical MethodBody science
 and valid external SRC-D belong to separate evidence-gated work.
 
 `tests/fabric_waves/test_report_bridge.py` proves this causal route, F09A
-serial resume and negative source/method/authorization cases. The CI workflow
+serial resume and negative source/method/authorization cases. The separate
+`tests/fabric_waves/test_report_bridge_demo.py` executes the actual demo.
+The CLI now performs `resume_batch` itself and verifies a no-op restart.
+The CI workflow
 `.github/workflows/report-first-no-network.yml` exercises it with
 `--network none`, an unprivileged user and a read-only image; the batch
 manifest/database are private and MUST NOT be copied to the customer.

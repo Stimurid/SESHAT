@@ -95,6 +95,7 @@ def setup_run(tmp_path, *, false_claim=False, false_page=False, epistemic=Episte
         source_contents=source_contents,
         method_definition=b"PUBLIC_SYNTHETIC_METHOD_R01_V1",
         rights_basis="public-synthetic-text-fixture",
+        locator_verifier="SYNTHETIC_PAGE_TAG_V1",
     )
     return runtime, engine, carrier, kwargs
 
@@ -130,6 +131,7 @@ def test_report_bridge_reproduces_exact_same_output(tmp_path):
 @pytest.mark.parametrize("bad", [
     "fake-run", "fake-sediment", "wrong-research-selection", "missing-method",
     "wrong-policy", "tampered-source", "source-revoked", "missing-receipt",
+    "wrong-caller", "wrong-thread",
 ])
 def test_fabric_bridge_fails_closed(tmp_path, bad):
     runtime, engine, carrier, kwargs = setup_run(tmp_path)
@@ -165,6 +167,17 @@ def test_fabric_bridge_fails_closed(tmp_path, bad):
         snap = engine._snapshots[kwargs["run_id"]]
         snap[0]._activations.clear()
         failure = "FABRIC_LEDGER_UNVERIFIED"
+    elif bad == "wrong-caller":
+        kwargs["authenticated_caller"] = "mallory"
+        failure = "FABRIC_REPORT_REQUEST_DENIED"
+    elif bad == "wrong-thread":
+        # Tampering sediment provenance without changing the valid ledger
+        # cannot counterfeit a matching FIRED method activation.
+        snap = engine._snapshots[kwargs["run_id"]]
+        current = snap[1]._store[kwargs["sediment_id"]]
+        snap[1]._store[kwargs["sediment_id"]] = current.model_copy(
+            update={"produced_by_thread": "forged-other-thread"})
+        failure = "FABRIC_METHOD_INVOCATION_UNPROVEN"
     with pytest.raises(ValueError, match=failure):
         project_fabric_r01_r02(**kwargs)
 
@@ -259,3 +272,42 @@ def test_same_real_fabric_evidence_projects_into_r02_without_promoting_science(t
     assert receipt.report_projection_digest == report.digest
     assert len(report.scientific_asset.subassemblies) == 2
     assert b"FABRIC_GENERATED_UNREVIEWED" in artifacts(report)["report.md"]
+
+
+def test_synthetic_prefix_is_not_a_page_verifier(tmp_path):
+    _, _, _, kwargs = setup_run(tmp_path)
+    kwargs["locator_verifier"] = None
+    report, proof = project_fabric_r01_r02(**kwargs)
+    assert proof.executable_method_attested == "NO"
+    assert all(
+        c.page_locator_state == "OWNER_ASSERTED"
+        for s in report.scientific_asset.subassemblies for c in s.claims
+    )
+    assert "VERIFIED_IN_SYNTHETIC_SOURCE" not in artifacts(report)["report.md"].decode()
+    assert "OWNER_ASSERTED" in artifacts(report)["report.md"].decode()
+
+
+def test_registry_identity_tag_is_explicitly_not_executable_code_pin(tmp_path):
+    from seshat.fabric_waves.method_body import BodyResult, MethodBodyRef, MethodBodyRegistry
+    from seshat.fabric_waves.scenarios import SyntheticBody
+
+    first = SyntheticBody("synthetic.same-method", "1", lambda inv: BodyResult(notes=("first",)))
+    second = SyntheticBody("synthetic.same-method", "1", lambda inv: BodyResult(notes=("second",)))
+    a, b = MethodBodyRegistry(), MethodBodyRegistry()
+    a.register(first)
+    b.register(second)
+    ref = MethodBodyRef(method_body_id="synthetic.same-method", version="1")
+    # This deliberately documents the historical weakness; never promote this
+    # registry ID-only tag into an attestation for a real method.
+    assert a.signature_for(ref) == b.signature_for(ref)
+    _, _, _, kwargs = setup_run(tmp_path)
+    _, proof = project_fabric_r01_r02(**kwargs)
+    assert proof.executable_method_attested == "NO"
+    assert proof.registered_method_registry_tag
+    assert not hasattr(proof, "registered_method_signature")
+
+
+def test_invalid_utf8_is_typed_fail_closed():
+    from seshat.fabric_waves.report_bridge import _decode_source_utf8
+    with pytest.raises(ValueError, match="FABRIC_SOURCE_NOT_UTF8"):
+        _decode_source_utf8(bytes((255, 254)))

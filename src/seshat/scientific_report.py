@@ -88,6 +88,13 @@ def validate_asset(asset: ScientificReportAsset, member: MemberPin,
             content = source_contents.get(claim.carrier_id)
             if content is None or hashlib.sha256(content).hexdigest() != claim.source_sha256:
                 raise ValueError("SCIENTIFIC_SOURCE_UNREADABLE")
+            if claim.page_locator_state == "VERIFIED_IN_SYNTHETIC_SOURCE" and (
+                asset.review_status != "FABRIC_GENERATED_UNREVIEWED"
+                or not asset.producer_id.startswith("fabric:")
+                or not member.object_id.startswith("synthetic-")
+                or not content.startswith(b"SYNTHETIC PAGE 1:")
+            ):
+                raise ValueError("SCIENTIFIC_LOCATOR_UNVERIFIED")
             if content.startswith(b"SYNTHETIC PAGE 1:") and (
                     f"SYNTHETIC PAGE {claim.page}:".encode() not in content):
                 raise ValueError("SCIENTIFIC_PAGE_UNAVAILABLE")
@@ -105,7 +112,8 @@ def render_markdown(asset: ScientificReportAsset) -> str:
              f"Автор аналитического состояния: {plain(asset.producer_id)}. "
              f"Право использования: {plain(asset.rights_basis)}.",
              f"Актуальность проверялась владельцем: {asset.currentness_as_of}.",
-             f"Метод: {plain(asset.method_body_version)} / {asset.method_body_sha256}.",
+             f"Описание метода: {plain(asset.method_body_version)} / sha256:{asset.method_body_sha256}. "
+             "Этот хеш подтверждает текст описания, НЕ исполняемый код.",
              f"Версия аналитического состояния: {plain(asset.analytic_state_version)}.", "",
              "## Исследовательская проблема", "", plain(asset.research_problem), "",
              "## Границы атрибуции", "", plain(asset.author_scope), ""]
@@ -143,8 +151,9 @@ def render_html(asset: ScientificReportAsset) -> str:
              f"<p>Автор аналитического состояния: {e(asset.producer_id)}. "
              f"Право использования: {e(asset.rights_basis)}. "
              f"Актуальность: {e(asset.currentness_as_of)}.</p>",
-             f"<p>Метод: {e(asset.method_body_version)} "
-             f"<code>{e(asset.method_body_sha256)}</code>. "
+             f"<p>Описание метода: {e(asset.method_body_version)} "
+             f"<code>{e(asset.method_body_sha256)}</code> "
+             "(SHA текста описания, НЕ исполняемого кода). "
              f"Состояние: {e(asset.analytic_state_version)}.</p>",
              f"<h2>Исследовательская проблема</h2><p>{e(asset.research_problem)}</p>",
              f"<h2>Границы атрибуции</h2><p>{e(asset.author_scope)}</p>"]

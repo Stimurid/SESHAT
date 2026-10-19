@@ -11,7 +11,7 @@ import argparse
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from seshat.batch import assert_safe_path, run_batch
+from seshat.batch import assert_safe_path, resume_batch, run_batch
 from seshat.batch_demo import demo_manifest
 from seshat.contracts import AcceptanceState
 from seshat.fabric_waves.contracts import (
@@ -135,6 +135,7 @@ def run_demo(root: Path) -> dict[str, str]:
             source_contents=contents,
             method_definition=SYNTHETIC_METHOD_DEFINITION,
             rights_basis="public-synthetic-method-fixture",
+            locator_verifier="SYNTHETIC_PAGE_TAG_V1",
         )
         write_artifacts(root / "report", artifacts(projection))
         asset = projection.scientific_asset
@@ -150,6 +151,21 @@ def run_demo(root: Path) -> dict[str, str]:
         )
         if not receipt.code_pass or receipt.scientific_accepted != "NEVER_AUTO_SET":
             raise ValueError("SYNTHETIC_G1_F09A_NOT_CODE_COMPLETE")
+        # The DEMO itself must exercise a durable no-op restart, not merely
+        # rely on a separate test that calls resume_batch.
+        original_bytes = (root / "owner-private-batch" / "batch_receipt.json").read_bytes()
+        resumed = resume_batch(
+            root / "owner-private-batch", manifest, runtime,
+            caller_id="demo", rights_scope="synthetic-public",
+            scientific_assets=(asset,), scientific_sources=contents,
+            method_bodies={asset.method_body_version: SYNTHETIC_METHOD_DEFINITION},
+        )
+        if (
+            resumed != receipt
+            or (root / "owner-private-batch" / "batch_receipt.json").read_bytes()
+               != original_bytes
+        ):
+            raise ValueError("SYNTHETIC_G1_F09A_RESUME_CHANGED")
         return {
             "mode": "PUBLIC_SYNTHETIC_ONLY",
             "bridge": "G1_METHOD_ACTIVATED_TO_F07_F08_F09A",
@@ -158,6 +174,7 @@ def run_demo(root: Path) -> dict[str, str]:
             "report_digest": proof.report_projection_digest,
             "r01": "report/report.md",
             "private_batch": "owner-private-batch",
+            "batch_resume": "VERIFIED_NOOP",
             "science_owner_review": "NOT_PERFORMED",
             "customer_release": "NOT_AUTHORIZED",
         }

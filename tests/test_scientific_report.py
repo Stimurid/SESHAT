@@ -231,3 +231,21 @@ def test_science_asset_after_rights_revocation_cannot_render(tmp_path):
     ))
     with pytest.raises(ValueError, match="R01_REQUIRES_ONE_RESEARCH_OBJECT"):
         compose(request)
+
+
+def test_owner_assertion_cannot_forge_verified_synthetic_locator(tmp_path):
+    runtime, asset, request, _ = _compose(tmp_path)
+    first = asset.subassemblies[0]
+    forged = first.claims[0].model_copy(
+        update={"page_locator_state": "VERIFIED_IN_SYNTHETIC_SOURCE"}
+    )
+    bad = asset.model_copy(update={"subassemblies": (
+        first.model_copy(update={"claims": (forged,)}), *asset.subassemblies[1:],
+    )})
+    with pytest.raises(ValueError, match="SCIENTIFIC_LOCATOR_UNVERIFIED"):
+        report_session(
+            runtime, authenticated_caller="demo", authorized_view="synthetic-public",
+            scientific_assets=(bad,),
+            scientific_sources=synthetic_source_contents(runtime, asset),
+            method_bodies=synthetic_method_bodies(),
+        )(request)

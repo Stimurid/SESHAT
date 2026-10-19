@@ -58,7 +58,9 @@ class FabricReportBridgeReceipt(FrozenModel):
     sediment_version: str
     registered_method_id: str
     registered_method_version: str
-    registered_method_signature: str
+    # Legacy registry tag hashes only id/version/class, NOT executed code.
+    registered_method_registry_tag: str
+    executable_method_attested: Literal["NO"] = "NO"
     source_carrier_id: str
     source_version: str
     source_sha256: str
@@ -75,6 +77,13 @@ _LEVEL_TO_STAGE = {
 }
 
 
+def _decode_source_utf8(content: bytes) -> str:
+    try:
+        return content.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("FABRIC_SOURCE_NOT_UTF8") from None
+
+
 def project_fabric_r01_r02(
     *,
     runtime: HostRuntime,
@@ -87,13 +96,16 @@ def project_fabric_r01_r02(
     source_contents: Mapping[str, bytes],
     method_definition: bytes,
     rights_basis: str,
+    locator_verifier: Literal["SYNTHETIC_PAGE_TAG_V1"] | None = None,
 ) -> tuple[ReportProjection, FabricReportBridgeReceipt]:
     """Compose a report from a MethodBody-produced source-anchored sediment.
 
     The caller supplies a trusted in-process F07 runtime and a trusted G1
     engine, never arbitrary serialized ledger data. The method_definition
     denotes the separately pinned readable method description, NOT a hash
-    of the executable callable. The registry signature is recorded separately.
+    of the executable callable. The registry tag is only an identity hint, NOT
+    cryptographic code attestation. This MVP blocks non-synthetic methods
+    until a separately validated trusted deployment/MethodBody gate exists.
     """
 
     if (
@@ -157,7 +169,6 @@ def project_fabric_r01_r02(
         or spec.raw_access_policy is not RawAccessPolicy.FULL_REQUIRED
         or ref not in spec.method_body_refs
         or not engine.bodies.has(ref)
-        or engine.bodies.signature_for(ref) is None
     ):
         raise ValueError("FABRIC_METHOD_POLICY_DENIED")
 
@@ -172,6 +183,22 @@ def project_fabric_r01_r02(
     ):
         raise ValueError("FABRIC_SOURCE_NOT_F07_ADMITTED")
     carrier = source_carriers[0]
+    if engine.carrier_store is None:
+        raise ValueError("FABRIC_SOURCE_STORE_MISSING")
+    hosted = engine.carrier_store.carriers_for((carrier_id,))
+    if len(hosted) != 1 or hosted[0].version != carrier.version:
+        raise ValueError("FABRIC_SOURCE_STORE_STALE")
+    host_carrier = hosted[0]
+    # This bridge is explicitly synthetic-only until the owner-host can prove
+    # the exact deployed executable MethodBody and source rights. Naming a
+    # registry method is never authority to process a real research corpus.
+    if (
+        not ref.method_body_id.startswith("synthetic.")
+        or not member.object_id.startswith("synthetic-")
+        or not (host_carrier.source_identity == carrier_id
+               and carrier_id.startswith("synthetic-"))
+    ):
+        raise ValueError("FABRIC_METHOD_ATTESTATION_REQUIRED")
     manifest = record.source_access_manifest
     if (
         manifest is None
@@ -205,8 +232,18 @@ def project_fabric_r01_r02(
     except ValueError:
         raise ValueError("FABRIC_REPORT_PAYLOAD_INVALID") from None
 
-    source_text = content.decode("utf-8")
-    synthetic_pages = source_text.startswith("SYNTHETIC PAGE 1:")
+    source_text = _decode_source_utf8(content)
+    # Explicitly opt into the synthetic page oracle on an owner-provided
+    # invented text carrier. A source-supplied prefix is NOT an attestor.
+    synthetic_pages = locator_verifier == "SYNTHETIC_PAGE_TAG_V1"
+    if synthetic_pages and (
+        host_carrier.media_type != "text/plain"
+        or not (host_carrier.source_identity == carrier_id
+               and carrier_id.startswith("synthetic-"))
+        or not member.object_id.startswith("synthetic-")
+        or not source_text.startswith("SYNTHETIC PAGE 1:")
+    ):
+        raise ValueError("FABRIC_SYNTHETIC_LOCATOR_DENIED")
     subs = []
     for item in payload.subassemblies:
         claims = []
@@ -284,7 +321,7 @@ def project_fabric_r01_r02(
         sediment_version=record.version,
         registered_method_id=ref.method_body_id,
         registered_method_version=ref.version,
-        registered_method_signature=engine.bodies.signature_for(ref),
+        registered_method_registry_tag=engine.bodies.signature_for(ref),
         source_carrier_id=carrier_id,
         source_version=carrier.version,
         source_sha256=carrier.sha256,
