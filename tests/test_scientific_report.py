@@ -233,6 +233,59 @@ def test_science_asset_after_rights_revocation_cannot_render(tmp_path):
         compose(request)
 
 
+def test_f08_verified_locator_requires_page_excerpt_not_forged_fields(tmp_path):
+    runtime, asset, request, _ = _compose(tmp_path)
+    source = synthetic_source_contents(runtime, asset)
+    first = asset.subassemblies[0]
+    forged = first.claims[0].model_copy(update={
+        "page_locator_state": "VERIFIED_IN_SYNTHETIC_SOURCE",
+        "evidence_excerpt_sha256": "0" * 64,
+        "page_excerpt_offset": 0,
+        "page_excerpt_length": 11,
+    })
+    impersonated = asset.model_copy(update={
+        "review_status": "FABRIC_GENERATED_UNREVIEWED",
+        "producer_id": "fabric:forged:activation",
+        "subassemblies": (
+            first.model_copy(update={"claims": (forged,)}),
+            *asset.subassemblies[1:],
+        ),
+    })
+    with pytest.raises(ValueError, match="SCIENTIFIC_LOCATOR_UNVERIFIED"):
+        report_session(
+            runtime, authenticated_caller="demo", authorized_view="synthetic-public",
+            scientific_assets=(impersonated,), scientific_sources=source,
+            method_bodies=synthetic_method_bodies(),
+        )(request)
+    content = next(iter(source.values())).decode("utf-8")
+    first_page_excerpt = content.splitlines()[1]
+    wrong_page = forged.model_copy(update={
+        "page": 2,
+        "evidence_excerpt_sha256": hashlib.sha256(first_page_excerpt.encode("utf-8")).hexdigest(),
+        "page_excerpt_offset": 0,
+        "page_excerpt_length": len(first_page_excerpt),
+    })
+    impersonated = impersonated.model_copy(update={"subassemblies": (
+        first.model_copy(update={"claims": (wrong_page,)}),
+        *asset.subassemblies[1:],
+    )})
+    with pytest.raises(ValueError, match="SCIENTIFIC_LOCATOR_UNVERIFIED"):
+        report_session(
+            runtime, authenticated_caller="demo", authorized_view="synthetic-public",
+            scientific_assets=(impersonated,), scientific_sources=source,
+            method_bodies=synthetic_method_bodies(),
+        )(request)
+
+
+def test_report_does_not_falsely_attest_requested_source_currentness(tmp_path):
+    _, _, request, compose = _compose(tmp_path)
+    rendered = artifacts(compose(request))
+    md = rendered["report.md"].decode("utf-8")
+    html = rendered["report.html"].decode("utf-8")
+    assert "Актуальность проверялась владельцем" not in md
+    assert "актуальность источника не удостоверена" in md
+    assert "актуальность источника не удостоверена" in html
+
 def test_owner_assertion_cannot_forge_verified_synthetic_locator(tmp_path):
     runtime, asset, request, _ = _compose(tmp_path)
     first = asset.subassemblies[0]

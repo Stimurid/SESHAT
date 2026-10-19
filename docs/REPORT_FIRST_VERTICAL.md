@@ -95,15 +95,24 @@ system. The synthetic MethodBody separates two explicit PAGE-tagged source
 statements, not a human dissertation; it cannot infer scientific merit. Its
 versioned callable is registered in the G1 registry; the separate readable
 `method_definition` bytes are pinned in F08, but their SHA-256 is NOT a code
-signature of the callable. The G1 registry tag hashes id/version/class,
-NOT the executable callable; it is recorded only as a registry identity tag
-in a private FabricReportBridgeReceipt marked `executable_method_attested=NO`.
-Real documents are blocked until independent deployment/executable attestation is
-available. Synthetic page verification additionally requires an explicit
-trusted `locator_verifier=SYNTHETIC_PAGE_TAG_V1`. **Human scientific acceptance remains
-NOT_ASSERTED**. Source locators for this fixture are flagged
+signature of the callable. The registry tag is an identity hint (by default a hash of
+id/version/class, but it may be explicitly host-supplied); it NEVER attests
+the executable callable. The private FabricReportBridgeReceipt says
+`executable_method_attested=NO`. The current `synthetic-*` naming barrier
+is an owner-host convention, not independent proof of source origin. Real
+source + MethodBody admission requires a separate protected attestation gate.
+Synthetic page verification requires explicit in-process
+`locator_verifier=SYNTHETIC_PAGE_TAG_V1` and F08 rereading exact F07-pinned
+bytes, verifying the excerpt's SHA-256 and offset within the stated page span.
+No raw excerpt is stored in customer-facing report JSON. **Human scientific
+acceptance remains NOT_ASSERTED**. This fixture alone may say
 `VERIFIED_IN_SYNTHETIC_SOURCE`; real PDF page locators are at most
 `OWNER_ASSERTED` until a document-specific verifier checks them.
+
+The rendered source-currentness date is the date in the requester input;
+it does not attest to an owner check or source freshness. A supplied
+expected_method_body_version must match the actually invoked G1 MethodBody,
+otherwise FABRIC_METHOD_VERSION_MISMATCH blocks the report.
 
 The current bridge is intentionally restricted to ONE F07-selected research
 object, ONE content-verifiable UTF-8 carrier, FULL_REQUIRED source access,

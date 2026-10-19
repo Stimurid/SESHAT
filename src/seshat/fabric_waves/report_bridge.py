@@ -58,7 +58,8 @@ class FabricReportBridgeReceipt(FrozenModel):
     sediment_version: str
     registered_method_id: str
     registered_method_version: str
-    # Legacy registry tag hashes only id/version/class, NOT executed code.
+    # Registry tag is an identity hint (default hashes id/version/class);
+    # it may also be host-supplied, and NEVER attests executed code.
     registered_method_registry_tag: str
     executable_method_attested: Literal["NO"] = "NO"
     source_carrier_id: str
@@ -216,8 +217,6 @@ def project_fabric_r01_r02(
     content = source_contents.get(carrier_id)
     if content is None or hashlib.sha256(content).hexdigest() != carrier.sha256:
         raise ValueError("FABRIC_SOURCE_BYTES_STALE")
-    if engine.carrier_store is None:
-        raise ValueError("FABRIC_SOURCE_STORE_MISSING")
     try:
         stored_digest = engine.carrier_store.pin_content_digest(
             carrier_id, pinned_version=carrier.version
@@ -270,6 +269,16 @@ def project_fabric_r01_r02(
                 source_sha256=carrier.sha256,
                 page=claim.page,
                 page_locator_state=locator_state,
+                evidence_excerpt_sha256=(
+                    hashlib.sha256(claim.evidence_excerpt.encode("utf-8")).hexdigest()
+                    if synthetic_pages else None
+                ),
+                page_excerpt_offset=(
+                    current_page.index(claim.evidence_excerpt) if synthetic_pages else None
+                ),
+                page_excerpt_length=(
+                    len(claim.evidence_excerpt) if synthetic_pages else None
+                ),
             ))
         subs.append(Subassembly(
             subassembly_id=item.subassembly_id,
@@ -284,6 +293,8 @@ def project_fabric_r01_r02(
     # The proof is about real G1 execution. Scientific validity remains
     # unreviewed; no E-level is raised and no human acceptance is forged.
     method_label = f"{ref.method_body_id}@{ref.version}"
+    if request.expected_method_body_version not in (None, method_label):
+        raise ValueError("FABRIC_METHOD_VERSION_MISMATCH")
     asset = ScientificReportAsset(
         object_id=member.object_id,
         caller_id=authenticated_caller,
@@ -301,8 +312,9 @@ def project_fabric_r01_r02(
         evidence_subassembly_ids=tuple(item.subassembly_id for item in subs),
         subassemblies=tuple(subs),
     )
-    pinned_request = request.model_copy(
-        update={"expected_method_body_version":method_label}
+    pinned_request = (
+        request if request.expected_method_body_version is not None
+        else request.model_copy(update={"expected_method_body_version": method_label})
     )
     report = report_session(
         runtime, authenticated_caller=authenticated_caller,

@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import date
 from html import escape
 import hashlib
+import re
 from typing import Literal
 
 from pydantic import Field, model_validator
@@ -21,6 +22,10 @@ class AnchoredClaim(FrozenModel):
     source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     page: int = Field(ge=1)
     page_locator_state: Literal["OWNER_ASSERTED", "VERIFIED_IN_SYNTHETIC_SOURCE"] = "OWNER_ASSERTED"
+    # Internal synthetic F08 proof; never embeds raw source excerpts in JSON.
+    evidence_excerpt_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    page_excerpt_offset: int | None = Field(default=None, ge=0)
+    page_excerpt_length: int | None = Field(default=None, ge=1)
     # A page is a locator, not a claim that the composer read the page.
 
 
@@ -88,13 +93,39 @@ def validate_asset(asset: ScientificReportAsset, member: MemberPin,
             content = source_contents.get(claim.carrier_id)
             if content is None or hashlib.sha256(content).hexdigest() != claim.source_sha256:
                 raise ValueError("SCIENTIFIC_SOURCE_UNREADABLE")
-            if claim.page_locator_state == "VERIFIED_IN_SYNTHETIC_SOURCE" and (
-                asset.review_status != "FABRIC_GENERATED_UNREVIEWED"
-                or not asset.producer_id.startswith("fabric:")
-                or not member.object_id.startswith("synthetic-")
-                or not content.startswith(b"SYNTHETIC PAGE 1:")
-            ):
-                raise ValueError("SCIENTIFIC_LOCATOR_UNVERIFIED")
+            if claim.page_locator_state == "VERIFIED_IN_SYNTHETIC_SOURCE":
+                # Asset metadata cannot attest its own provenance. F08 itself
+                # rereads the F07-pinned bytes and checks the evidence excerpt
+                # inside the claimed page span rather than anywhere in source.
+                if (
+                    asset.review_status != "FABRIC_GENERATED_UNREVIEWED"
+                    or not asset.producer_id.startswith("fabric:")
+                    or not member.object_id.startswith("synthetic-")
+                    or claim.evidence_excerpt_sha256 is None
+                    or claim.page_excerpt_offset is None
+                    or claim.page_excerpt_length is None
+                ):
+                    raise ValueError("SCIENTIFIC_LOCATOR_UNVERIFIED")
+                try:
+                    source_text = content.decode("utf-8")
+                except UnicodeDecodeError:
+                    raise ValueError("SCIENTIFIC_LOCATOR_UNVERIFIED") from None
+                markers = list(re.finditer(r"(?m)^SYNTHETIC PAGE (\d+):", source_text))
+                numbers = [int(m.group(1)) for m in markers]
+                if numbers != list(range(1, len(numbers) + 1)):
+                    raise ValueError("SCIENTIFIC_LOCATOR_UNVERIFIED")
+                page_index = claim.page - 1
+                if page_index >= len(markers):
+                    raise ValueError("SCIENTIFIC_LOCATOR_UNVERIFIED")
+                page_end = (markers[page_index + 1].start()
+                            if page_index + 1 < len(markers) else len(source_text))
+                page_body = source_text[markers[page_index].end():page_end]
+                offset = claim.page_excerpt_offset
+                end = offset + claim.page_excerpt_length
+                if end > len(page_body) or hashlib.sha256(
+                    page_body[offset:end].encode("utf-8")
+                ).hexdigest() != claim.evidence_excerpt_sha256:
+                    raise ValueError("SCIENTIFIC_LOCATOR_UNVERIFIED")
             if content.startswith(b"SYNTHETIC PAGE 1:") and (
                     f"SYNTHETIC PAGE {claim.page}:".encode() not in content):
                 raise ValueError("SCIENTIFIC_PAGE_UNAVAILABLE")
@@ -111,7 +142,8 @@ def render_markdown(asset: ScientificReportAsset) -> str:
              f"Статус: {asset.review_status}. Научная приёмка определяется отдельно.",
              f"Автор аналитического состояния: {plain(asset.producer_id)}. "
              f"Право использования: {plain(asset.rights_basis)}.",
-             f"Актуальность проверялась владельцем: {asset.currentness_as_of}.",
+             f"Дата, указанная в запросе (актуальность источника не удостоверена): "
+             f"{asset.currentness_as_of}.",
              f"Описание метода: {plain(asset.method_body_version)} / sha256:{asset.method_body_sha256}. "
              "Этот хеш подтверждает текст описания, НЕ исполняемый код.",
              f"Версия аналитического состояния: {plain(asset.analytic_state_version)}.", "",
@@ -150,7 +182,8 @@ def render_html(asset: ScientificReportAsset) -> str:
              "Научная приёмка определяется отдельно.</p>",
              f"<p>Автор аналитического состояния: {e(asset.producer_id)}. "
              f"Право использования: {e(asset.rights_basis)}. "
-             f"Актуальность: {e(asset.currentness_as_of)}.</p>",
+             f"Дата из запроса (актуальность источника не удостоверена): "
+             f"{e(asset.currentness_as_of)}.</p>",
              f"<p>Описание метода: {e(asset.method_body_version)} "
              f"<code>{e(asset.method_body_sha256)}</code> "
              "(SHA текста описания, НЕ исполняемого кода). "

@@ -116,9 +116,26 @@ def test_actual_fabric_method_invocation_makes_readable_report(tmp_path):
     assert "Осадки в горном водосборе" in readable
     assert "Температура прибрежного слоя" in readable
     assert "VERIFIED_IN_SYNTHETIC_SOURCE" in readable
+    assert all(c.evidence_excerpt_sha256 and c.page_excerpt_length
+               for sub in report.scientific_asset.subassemblies for c in sub.claims)
+    assert "Осадки в горном водосборе; наземный дождемер; суточная сумма." not in (
+        files["report.json"].decode("utf-8")
+    )
     assert "с. 1" in readable and "с. 2" in readable
     assert receipt.report_projection_digest == report.digest
 
+
+
+def test_bridge_never_overwrites_client_method_version_pin(tmp_path):
+    _, _, _, kwargs = setup_run(tmp_path)
+    report, _ = project_fabric_r01_r02(**kwargs)
+    method_label = report.scientific_asset.method_body_version
+    pinned = kwargs["request"].model_copy(update={"expected_method_body_version": method_label})
+    same, _ = project_fabric_r01_r02(**{**kwargs, "request": pinned})
+    assert artifacts(same) == artifacts(report)
+    wrong = pinned.model_copy(update={"expected_method_body_version": "synthetic.wrong@99"})
+    with pytest.raises(ValueError, match="FABRIC_METHOD_VERSION_MISMATCH"):
+        project_fabric_r01_r02(**{**kwargs, "request": wrong})
 
 def test_report_bridge_reproduces_exact_same_output(tmp_path):
     _, _, _, kwargs = setup_run(tmp_path)
