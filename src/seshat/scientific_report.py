@@ -20,6 +20,7 @@ class AnchoredClaim(FrozenModel):
     source_version: str = Field(min_length=1)
     source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     page: int = Field(ge=1)
+    page_locator_state: Literal["OWNER_ASSERTED", "VERIFIED_IN_SYNTHETIC_SOURCE"] = "OWNER_ASSERTED"
     # A page is a locator, not a claim that the composer read the page.
 
 
@@ -51,7 +52,9 @@ class ScientificReportAsset(FrozenModel):
     method_body_version: str = Field(min_length=1)
     method_body_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     analytic_state_version: str = Field(min_length=1)
-    review_status: Literal["OWNER_AUTHORED_UNREVIEWED"] = "OWNER_AUTHORED_UNREVIEWED"
+    review_status: Literal["OWNER_AUTHORED_UNREVIEWED", "FABRIC_GENERATED_UNREVIEWED"] = (
+        "OWNER_AUTHORED_UNREVIEWED"
+    )
     research_problem: str = Field(min_length=1)
     author_scope: str = Field(min_length=1)
     evidence_subassembly_ids: tuple[str, ...] = Field(min_length=1)
@@ -115,7 +118,8 @@ def render_markdown(asset: ScientificReportAsset) -> str:
         for claim in sub.claims:
             lines.append(f"- {claim.stage}: {plain(claim.text)} "
                          f"[источник {plain(claim.carrier_id)}@{plain(claim.source_version)}, "
-                         f"с. {claim.page}, sha256:{claim.source_sha256}]")
+                         f"с. {claim.page}, locator:{claim.page_locator_state}, "
+                         f"sha256:{claim.source_sha256}]")
         lines.append("")
     lines += ["## Provenance и неизвестное", "",
               "Текст составлен только из отдельно переданного аналитического состояния. "
@@ -155,7 +159,8 @@ def render_html(asset: ScientificReportAsset) -> str:
         for claim in sub.claims:
             parts.append(f"<li><strong>{e(claim.stage)}</strong>: {e(claim.text)} "
                          f"[источник {e(claim.carrier_id)}@{e(claim.source_version)}, "
-                         f"с. {claim.page}, <code>sha256:{claim.source_sha256}</code>]</li>")
+                         f"с. {claim.page}, locator:{e(claim.page_locator_state)}, "
+                         f"<code>sha256:{claim.source_sha256}</code>]</li>")
         parts.append("</ul>")
     parts.append("<h2>Provenance и неизвестное</h2><p>Текст составлен только из "
                  "отдельно переданного аналитического состояния. Адрес страницы "

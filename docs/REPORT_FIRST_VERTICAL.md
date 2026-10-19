@@ -64,3 +64,53 @@ any real case, an authorized operator must verify original page coordinates,
 method body, content rights and currentness, then admit the separately reviewed
 analytic state. Scientific acceptance and public release are separate human
 decisions.
+
+
+## First actual G1 -> F07 -> F08 -> F09A synthetic execution bridge (2026-10-19)
+
+The previously documented `--scientific` flag can still compose an **owner-supplied**
+claim state. This does NOT establish that a MethodBody ran. A distinct runnable
+production-seam demonstration now exists:
+
+```sh
+# Run only on a trusted owner-controlled machine, below an existing parent.
+python -m seshat.fabric_waves.report_bridge_demo --output /tmp/seshat-g1-first-private
+```
+
+This CLI actually invokes one registered `fabric_waves` MethodBody via
+`WaveEngine.run` against one rights-admitted, FULL_REQUIRED synthetic source.
+It produces a hashed `SedimentRecord`, FIRED `ActivationRecord`, and verified
+source read manifest in the G1 ledger. `report_bridge.project_fabric_r01_r02`
+checks the in-process engine snapshot and ledger, source membership/version,
+method registration, raw access policy, source bytes and page excerpts against
+F07 before constructing a **FABRIC_GENERATED_UNREVIEWED** R01 analytic asset.
+The F08 Markdown/HTML report is written as `report/report.md` and
+`report/report.html`. The exact asset then flows through serial F09A into an
+**owner-private** `owner-private-batch`, with a SQLite checkpoint and report
+receipts. R03 is metadata-only, and R05 stays externally blocked.
+
+This bridge is **not** a direct medical/publication MethodBody, external model
+invocation, verified clinical inference, or an open-ended autonomous research
+system. The synthetic MethodBody separates two explicit PAGE-tagged source
+statements, not a human dissertation; it cannot infer scientific merit. Its
+versioned callable is registered in the G1 registry; the separate readable
+`method_definition` bytes are pinned in F08, but their SHA-256 is NOT a code
+signature of the callable. The registered G1 signature is recorded separately
+in a private FabricReportBridgeReceipt. **Human scientific acceptance remains
+NOT_ASSERTED**. Source locators for this fixture are flagged
+`VERIFIED_IN_SYNTHETIC_SOURCE`; real PDF page locators are at most
+`OWNER_ASSERTED` until a document-specific verifier checks them.
+
+The current bridge is intentionally restricted to ONE F07-selected research
+object, ONE content-verifiable UTF-8 carrier, FULL_REQUIRED source access,
+R01/R02 and actual in-process trusted provenance. Unknown/missing/stale/denied
+source, missing method activation, wrong user rights, invalid excerpts or
+revoked bytes block generation; no E5 proposal may become E1 or ACCEPTED.
+Broader corpora, binary PDF page mapping, historical MethodBody science
+and valid external SRC-D belong to separate evidence-gated work.
+
+`tests/fabric_waves/test_report_bridge.py` proves this causal route, F09A
+serial resume and negative source/method/authorization cases. The CI workflow
+`.github/workflows/report-first-no-network.yml` exercises it with
+`--network none`, an unprivileged user and a read-only image; the batch
+manifest/database are private and MUST NOT be copied to the customer.

@@ -10,6 +10,9 @@ COPY scripts ./scripts
 COPY docs ./docs
 RUN pip install --no-cache-dir '.[dev]'
 USER 65532:65532
+# Run checkout-level tests against the exact source tree; installed wheel
+# semantics are verified by the separate fabric-waves installed smoke.
+ENV PYTHONPATH=/app/src
 ENV PYTHONUTF8=1
 ENV PYTHONDONTWRITEBYTECODE=1
 CMD ["python", "-m", "seshat.report_demo", "--fixture", "meteorology", "--report", "R01", "--scientific", "--output", "/tmp/report"]

@@ -54,11 +54,26 @@ jobs:
           cp "$dest/batch/items/r01-readable/report.md" "$RUNNER_TEMP/seshat-preview-r01.md"
           test -s "$RUNNER_TEMP/seshat-preview-r01.md"
           grep -q 'OWNER_AUTHORED_UNREVIEWED' "$RUNNER_TEMP/seshat-preview-r01.md"
+      - name: Offline real G1 MethodBody to F07/F08/F09A synthetic bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/seshat-g1-owner-private"
+          mkdir -p "$dest"
+          chmod 700 "$dest"
+          docker run --rm --network none --read-only --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m --mount "type=bind,source=$dest,target=/out" seshat-report:pr python -m seshat.fabric_waves.report_bridge_demo --output /out/one-method-run
+          test -s "$dest/one-method-run/report/report.md"
+          test -s "$dest/one-method-run/owner-private-batch/batch_receipt.json"
+          test -s "$dest/one-method-run/owner-private-batch/items/r01-readable/report.md"
+          grep -q 'FABRIC_GENERATED_UNREVIEWED' "$dest/one-method-run/report/report.md"
+          grep -q 'VERIFIED_IN_SYNTHETIC_SOURCE' "$dest/one-method-run/report/report.md"
+          # Only separately reviewed human-readable text can leave this private directory.
+          grep -q 'FABRIC_GENERATED_UNREVIEWED' "$dest/one-method-run/owner-private-batch/items/r01-readable/report.md"
       - name: Offline report and batch security tests
         shell: bash
         run: |
           set -euo pipefail
-          docker run --rm --network none --read-only --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m seshat-report:pr python -m pytest -q -p no:cacheprovider tests/test_reports.py tests/test_batch.py tests/test_scientific_report.py
+          docker run --rm --network none --read-only --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m seshat-report:pr python -m pytest -q -p no:cacheprovider tests/test_reports.py tests/test_batch.py tests/test_scientific_report.py tests/fabric_waves/test_report_bridge.py
           docker run --rm --network none --read-only --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m seshat-report:pr python -m ruff check --no-cache .
       - name: Print scope boundary
         shell: bash
