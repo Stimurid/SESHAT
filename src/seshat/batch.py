@@ -294,7 +294,10 @@ def _atomic_write_file(path: Path, data: bytes) -> None:
         stream.flush()
         os.fsync(stream.fileno())
     staging.replace(path)
-    with path.open("rb") as stream:
+    # Windows fsync requires a writable descriptor even for an existing file.
+    # The contents were already flushed in staging; this final sync makes the
+    # post-rename artifact handle durable without a read-only fd error.
+    with path.open("r+b") as stream:
         os.fsync(stream.fileno())
 
 
@@ -321,7 +324,8 @@ def _atomic_write_artifacts(item_path: Path, files: dict[str, bytes], *, trusted
             src = staging / name
             dst = item_path / name
             dst.write_bytes(src.read_bytes())
-            with dst.open("rb") as stream:
+            # On Windows os.fsync on a read-only fd fails with EBADF.
+            with dst.open("r+b") as stream:
                 os.fsync(stream.fileno())
     finally:
         if staging.exists():
