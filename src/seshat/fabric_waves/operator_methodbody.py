@@ -77,6 +77,9 @@ class OperatorInvocation:
     source_id: str
     source_bytes: bytes
     source_text: str
+    method_body_id: str
+    method_body_version: str
+    method_body_invocation_bytes: bytes
 
 
 class OperatorSourcePin(FrozenModel):
@@ -160,6 +163,8 @@ def _input_fingerprint(
     source: OperatorSourcePin,
     method: OperatorMethodBodyPin,
     declared_model_identity: str,
+    requested_view: str,
+    declared_token_cost: int | Literal["UNKNOWN"],
 ) -> str:
     return payload_hash(
         {
@@ -168,6 +173,10 @@ def _input_fingerprint(
             "source_id": source.source_id,
             "source_version": source.source_version,
             "source_sha256": source.sha256,
+            "source_rights_basis": source.rights_basis,
+            "source_authorized_view": source.authorized_view,
+            "requested_view": requested_view,
+            "declared_token_cost": declared_token_cost,
             "method_body_id": method.method_body_id,
             "method_body_version": method.version,
             "method_body_invocation_sha256": method.invocation_body_sha256,
@@ -267,6 +276,8 @@ def invoke_operator_method_body(
         source=source,
         method=method,
         declared_model_identity=model_identity,
+        requested_view=requested_view,
+        declared_token_cost=declared_token_cost,
     )
 
     def _execute() -> OperatorRunReceipt:
@@ -276,6 +287,9 @@ def invoke_operator_method_body(
             source_id=source.source_id,
             source_bytes=source_bytes,
             source_text=source_text,
+            method_body_id=method.method_body_id,
+            method_body_version=method.version,
+            method_body_invocation_bytes=method_body_invocation_bytes,
         )
         buffer = StringIO()
         exit_status: Literal["OK", "EXCEPTION"] = "OK"
@@ -302,6 +316,9 @@ def invoke_operator_method_body(
             raise ValueError("OPERATOR_EPISTEMIC_PROMOTION_DENIED")
 
         for claim in result.claims:
+            # Plain UTF-8 adapter cannot truthfully verify PDF/HTML page labels.
+            if claim.page is not None:
+                raise ValueError("OPERATOR_PAGE_MAP_REQUIRED")
             span = source_bytes[claim.byte_offset : claim.byte_offset + claim.byte_length]
             try:
                 decoded_span = span.decode("utf-8")
@@ -321,6 +338,7 @@ def invoke_operator_method_body(
                     content_sha256=actual_source_sha256,
                     byte_length=len(source_bytes),
                     returned_byte_length=len(source_bytes),
+                    detail="BYTE_HASH_VERIFIED; RIGHTS_BASIS_OPERATOR_DECLARED_UNATTESTED",
                 )
             ],
             all_declared_sources_verified=True,
@@ -419,6 +437,8 @@ def export_rights_reviewed_prose(
     the secret bytes verbatim; they are never themselves written out.
     """
 
+    if raw_method_body_invocation_bytes is None or raw_source_bytes is None:
+        raise ValueError("OPERATOR_EXPORT_REVIEW_BYTES_REQUIRED")
     if not reviewer_rights_statement.strip():
         raise ValueError("OPERATOR_EXPORT_RIGHTS_STATEMENT_MISSING")
     if not reviewed_prose.strip():

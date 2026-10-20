@@ -211,6 +211,8 @@ class TestHappyPath:
             receipt=receipt,
             reviewed_prose="A human reviewer wrote this prose about the finding.",
             reviewer_rights_statement="Reviewed under operator-declared-personal-invented-fixture.",
+            raw_method_body_invocation_bytes=method_bytes,
+            raw_source_bytes=source_bytes,
         )
         assert bundle.receipt_output_digest == receipt.output_digest
 
@@ -390,6 +392,7 @@ class TestNegativeGates:
                 reviewed_prose=leaking_prose,
                 reviewer_rights_statement="reviewed",
                 raw_method_body_invocation_bytes=method_bytes,
+                raw_source_bytes=source_bytes,
             )
 
     def test_owner_excluded_selection_denied_via_private_policy_hook(self):
