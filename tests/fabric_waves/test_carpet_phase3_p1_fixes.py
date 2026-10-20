@@ -9,7 +9,6 @@ from seshat.contracts import AcceptanceState
 from seshat.fabric_waves.carpet_hosts import campus_decision_host_engine, campus_host_engine
 from seshat.fabric_waves.carpet_portfolio import (
     PORTFOLIO_HASHED_ARTIFACTS,
-    _git_meta,
     artifact_file_digests,
     execute_portfolio,
     export_artifacts,
@@ -297,8 +296,12 @@ def test_git_meta_unavailable_is_not_attested(monkeypatch) -> None:
     assert meta["attestation"] == "GIT_NOT_ATTESTED"
 
 
-def test_git_meta_dirty_worktree_is_not_git_attested() -> None:
-    meta = _git_meta()
+def test_git_meta_dirty_worktree_is_not_git_attested(monkeypatch) -> None:
+    # CI checks out a clean tree; a test for *dirty* cannot rely on ambient Git status.
+    import seshat.fabric_waves.carpet_portfolio as portfolio
+
+    monkeypatch.setattr(portfolio, "_git_module_paths_dirty", lambda *a, **kw: True)
+    meta = portfolio._git_meta()
     assert meta["attestation"] in {"GIT_REPORTED_UNVERIFIED", "GIT_NOT_ATTESTED"}
 
 

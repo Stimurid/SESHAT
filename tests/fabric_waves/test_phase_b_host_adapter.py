@@ -1532,7 +1532,9 @@ def test_host_modules_never_import_model_clis_and_only_dispatcher_spawns_process
 
 
 def test_host_cli_entry_point_is_registered():
-    root = Path(seshat.__file__).resolve().parents[2]
+    # Under a built wheel, seshat.__file__ lives in site-packages and is not
+    # an address for the source checkout pyproject.toml.
+    root = Path(__file__).resolve().parents[2]
     text = (root / "pyproject.toml").read_text(encoding="utf-8")
     assert 'seshat-fabric-external = "seshat.fabric_waves.external_carrier.host_cli:main"' in text
 
