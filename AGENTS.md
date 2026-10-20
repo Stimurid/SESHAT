@@ -1,5 +1,36 @@
 # AGENTS.md — SESHAT agent operating rules
 
+## Owner decision 2026-10-21 — current authority, overrides legacy issuer plans
+
+The owner decommissioned the standalone SESHAT G1 trusted issuer server and
+explicitly rejected its restoration. **NEVER install, restart, re-create or
+rename that separate privileged issuer, signing daemon, credential service,
+named-pipe sidecar or supposed scientific attestor.** Older SESHAT G1 issuer
+designs and implementation tickets are historical records only. This does not
+remove ordinary Git/GitHub publication controls or the existing user-operated
+Hub; neither may claim the abolished issuer's independent scientific authority.
+
+For current owner-scoped **no-server** source/method work see
+[SESHAT #65](https://github.com/Stimurid/SESHAT/issues/65) and
+[REPORT-FIRST FRONTIER](https://docs.google.com/document/d/1HYnbZyqBpgxpN9kuPArHIVHDIm3bZWJg4UyABYuIDlc/edit).
+Local job records have `SELF_OBSERVED_UNATTESTED` provenance: no automatic
+owner/scientific acceptance and no guaranteed paid exactly-once semantics.
+Real F07 FULL_REQUIRED must obtain actual authorized bytes/rights,
+not trust operator-declared strings or a passed checksum.
+
+A separate **owner selection freeze** in the current FRONTIER excludes a
+specified historical example from every active run, fixture, benchmark,
+sample output and automatic fallback through full project completion. Do not
+reintroduce it through old snapshots or cached test lists. Preserve prior
+evidence solely as archive and require a new explicit owner instruction for
+any future re-entry. Check current selection policy before accessing sources.
+The identities of frozen cases belong in owner-private policy, never public
+fixtures or generated customer prose.
+
+Draft [PR #66](https://github.com/Stimurid/SESHAT/pull/66) is a limited
+operator-local engineering primitive. Passing its CI does not authorize
+merge, real source processing, scientific acceptance or customer release.
+
 ## Repository identity and workspace gate
 
 This directory must be a verified checkout of [Stimurid/SESHAT](https://github.com/Stimurid/SESHAT), the **single canonical** Universal Analytic Fabric implementation. Do not create another implementation repository.
