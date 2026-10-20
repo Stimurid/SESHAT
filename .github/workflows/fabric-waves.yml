@@ -1,0 +1,69 @@
+name: fabric-waves-isolated
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  wheel-and-oracles:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Record exact tested source
+        run: |
+          git rev-parse HEAD > tested-source.txt
+          git rev-parse 'HEAD^{tree}' >> tested-source.txt
+          git status --porcelain >> tested-source.txt
+      - name: Build and install wheel
+        run: |
+          python -m pip install build pytest ruff
+          python -m build --wheel
+          python -m pip install dist/*.whl
+      - name: Negative oracles and full regression
+        run: python -m pytest -q --junitxml=test-results.xml
+      - name: Demonstrate portable negative oracles fail the rejected parent
+        shell: bash
+        run: |
+          set -euo pipefail
+          parent=b0793b3940c1c78dccba019e74744bc13b637083
+          # The red-oracle snapshot is deliberately not in current HEAD ancestry.
+          # Fetch an immutable *pinned* historical test fixture ref, never guess
+          # that checkout fetch-depth includes this rejected parent.
+          git fetch --no-tags origin refs/heads/ci/rejected-parent-b0793b3-fixture
+          test "$(git rev-parse FETCH_HEAD)" = "$parent"
+          mkdir -p "$RUNNER_TEMP/rejected-parent" "$RUNNER_TEMP/parent-oracles"
+          git archive "$parent" | tar -x -C "$RUNNER_TEMP/rejected-parent"
+          cp tests/fabric_waves/test_p1_parent_oracles.py "$RUNNER_TEMP/parent-oracles/"
+          python -m venv "$RUNNER_TEMP/parent-venv"
+          "$RUNNER_TEMP/parent-venv/bin/python" -m pip install pytest "$RUNNER_TEMP/rejected-parent"
+          set +e
+          (cd "$RUNNER_TEMP/parent-oracles" && "$RUNNER_TEMP/parent-venv/bin/python" -I -m pytest -q --junitxml=parent-results.xml)
+          parent_exit=$?
+          set -e
+          cp "$RUNNER_TEMP/parent-oracles/parent-results.xml" parent-results.xml
+          test "$parent_exit" -eq 1
+          python -c 'import xml.etree.ElementTree as E; r=E.parse("parent-results.xml"); cases=r.findall(".//testcase"); assert len(cases)==5 and all(c.find("failure") is not None and c.find("error") is None for c in cases)'
+      - name: Lint
+        run: python -m ruff check .
+      - name: Installed entry point outside checkout
+        run: |
+          cp scripts/fabric_waves_installed_smoke.py "$RUNNER_TEMP/installed-smoke.py"
+          cd "$RUNNER_TEMP"
+          python -I installed-smoke.py
+      - name: Export synthetic demo traces
+        run: seshat-fabric-demo --scenario all --output-dir fabric-artifacts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: exact-tree-fabric-evidence
+          path: |
+            tested-source.txt
+            test-results.xml
+            parent-results.xml
+            fabric-artifacts
+            dist/*.whl

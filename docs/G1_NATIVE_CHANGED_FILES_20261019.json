@@ -1,0 +1,55 @@
+{
+    "schema":  "seshat.worker_changed_files.v1",
+    "base_sha":  "d944e3917c0df6fceb36499d99a1fd11e59a1dd2",
+    "base_tree":  "3c711ac769c8fab9e91ad1a2efc9f46cda19fc6f",
+    "child_sha":  "HUB_SNAPSHOT_PENDING",
+    "child_tree":  "HUB_SNAPSHOT_PENDING",
+    "tests_executed":  false,
+    "live_jobs_submitted":  0,
+    "files":  [
+                  {
+                      "path":  "docs/G1_NATIVE_INTEGRATION_20261019.md",
+                      "sha256":  "e6e5f4c9edfb94691cc4f5bcdef38f0105e04c7747e4341b5f5e8b27b213ab97"
+                  },
+                  {
+                      "path":  "src/seshat/fabric_waves/external_carrier/host_adapter.py",
+                      "sha256":  "ee6ecdbd4d81aaf4d06f5fe85ce16544eac81f69e1d80179329caead6d4c1f39"
+                  },
+                  {
+                      "path":  "src/seshat/fabric_waves/external_carrier/host_cli.py",
+                      "sha256":  "f249a8230db9347d4a10f11605905e77260f3f63c803c57bd815670e4fe9cf34"
+                  },
+                  {
+                      "path":  "src/seshat/fabric_waves/external_carrier/host_dispatcher.py",
+                      "sha256":  "97970131c0543d1b636bf5ba4d6f5e7bc0aa075a7b6872d981036e79a982d502"
+                  },
+                  {
+                      "path":  "src/seshat/fabric_waves/external_carrier/host_store.py",
+                      "sha256":  "2a6d14ed528aeee33f79cd47c31ef6effd418f3eef779d8c9b32786892354121"
+                  },
+                  {
+                      "path":  "src/seshat/fabric_waves/external_carrier/native_hub_authority.py",
+                      "sha256":  "4e35fd9a5d41290d3d70a6d469a54e0de8bf9402ff0a39e181a381a649e5283a"
+                  },
+                  {
+                      "path":  "src/seshat/fabric_waves/external_carrier/native_hub_bridge.py",
+                      "sha256":  "5f10b7d138566d32ba4064b47ca868403895155344d085b2ffbf9f2187740be1"
+                  },
+                  {
+                      "path":  "tests/fabric_waves/test_native_hub_bridge.py",
+                      "sha256":  "16bb5d6a4121a41390c59b83cc8b7766b44d2f9caf529df1d51ddfed6dd3cff6"
+                  },
+                  {
+                      "path":  "tests/fabric_waves/test_native_hub_integration.py",
+                      "sha256":  "df5206b504f88162a403bc1ffd437b041a7a28e1fdd40c542a45577d2abc8004"
+                  },
+                  {
+                      "path":  "tests/fabric_waves/test_phase_b_host_adapter.py",
+                      "sha256":  "92e2b5f46873468347d8cb901f77c5e3fd80aeee03cc05c0a090df90de1af65b"
+                  },
+                  {
+                      "path":  "tests/fabric_waves/test_phase_b_security_regressions.py",
+                      "sha256":  "945200feb9f9536e1ef98fef7bacd57d98699a14f7447fd09c327a2e4f278b35"
+                  }
+              ]
+}

@@ -12,6 +12,12 @@ dependencies = [
   "pydantic>=2.8,<3",
 ]
 
+[project.scripts]
+seshat-fabric-demo = "seshat.fabric_waves.demo:main"
+seshat-fabric-operator = "seshat.fabric_waves.operator:main"
+seshat-carpet-portfolio = "seshat.fabric_waves.carpet_portfolio:main"
+seshat-fabric-external = "seshat.fabric_waves.external_carrier.host_cli:main"
+
 [project.optional-dependencies]
 dev = [
   "pytest>=8,<9",
@@ -27,3 +33,8 @@ testpaths = ["tests"]
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+
+[tool.ruff.lint]
+# Explicit original core CI gate: syntax, runtime undefined names and unused imports.
+# Ruff's rapidly growing optional style families are separately audited.
+select = ["E4", "E7", "E9", "F"]
