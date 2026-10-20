@@ -91,4 +91,6 @@ def test_unverified_page_label_is_not_accepted_from_plain_text():
             method_body_invocation_bytes=method_data,
             method_callable=caller,
             requested_view="private-operator",
+            owner_excluded_source_ids=frozenset(),
+            owner_excluded_source_sha256=frozenset(),
         )

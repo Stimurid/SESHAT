@@ -31,6 +31,12 @@ class SQLiteOperatorRunLedger:
                 "state TEXT NOT NULL CHECK(state IN ('PENDING','COMPLETE')), "
                 "receipt_json TEXT, receipt_sha256 TEXT)"
             )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS reconciliations("
+                "run_id TEXT PRIMARY KEY, resolution TEXT NOT NULL, "
+                "operator_note_sha256 TEXT NOT NULL, "
+                "FOREIGN KEY(run_id) REFERENCES runs(run_id))"
+            )
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -129,6 +135,68 @@ class SQLiteOperatorRunLedger:
         if result.run_id != run_id:
             raise ValueError("OPERATOR_LEDGER_RUN_ID_MISMATCH")
         return result
+
+    def reconcile_pending(
+        self,
+        run_id: str,
+        *,
+        resolution: str,
+        operator_note: str,
+    ) -> dict[str, str]:
+        """Record a manual outcome decision without replaying an uncertain call.
+
+        This never deletes or reopens a PENDING run_id and never invokes
+        `build`. To try again, the owner must explicitly use a *new* run ID
+        after independently establishing whether the first attempt cost money.
+        """
+        if resolution != "ABANDONED_AMBIGUOUS":
+            raise ValueError("OPERATOR_RECONCILIATION_RESOLUTION_DENIED")
+        if not operator_note.strip() or len(operator_note.strip()) < 12:
+            raise ValueError("OPERATOR_RECONCILIATION_NOTE_REQUIRED")
+        digest = hashlib.sha256(operator_note.encode("utf-8")).hexdigest()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT state FROM runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if row is None or row[0] != "PENDING":
+                raise ValueError("OPERATOR_RECONCILIATION_NOT_PENDING")
+            old = db.execute(
+                "SELECT resolution,operator_note_sha256 "
+                "FROM reconciliations WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if old is not None:
+                if old != (resolution, digest):
+                    raise ValueError("OPERATOR_RECONCILIATION_CONFLICT")
+                return {
+                    "run_id": run_id, "resolution": resolution,
+                    "operator_note_sha256": digest,
+                }
+            db.execute(
+                "INSERT INTO reconciliations("
+                "run_id,resolution,operator_note_sha256) VALUES(?,?,?)",
+                (run_id, resolution, digest),
+            )
+            db.commit()
+        return {
+            "run_id": run_id,
+            "resolution": resolution,
+            "operator_note_sha256": digest,
+        }
+
+    def get_reconciliation(self, run_id: str) -> dict[str, str]:
+        """Read back the manual decision; never a human scientific acceptance."""
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT resolution,operator_note_sha256 "
+                "FROM reconciliations WHERE run_id=?", (run_id,),
+            ).fetchone()
+        if row is None:
+            raise ValueError("OPERATOR_RECONCILIATION_NOT_FOUND")
+        return {
+            "run_id": run_id, "resolution": row[0],
+            "operator_note_sha256": row[1],
+        }
 
 
 __all__ = ["SQLiteOperatorRunLedger"]

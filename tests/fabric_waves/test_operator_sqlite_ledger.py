@@ -17,6 +17,15 @@ from seshat.fabric_waves.operator_methodbody import (
 from seshat.fabric_waves.operator_sqlite_ledger import SQLiteOperatorRunLedger
 
 
+_raw_invoke_operator_method_body = invoke_operator_method_body
+
+
+def invoke_operator_method_body(**kwargs):
+    kwargs.setdefault("owner_excluded_source_ids", frozenset())
+    kwargs.setdefault("owner_excluded_source_sha256", frozenset())
+    return _raw_invoke_operator_method_body(**kwargs)
+
+
 SOURCE = b"INVENTED PUBLIC TEXT: silver fox and copper wire."
 METHOD = b"operator-owned procedure v1: cite a bounded literal span"
 
@@ -94,7 +103,7 @@ def test_fingerprint_drift_still_rejected_after_cold_restart(tmp_path):
         )
 
 
-def test_direct_tamper_receipt_detected(tmp_path):
+def test_accidental_receipt_corruption_detected(tmp_path):
     db = tmp_path / "runs.db"
     _dispatch(SQLiteOperatorRunLedger(db))
     with sqlite3.connect(db) as conn:
@@ -110,3 +119,29 @@ def test_changed_source_fails_before_resume(tmp_path):
     _dispatch(SQLiteOperatorRunLedger(db))
     with pytest.raises(ValueError, match="OPERATOR_SOURCE_BYTES_STALE"):
         _dispatch(SQLiteOperatorRunLedger(db), source_bytes=SOURCE + b" changed")
+
+
+
+def test_negative_replay_with_wrong_source_or_method(tmp_path):
+    ledger = SQLiteOperatorRunLedger(tmp_path / "runs.db")
+    _dispatch(ledger)
+    with pytest.raises(ValueError, match="OPERATOR_REPLAY_SOURCE_MISMATCH"):
+        replay_and_verify_operator_run(
+            ledger=SQLiteOperatorRunLedger(ledger.path), run_id="run-one",
+            source_bytes=SOURCE + b"-other", method_body_invocation_bytes=METHOD,
+        )
+    with pytest.raises(ValueError, match="OPERATOR_REPLAY_METHOD_MISMATCH"):
+        replay_and_verify_operator_run(
+            ledger=SQLiteOperatorRunLedger(ledger.path), run_id="run-one",
+            source_bytes=SOURCE, method_body_invocation_bytes=METHOD + b"-drift",
+        )
+
+
+def test_private_receipt_contains_hashes_not_raw_contents(tmp_path):
+    ledger = SQLiteOperatorRunLedger(tmp_path / "runs.db")
+    receipt = _dispatch(ledger)
+    encoded = receipt.model_dump_json()
+    assert receipt.source_sha256
+    assert receipt.method_body_invocation_sha256
+    assert SOURCE.decode("utf-8") not in encoded
+    assert METHOD.decode("utf-8") not in encoded

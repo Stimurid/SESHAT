@@ -31,6 +31,11 @@ jobs:
         run: |
           set -euo pipefail
           parent=b0793b3940c1c78dccba019e74744bc13b637083
+          # The red-oracle snapshot is deliberately not in current HEAD ancestry.
+          # Fetch an immutable *pinned* historical test fixture ref, never guess
+          # that checkout fetch-depth includes this rejected parent.
+          git fetch --no-tags origin refs/heads/ci/rejected-parent-b0793b3-fixture
+          test "$(git rev-parse FETCH_HEAD)" = "$parent"
           mkdir -p "$RUNNER_TEMP/rejected-parent" "$RUNNER_TEMP/parent-oracles"
           git archive "$parent" | tar -x -C "$RUNNER_TEMP/rejected-parent"
           cp tests/fabric_waves/test_p1_parent_oracles.py "$RUNNER_TEMP/parent-oracles/"

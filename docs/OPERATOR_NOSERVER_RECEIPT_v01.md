@@ -50,9 +50,26 @@ privileged issuer server; no component here reinstalls it.
   reviewed prose and evidence rights. There is no actual customer R01/R02
   or scientific assessment of a real corpus in this v0.1 slice.
 - A required owner exclusion policy is an operator responsibility:
-  active source selection must inject the current private exclusion set.
+  active source selection must inject the current private exclusion set by
+  source identity AND known content SHA-256. Omitted policy arguments fail
+  closed; the receipt records the policy digest and explicitly declares
+  `owner_selection_policy_attested=NO`. The operator can still lie about the
+  supplied list: this is NOT an independent authoritative policy service.
   Fixture IDs in the demo are invented and are not a corpus admission.
   The public module does not embed private source identifiers.
+- Machine-readable receipt fields explicitly state `rights_attested=NO`
+  and `model_run_attested=NO`. `method_interpretation` distinguishes the
+  real built-in pinned-byte interpreter from an opaque unverified callback.
+  A `SourceAccessManifest` `VERIFIED` entry only means local provided bytes
+  and version match the owner-provided digest, not actual F07 authorization.
+- Export now requires original method and source bytes whose SHAs match
+  the stored receipt, and rejects literal or long (>63 character) source /
+  method excerpts in purported reviewed prose. This is an incremental
+  leak guard, **not** a general semantic disclosure-prevention service.
+- `reconcile_pending(run_id, resolution="ABANDONED_AMBIGUOUS", operator_note=...)`
+  records an explicit manual ambiguity decision and its note hash. It does
+  NOT reopen the run ID, fabricate a terminal outcome, or authorize retry.
+  New runs require separate owner investigation of any external costs.
 
 ## Reproduce the bounded operator smoke
 
@@ -60,7 +77,7 @@ From repo worktree, use a Python 3.11+ environment with dependencies:
 
 ```
 set PYTHONPATH=src
-python -m pytest -q -p no:cacheprovider tests/fabric_waves/test_operator_methodbody.py tests/fabric_waves/test_operator_sqlite_ledger.py tests/fabric_waves/test_operator_builtin_method.py
+python -m pytest -q -p no:cacheprovider tests/fabric_waves/test_operator_methodbody.py tests/fabric_waves/test_operator_sqlite_ledger.py tests/fabric_waves/test_operator_builtin_method.py tests/fabric_waves/test_operator_security_review_fixes.py tests/fabric_waves/test_operator_reconciliation.py
 python -m ruff check --no-cache .
 python -m seshat.fabric_waves.operator_local_demo --fixture materials --out PRIVATE_DIR
 python -m seshat.fabric_waves.operator_local_demo --fixture organization --out PRIVATE_DIR

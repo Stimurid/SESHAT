@@ -136,6 +136,13 @@ class OperatorRunReceipt(FrozenModel):
     method_body_invocation_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     declared_model_identity: str = Field(min_length=1)
     declared_token_cost: int | Literal["UNKNOWN"] = "UNKNOWN"
+    rights_attested: Literal["NO"] = "NO"
+    model_run_attested: Literal["NO"] = "NO"
+    method_interpretation: Literal[
+        "OPAQUE_CALLABLE_UNATTESTED", "PINNED_BYTES_INTERPRETED_BUILTIN"
+    ] = "OPAQUE_CALLABLE_UNATTESTED"
+    owner_selection_policy_attested: Literal["NO"] = "NO"
+    owner_selection_policy_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     invocation: OperatorInvocationReceipt
     output_sediment: SedimentRecord
     output_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -165,6 +172,7 @@ def _input_fingerprint(
     declared_model_identity: str,
     requested_view: str,
     declared_token_cost: int | Literal["UNKNOWN"],
+    owner_selection_policy_digest: str,
 ) -> str:
     return payload_hash(
         {
@@ -177,6 +185,7 @@ def _input_fingerprint(
             "source_authorized_view": source.authorized_view,
             "requested_view": requested_view,
             "declared_token_cost": declared_token_cost,
+            "owner_selection_policy_digest": owner_selection_policy_digest,
             "method_body_id": method.method_body_id,
             "method_body_version": method.version,
             "method_body_invocation_sha256": method.invocation_body_sha256,
@@ -235,7 +244,8 @@ def invoke_operator_method_body(
     requested_view: str,
     declared_model_identity: str = "UNKNOWN",
     declared_token_cost: int | Literal["UNKNOWN"] = "UNKNOWN",
-    owner_excluded_source_ids: frozenset[str] = frozenset(),
+    owner_excluded_source_ids: frozenset[str] | None = None,
+    owner_excluded_source_sha256: frozenset[str] | None = None,
 ) -> OperatorRunReceipt:
     """Run one real, owner-operated MethodBody invocation against one source.
 
@@ -246,6 +256,16 @@ def invoke_operator_method_body(
 
     if method_callable is None:
         raise ValueError("OPERATOR_INVOCATION_REQUIRED")
+    # Never silently treat the private owner selection policy as an empty list.
+    if owner_excluded_source_ids is None or owner_excluded_source_sha256 is None:
+        raise ValueError("OPERATOR_OWNER_SELECTION_POLICY_REQUIRED")
+    if not all(len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+               for value in owner_excluded_source_sha256):
+        raise ValueError("OPERATOR_OWNER_SELECTION_POLICY_INVALID")
+    policy_digest = payload_hash({
+        "excluded_source_ids": sorted(owner_excluded_source_ids),
+        "excluded_source_sha256": sorted(owner_excluded_source_sha256),
+    })
     if not source.rights_basis.strip():
         raise ValueError("OPERATOR_SOURCE_RIGHTS_MISSING")
     if requested_view != source.authorized_view:
@@ -257,6 +277,8 @@ def invoke_operator_method_body(
         raise ValueError("OPERATOR_SOURCE_EXCLUDED_BY_OWNER_POLICY")
 
     actual_source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+    if actual_source_sha256 in owner_excluded_source_sha256:
+        raise ValueError("OPERATOR_SOURCE_EXCLUDED_BY_OWNER_POLICY")
     if not source_bytes or actual_source_sha256 != source.sha256:
         raise ValueError("OPERATOR_SOURCE_BYTES_STALE")
 
@@ -278,6 +300,7 @@ def invoke_operator_method_body(
         declared_model_identity=model_identity,
         requested_view=requested_view,
         declared_token_cost=declared_token_cost,
+        owner_selection_policy_digest=policy_digest,
     )
 
     def _execute() -> OperatorRunReceipt:
@@ -319,12 +342,11 @@ def invoke_operator_method_body(
             # Plain UTF-8 adapter cannot truthfully verify PDF/HTML page labels.
             if claim.page is not None:
                 raise ValueError("OPERATOR_PAGE_MAP_REQUIRED")
-            span = source_bytes[claim.byte_offset : claim.byte_offset + claim.byte_length]
-            try:
-                decoded_span = span.decode("utf-8")
-            except UnicodeDecodeError:
-                raise ValueError("OPERATOR_CLAIM_SPAN_INVALID") from None
-            if decoded_span != claim.evidence_excerpt:
+            end = claim.byte_offset + claim.byte_length
+            if end > len(source_bytes):
+                raise ValueError("OPERATOR_CLAIM_SPAN_INVALID")
+            span = source_bytes[claim.byte_offset:end]
+            if span != claim.evidence_excerpt.encode("utf-8"):
                 raise ValueError("OPERATOR_CLAIM_SPAN_INVALID")
 
         manifest = SourceAccessManifest(
@@ -377,6 +399,13 @@ def invoke_operator_method_body(
         output_digest = hashlib.sha256(
             f"{p_hash}:{invocation_receipt.stdout_sha256}".encode("utf-8")
         ).hexdigest()
+        from seshat.fabric_waves.operator_builtin_method import execute_literal_method
+
+        interpretation = (
+            "PINNED_BYTES_INTERPRETED_BUILTIN"
+            if method_callable is execute_literal_method
+            else "OPAQUE_CALLABLE_UNATTESTED"
+        )
         return OperatorRunReceipt(
             run_id=run_id,
             job_id=job_id,
@@ -389,6 +418,8 @@ def invoke_operator_method_body(
             method_body_invocation_sha256=actual_method_sha256,
             declared_model_identity=model_identity,
             declared_token_cost=declared_token_cost,
+            method_interpretation=interpretation,
+            owner_selection_policy_digest=policy_digest,
             invocation=invocation_receipt,
             output_sediment=output_sediment,
             output_digest=output_digest,
@@ -443,15 +474,25 @@ def export_rights_reviewed_prose(
         raise ValueError("OPERATOR_EXPORT_RIGHTS_STATEMENT_MISSING")
     if not reviewed_prose.strip():
         raise ValueError("OPERATOR_EXPORT_PROSE_REQUIRED")
-    for raw in (raw_method_body_invocation_bytes, raw_source_bytes):
-        if not raw:
-            continue
+    for raw, expected_sha in (
+        (raw_method_body_invocation_bytes, receipt.method_body_invocation_sha256),
+        (raw_source_bytes, receipt.source_sha256),
+    ):
+        # A caller must provide the exact bytes from the completed private run.
+        # Passing an unrelated string or empty bytes cannot disable screening.
+        if not raw or hashlib.sha256(raw).hexdigest() != expected_sha:
+            raise ValueError("OPERATOR_EXPORT_REVIEW_BYTES_MISMATCH")
         try:
             raw_text = raw.decode("utf-8")
         except UnicodeDecodeError:
-            continue
-        if raw_text and raw_text in reviewed_prose:
+            raise ValueError("OPERATOR_EXPORT_REVIEW_BYTES_INVALID") from None
+        if raw_text in reviewed_prose:
             raise ValueError("OPERATOR_EXPORT_SECRET_LEAK_DENIED")
+        # Detect copied excerpts, even if the complete original is not pasted.
+        if len(reviewed_prose) >= 64:
+            for i in range(len(reviewed_prose) - 63):
+                if reviewed_prose[i : i + 64] in raw_text:
+                    raise ValueError("OPERATOR_EXPORT_SECRET_LEAK_DENIED")
     return OperatorExportBundle(
         run_id=receipt.run_id,
         method_body_id=receipt.method_body_id,

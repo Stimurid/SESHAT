@@ -28,6 +28,16 @@ from seshat.fabric_waves.operator_methodbody import (
     replay_and_verify_operator_run,
 )
 
+_raw_invoke_operator_method_body = invoke_operator_method_body
+
+
+def invoke_operator_method_body(**kwargs):
+    # Only invented fixtures; no real corpus may omit the loaded private policy.
+    kwargs.setdefault("owner_excluded_source_ids", frozenset())
+    kwargs.setdefault("owner_excluded_source_sha256", frozenset())
+    return _raw_invoke_operator_method_body(**kwargs)
+
+
 SOURCE_A_TEXT = "INVENTED SOURCE A: the quick brown fox jumps over the lazy dog."
 SOURCE_B_TEXT = "field,value\nalpha,1\nbeta,2\nINVENTED SOURCE B marker present here.\n"
 

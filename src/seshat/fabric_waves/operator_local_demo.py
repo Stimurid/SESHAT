@@ -81,6 +81,8 @@ def main(argv=None):
             method_callable=execute_literal_method,
             requested_view="private-operator",
             declared_model_identity="deterministic-local-method-no-LLM",
+            owner_excluded_source_ids=frozenset(),
+            owner_excluded_source_sha256=frozenset(),
         )
         result = {"status": "EXECUTED_OR_RESUMED_SELF_OBSERVED",
                   "run_id": run_id, "digest": receipt.output_digest,
