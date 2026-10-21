@@ -485,7 +485,9 @@ def test_bridge_synthetic_child_success_is_unattested_not_verified(monkeypatch):
         pdf, _, _, version, _ = access.read_full_with_metadata(carrier_id)
         return sandbox.SandboxQuoteObservation(
             carrier_id=carrier_id, source_version=version,
-            source_access_full_receipt_sha256="f" * 64,
+            source_access_full_receipt_sha256=__import__(
+                "seshat.pdf_page_evidence", fromlist=["_full_receipt_sha256"]
+            )._full_receipt_sha256(access.read_full_with_metadata(carrier_id)[4]),
             pdf_sha256=hashlib.sha256(pdf).hexdigest(),
             pdf_byte_length=len(pdf), page_number=page_number,
             excerpt_sha256=hashlib.sha256(expected_excerpt.encode()).hexdigest(),
@@ -524,7 +526,9 @@ def test_bridge_two_of_four_child_quotes_is_atomic_rejection(monkeypatch):
         pdf, _, _, version, _ = access.read_full_with_metadata(carrier_id)
         return sandbox.SandboxQuoteObservation(
             carrier_id=carrier_id, source_version=version,
-            source_access_full_receipt_sha256="a" * 64,
+            source_access_full_receipt_sha256=__import__(
+                "seshat.pdf_page_evidence", fromlist=["_full_receipt_sha256"]
+            )._full_receipt_sha256(access.read_full_with_metadata(carrier_id)[4]),
             pdf_sha256=hashlib.sha256(pdf).hexdigest(),
             pdf_byte_length=len(pdf), page_number=page_number,
             excerpt_sha256=hashlib.sha256(expected_excerpt.encode()).hexdigest(),
