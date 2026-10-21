@@ -28,6 +28,7 @@ from seshat.fabric_waves.m5_room_carpet import (
     _unauthorized_decision_probe,
     export_world,
     load_fixture,
+    run_world,
 )
 from seshat.fabric_waves.m6_w2_cycle import completed_source_versions, run_m6_world, split_host_stones
 from seshat.fabric_waves.m5_synthetic_hosts import host_slug
@@ -132,7 +133,7 @@ def _run_world_with_m6_exports(
             [
                 sys.executable,
                 "-m",
-                "seshat.fabric_waves.m5_room_carpet",
+                "seshat.fabric_waves.m6_resume_probe",
                 "--fixture",
                 str(fixture_path),
                 "--fixture-sha256",
@@ -148,7 +149,14 @@ def _run_world_with_m6_exports(
             text=True,
             check=False,
         )
-        resume_evidence = _compare_resume(completed, child_dir, control=world)
+        # W2 is a later M6 event. The child restores only the M5 stones;
+        # comparison with W2 sediment would falsely mark RM06 as failed.
+        m5_control = run_world(
+            host_m5, fixture=fixture, fixture_sha256=fixture_sha256
+        )
+        resume_evidence = _compare_resume(
+            completed, child_dir, control=m5_control
+        )
 
     frontier = world.oracle_inputs_extra.get("m6_frontier_probe") or _frontier_probe(world)
     budget_probe = _budget_probe(world)
