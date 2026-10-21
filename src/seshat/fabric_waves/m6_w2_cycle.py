@@ -239,7 +239,7 @@ def execute_w2_return(
         "source_version": version,
         "content_sha256": pinned,
         "byte_length": byte_len,
-        "reading_extent": "FULL_REQUIRED",
+        "reading_extent": "FULL_SYNTHETIC_FIXTURE",
         "producer_run_id": world.run_ids[-1] if world.run_ids else None,
         **parsed,
     }
