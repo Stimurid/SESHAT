@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from seshat.contracts import RawAccessPolicy
-from seshat.fabric_waves.contracts import EpistemicLevel, MethodBodyRef, StoneEventKind
+from seshat.fabric_waves.contracts import EpistemicLevel, MethodBodyRef, StoneEvent, StoneEventKind
 from seshat.fabric_waves.external_carrier.contracts import (
     AgentEvidenceReturn,
     AgentTaskRequest,
@@ -25,12 +25,18 @@ from seshat.fabric_waves.external_carrier.contracts import (
 )
 from seshat.fabric_waves.external_carrier.ledger import ExternalCarrierLedger
 from seshat.fabric_waves.fixtures import carrier
+from seshat.fabric_waves.scenarios import bundle, output
 from seshat.fabric_waves.m5_room_carpet import WorldRun, run_world
 from seshat.fabric_waves.m5_synthetic_hosts import (
+    BASE_SOURCE_STATE,
+    MISSING_SOURCE_NEED_STATE,
+    SYNTHETIC_RIGHT,
     carrier_id_from_uri,
     observed_missing_source_needs,
+    verified_source_base_states,
 )
-from seshat.fabric_waves.sediment import SedimentRecord, payload_hash
+from seshat.fabric_waves.room_builder import CapabilitySpec, admitted_threads, compile_room_for_stone
+from seshat.fabric_waves.sediment import SedimentRecord
 
 
 def _utc_now() -> str:
@@ -257,30 +263,138 @@ def execute_w2_return(
     )
     ledger.admit_return(evidence)
 
-    sediment_id = f"external-w2-{world.slug}-{stone_id}"
-    digest = payload_hash(proposal)
-    record = SedimentRecord(
-        sediment_id=sediment_id,
-        object_type="m6.external_w2_observation",
-        version=digest,
-        research_object_id=str(world.host["host_id"]),
-        payload=proposal,
-        payload_hash=digest,
-        provenance=(
-            "SYNTHETIC_SELF_ASSERTED_RETURN",
-            f"return:{return_id}",
-            f"request:{request_id}",
-            f"source:{carrier_id}@{version}",
-            f"f07_digest:{pinned}",
-        ),
-        source_carrier_refs=(carrier_id,),
-        produced_by_thread=f"m6-w2-{world.slug}",
-        produced_at_tick=1000,
-        produced_in_wave=1,
-        produced_by_stone_kind=StoneEventKind.FRONTIER_RETURN,
-        epistemic_level=EpistemicLevel.E5,
+    # Build a real, dynamically bound *synthetic* capability over the admitted
+    # new carrier. A manually deposited E5 proposal does not count as F04/F05
+    # work: the engine must fire an actual source-reading thread and ledger it.
+    engine = world.engine
+    thread_id = f"m6-w2-evidence-{world.slug}-{stone_id}"
+    run_id = f"m6-{world.slug}-{stone_id}-source-wave"
+
+    def observe_w2(inv):
+        data = inv.carried_payload
+        observed_text = str(data.get("text") or "")
+        # Engine invocations expose the authenticated source manifest, not
+        # the provider's free-form source_versions map. Read the exact F07
+        # receipts and compare them to the synthetic host-pinned source.
+        manifest = data.get("source_access_manifest")
+        source_receipts = manifest.receipts if manifest else ()
+        pinned_receipt = any(
+            r.carrier_id == carrier_id
+            and r.source_version == version
+            and r.content_sha256 == pinned
+            for r in source_receipts
+        )
+        observed_digest = hashlib.sha256(observed_text.encode("utf-8")).hexdigest()
+        if not pinned_receipt or observed_digest != pinned:
+            from seshat.fabric_waves.method_body import BodyResult
+            return BodyResult(aporia="M6_W2_SOURCE_VERSION_OR_DIGEST_DRIFT")
+        observed_version = version
+        observed_payload = {
+            **proposal,
+            "source_version": observed_version,
+            "content_sha256": observed_digest,
+            "byte_length": len(observed_text.encode("utf-8")),
+            "producer_run_id": run_id,
+            **_parse_w2_fields(observed_text),
+        }
+        result = output(inv, observed_payload, kind="m6.external_w2_observation")
+        return result.model_copy(update={
+            "produced_sediments": tuple(
+                item.model_copy(update={
+                    "provenance": (*item.provenance,
+                                   "SYNTHETIC_SELF_ASSERTED_RETURN",
+                                   "TEST_FIXTURE_NOT_REAL_F07"),
+                }, deep=True)
+                for item in result.produced_sediments
+            ),
+        }, deep=True)
+
+    spec, law, body = bundle(
+        thread_id,
+        observe_w2,
+        source=carrier_id,
+        kinds=(StoneEventKind.FRONTIER_RETURN,),
+        output_sediment_type="m6.external_w2_observation",
     )
-    world.engine.sediment.deposit(record)
+    engine.bodies.register(body, operations=(spec.nodes[0].operation_id,))
+    engine.thread_specs[thread_id] = spec
+    engine.propagation_laws[thread_id] = law
+    # Expose the actual binding to RM20; a FIRED thread without an explicit
+    # registry capability must remain a fatal unbound-orphan defect.
+    world.binding["M6-W2-SYNTHETIC"] = (thread_id,)
+    w2_capability = CapabilitySpec(
+        registry_id="M6-W2-SYNTHETIC",
+        role="synthetic source-bound external return validation",
+        read_set=(MISSING_SOURCE_NEED_STATE, BASE_SOURCE_STATE),
+        write_set=("SyntheticW2Observation",),
+        requires_rights=SYNTHETIC_RIGHT,
+    )
+    room = compile_room_for_stone(
+        host_id=str(world.host["host_id"]),
+        host_slug=world.slug,
+        stone={"stone_id": f"{stone_id}-W2-EVIDENCE", "kind": "FRONTIER_NEED"},
+        registry=(*world.registry, w2_capability),
+        thread_binding={**world.binding, "M6-W2-SYNTHETIC": (thread_id,)},
+        available_base_states=(
+            *verified_source_base_states(engine, world.host),
+            MISSING_SOURCE_NEED_STATE,
+        ),
+        granted_rights=(SYNTHETIC_RIGHT,),
+        budget=dict(world.host.get("room_budget") or {}),
+        desired_output_states=("SyntheticW2Observation",),
+    )
+    if room.admitted_engine_threads != (thread_id,):
+        raise ValueError("M6_W2_F04_F05_CAPABILITY_NOT_ADMITTED")
+    world.manifests.append(room)
+    source_event = StoneEvent(
+        event_id=f"{run_id}:return",
+        kind=StoneEventKind.FRONTIER_RETURN,
+        issued_at_tick=1100,
+        payload={
+            "need_id": need_activation,
+            "synthetic_return": True,
+            "source_carrier_id": carrier_id,
+            "source_version": version,
+        },
+    )
+    with admitted_threads(engine, room.admitted_engine_threads):
+        engine.run(run_id=run_id, budget=world.budget, initial_stone=source_event)
+    room.close(activations=engine.ledger.activations, run_id=run_id)
+    fired = [
+        a for a in engine.ledger.activations
+        if a.run_id == run_id and a.thread_id == thread_id and a.outcome.value == "FIRED"
+    ]
+    records = [
+        r for r in engine.sediment.all_records()
+        if r.produced_by_thread == thread_id
+        and r.object_type == "m6.external_w2_observation"
+        and r.payload.get("content_sha256") == pinned
+    ]
+    if len(fired) != 1 or len(records) != 1:
+        selected = [
+            (a.run_id, a.thread_id, a.outcome.value, a.error_code, a.error_detail)
+            for a in engine.ledger.activations if a.run_id == run_id
+        ]
+        raise ValueError(
+            f"M6_W2_F04_F05_NO_SOURCE_BOUND_ACTIVATION: fired={len(fired)} "
+            f"records={len(records)} observed={selected!r}"
+        )
+    record = records[0]
+    # Scientific status is not elevated: the source and this MethodBody are
+    # artificial; E5 here remains the separately admitted external *proposal*.
+    proposal["producer_run_id"] = run_id
+    world.run_ids.append(run_id)
+    world.oracle_inputs_extra.setdefault("m6_w2_actual_activations", []).append({
+        "source_carrier_id": carrier_id,
+        "source_version": version,
+        "source_sha256": pinned,
+        "need_activation_id": need_activation,
+        "run_id": run_id,
+        "activation_id": fired[0].activation_id,
+        "room_id": room.room_id,
+        "sediment_id": record.sediment_id,
+        "sediment_version": record.version,
+    })
 
     receipt = {
         "stone_id": stone_id,
@@ -292,7 +406,11 @@ def execute_w2_return(
         "source_version": version,
         "content_sha256": pinned,
         "byte_length": byte_len,
-        "sediment_id": sediment_id,
+        "sediment_id": record.sediment_id,
+        "w2_activation_id": fired[0].activation_id,
+        "w2_run_id": run_id,
+        "w2_room_id": room.room_id,
+        "sediment_version": record.version,
         "parsed": parsed,
         "evidence_return": evidence.model_dump(mode="python"),
     }

@@ -134,9 +134,21 @@ def compose_report_section(
         )
         status: ReportAvailability = "AVAILABLE"
     elif report_id == "R02":
+        fired = world.oracle_inputs_extra.get("m6_w2_actual_activations") or ()
+        causal = (
+            " W2 source-dependent F04/F05 synthetic engine activation trace: "
+            + "; ".join(
+                f"need=`{item['need_activation_id']}` → run=`{item['run_id']}` "
+                f"→ activation=`{item['activation_id']}` → sediment=`{item['sediment_id']}` "
+                f"version=`{item['sediment_version']}`"
+                for item in fired
+            )
+            if fired else " W2 source-dependent activation NOT_OBSERVED."
+        )
         body = (
             "Typed object–method–evidence graph (synthetic): nodes are sediment records "
             f"from run_ids {', '.join(world.run_ids) or 'none'}; edges follow activations only."
+            + causal
         )
         status = "AVAILABLE" if world.run_ids else "PARTIAL"
     elif report_id == "R03":
@@ -150,13 +162,21 @@ def compose_report_section(
         status = "AVAILABLE" if body.strip() and body != "_no grounded facts recorded_" else "PARTIAL"
     elif report_id == "R05":
         if w2:
+            verified = world.oracle_inputs_extra.get("m6_w2_actual_activations") or ()
+            trace = verified[0] if verified else None
             body = (
                 "Fictional external W2 test observation (self-asserted simulator receipt; "
                 "NO independently attested F07 owner rights): "
                 f"carrier `{w2.get('carrier_id')}` version `{w2.get('source_version')}` "
                 f"({w2.get('byte_length')} bytes, digest `{w2.get('content_sha256')}`). "
                 f"Producer run: `{w2.get('producer_run_id') or 'n/a'}`. "
-                "Coverage caveat: synthetic invented programme only; no world coverage claim."
+                + (
+                    f"Source-bound engine trace: activation `{trace['activation_id']}`, "
+                    f"room `{trace['room_id']}`, sediment `{trace['sediment_id']}` "
+                    f"version `{trace['sediment_version']}`. "
+                    if trace else "Source-bound engine activation NOT_OBSERVED. "
+                )
+                + "Coverage caveat: synthetic invented programme only; no world coverage claim."
             )
             status = "AVAILABLE"
         elif frontier_probe and frontier_probe.get("trigger_activation_id"):
@@ -294,6 +314,7 @@ def compose_report_bundle(
         "w2_admitted": w2 is not None,
         "w2_authority": "SYNTHETIC_SELF_ASSERTED_NOT_REAL_F07" if w2 else "NO_W2",
         "w2_receipts": list(world.oracle_inputs_extra.get("m6_w2_receipts") or ()),
+        "w2_activation_trace": list(world.oracle_inputs_extra.get("m6_w2_actual_activations") or ()),
         "synthetic_only": True,
     }
 
