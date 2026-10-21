@@ -297,7 +297,17 @@ def execute_w2_return(
             "producer_run_id": run_id,
             **_parse_w2_fields(observed_text),
         }
-        return output(inv, observed_payload, kind="m6.external_w2_observation")
+        result = output(inv, observed_payload, kind="m6.external_w2_observation")
+        return result.model_copy(update={
+            "produced_sediments": tuple(
+                item.model_copy(update={
+                    "provenance": (*item.provenance,
+                                   "SYNTHETIC_SELF_ASSERTED_RETURN",
+                                   "TEST_FIXTURE_NOT_REAL_F07"),
+                }, deep=True)
+                for item in result.produced_sediments
+            ),
+        }, deep=True)
 
     spec, law, body = bundle(
         thread_id,
