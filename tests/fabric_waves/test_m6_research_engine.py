@@ -281,3 +281,79 @@ def test_m6_human_refusal_requires_attempt_not_aporia_label():
     assert rx05()["observed"] == "PASS"
     world.oracle_inputs_extra["m6_human_refusal"] = {"attempted": True, "rejected": False, "accepted_view_size_after": 1}
     assert rx05()["observed"] == "FAIL"
+
+
+def test_m6_current_source_reporting_uses_b2_not_stale_b1(portfolio):
+    output, _root = portfolio
+    u = next(x for x in output["worlds"] if x["host_id"] == "WORLD_U_SYNTHETIC_UNIVERSITY")
+    r03 = next(x for x in u["m6_bundle"]["reports"] if x["report_id"] == "R03")
+    r06 = next(x for x in u["m6_bundle"]["reports"] if x["report_id"] == "R06")
+    assert "group-beta@B2: coverage_proxy denominator=20" in r03["markdown"]
+    assert "group-beta@B1: coverage_proxy denominator=18" not in r03["markdown"]
+    assert "group-alpha@A1: coverage_proxy denominator=30" in r03["markdown"]
+    assert "denominator=20" in r06["markdown"]
+    assert "denominator=30" in r06["markdown"]
+    assert "NONCOMPARABLE" in r06["markdown"]
+
+
+def test_m6_w2_duplicate_is_witnessed_with_no_second_evidence():
+    fixture, sha = load_fixture(FIXTURE, approved_sha256=ORIGINAL_FIXTURE_SHA256)
+    world = run_m6_world(fixture["hosts"][0], fixture=fixture, fixture_sha256=sha)
+    receipts = world.oracle_inputs_extra["m6_w2_receipts"]
+    assert len(receipts) == 2
+    assert receipts[0]["status"] == "SYNTHETIC_SELF_ASSERTED_RETURN"
+    assert receipts[1]["status"] == "IDEMPOTENT_REPLAY"
+    assert receipts[1]["verified_no_new_evidence"] is True
+    ledger = world.oracle_inputs_extra["m6_external_ledger"]
+    assert len(ledger["evidence_returns"]) == 1
+
+
+def test_f09a_finished_batch_duplicate_new_process_preserves_exact_portfolio(tmp_path):
+    root = tmp_path / "batch"
+    run_m6_portfolio(
+        FIXTURE, root, approved_sha256=ORIGINAL_FIXTURE_SHA256,
+        verify_subprocess_resume=False,
+    )
+    names = ["f09a_batch_manifest.json", "f09a_batch_receipt.json", "m6_portfolio_receipt.json"]
+    before = {name: (root / name).read_bytes() for name in names}
+    resumed = subprocess.run(
+        [sys.executable, "-m", "seshat.fabric_waves.m6_research_engine",
+         "--fixture", str(FIXTURE), "--output-dir", str(root),
+         "--f09a-resume-after", "world-o-synthetic-service", "--no-subprocess-resume"],
+        capture_output=True, text=True, check=False,
+    )
+    assert resumed.returncode == 0, resumed.stderr
+    after = {name: (root / name).read_bytes() for name in names}
+    assert after == before
+    assert len(json.loads(after["m6_portfolio_receipt.json"])["worlds"]) == 2
+
+
+@pytest.mark.parametrize("mutate", ["ledger", "oracle", "version", "phantom"])
+def test_f09a_refuses_changed_ledger_or_version_and_missing_prior_artifact(tmp_path, mutate):
+    root = tmp_path / mutate
+    run_m6_portfolio(
+        FIXTURE, root, approved_sha256=ORIGINAL_FIXTURE_SHA256,
+        verify_subprocess_resume=False,
+    )
+    world = root / "world-u-synthetic-university"
+    manifest_file = root / "f09a_batch_manifest.json"
+    if mutate in {"ledger", "oracle"}:
+        name = "m6_external_ledger.json" if mutate == "ledger" else "m6_oracles.json"
+        with (world / name).open("a", encoding="utf-8") as stream:
+            stream.write("\n")
+        expected = "F09A_ARTIFACT_HASH_MISMATCH"
+    elif mutate == "version":
+        manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+        manifest["items"][0]["completed_source_versions"][0]["version"] = "FORGED"
+        manifest_file.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+        expected = "F09A_SOURCE_VERSIONS_MISMATCH"
+    else:
+        import shutil
+        shutil.rmtree(world)
+        expected = "F09A_PHANTOM_DONE_MISSING_DIR"
+    with pytest.raises(CheckpointRejected, match=expected):
+        run_m6_portfolio(
+            FIXTURE, root, approved_sha256=ORIGINAL_FIXTURE_SHA256,
+            verify_subprocess_resume=False,
+            f09a_resume_after_slug="world-u-synthetic-university",
+        )
