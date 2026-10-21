@@ -168,7 +168,23 @@ jobs:
           test -s "$dest/run/world-u-synthetic-university/m6_external_ledger.json"
           test -s "$dest/run/world-u-synthetic-university/carpet.html"
           grep -q 'NONCOMPARABLE' "$dest/run/world-u-synthetic-university/m6_report.md"
-          grep -q 'content_sha256' "$dest/run/world-u-synthetic-university/m6_report.md"
+          # Read the real structured evidence rather than grepping for a key
+          # which the human report intentionally renders as "sha256".
+          python - "$dest/run/world-u-synthetic-university/m6_report_bundle.json" "$dest/run/world-u-synthetic-university/m6_external_ledger.json" <<'PY'
+          import json, re, sys
+          bundle = json.load(open(sys.argv[1], encoding="utf-8"))
+          ledger = json.load(open(sys.argv[2], encoding="utf-8"))
+          assert bundle["w2_authority"] == "SYNTHETIC_SELF_ASSERTED_NOT_REAL_F07", bundle
+          r05 = next(r for r in bundle["reports"] if r["report_id"] == "R05")
+          source = r05["w2_provenance"]
+          digest = source["content_sha256"]
+          assert re.fullmatch("[a-f0-9]{64}", digest), digest
+          assert source["byte_length"] > 0
+          assert digest in r05["markdown"]
+          assert ledger.get("research_needs"), "a real synthetic request ledger record is required"
+          assert ledger.get("evidence_returns"), "a late synthetic source-return record is required"
+          print("M6_SYNTHETIC_W2_SOURCE_LEDGER_VERIFIED", digest[:12])
+          PY
           python - "$dest/run/world-u-synthetic-university/m6_oracles.json" <<'PY'
           import json, sys
           data = json.load(open(sys.argv[1], encoding="utf-8"))
