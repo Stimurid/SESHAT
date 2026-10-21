@@ -309,6 +309,9 @@ def execute_w2_return(
     engine.bodies.register(body, operations=(spec.nodes[0].operation_id,))
     engine.thread_specs[thread_id] = spec
     engine.propagation_laws[thread_id] = law
+    # Expose the actual binding to RM20; a FIRED thread without an explicit
+    # registry capability must remain a fatal unbound-orphan defect.
+    world.binding["M6-W2-SYNTHETIC"] = (thread_id,)
     w2_capability = CapabilitySpec(
         registry_id="M6-W2-SYNTHETIC",
         role="synthetic source-bound external return validation",
