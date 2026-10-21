@@ -356,3 +356,51 @@ def test_f09a_refuses_changed_ledger_or_version_and_missing_prior_artifact(tmp_p
             verify_subprocess_resume=False,
             f09a_resume_after_slug="world-u-synthetic-university",
         )
+
+
+def test_w2_actual_compiled_room_fires_source_dependent_activation_and_sediment():
+    fixture, sha = load_fixture(FIXTURE, approved_sha256=ORIGINAL_FIXTURE_SHA256)
+    for host in fixture["hosts"]:
+        world = run_m6_world(host, fixture=fixture, fixture_sha256=sha)
+        witnessed = world.oracle_inputs_extra["m6_w2_actual_activations"]
+        assert len(witnessed) == 1
+        receipt = world.oracle_inputs_extra["m6_w2_receipts"][0]
+        link = witnessed[0]
+        assert receipt["w2_activation_id"] == link["activation_id"]
+        assert receipt["w2_run_id"] == link["run_id"]
+        assert receipt["sediment_version"] == link["sediment_version"]
+        assert link["need_activation_id"] in {
+            a.activation_id for a in world.engine.ledger.activations if a.error_code == "BODY_APORIA"
+        }
+        assert link["source_sha256"] == receipt["content_sha256"]
+        source_room = next(m for m in world.manifests if m.room_id == link["room_id"])
+        assert source_room.admitted_engine_threads == (f"m6-w2-evidence-{world.slug}-W2",)
+        activation = next(a for a in world.engine.ledger.activations if a.activation_id == link["activation_id"])
+        assert activation.outcome.value == "FIRED"
+        assert activation.run_id == link["run_id"]
+        evidence = next(r for r in world.engine.sediment.all_records() if r.sediment_id == link["sediment_id"])
+        assert evidence.version == link["sediment_version"]
+        assert evidence.source_carrier_refs == (link["source_carrier_id"],)
+        assert evidence.produced_by_thread == activation.thread_id
+        assert evidence.payload["content_sha256"] == link["source_sha256"]
+        assert len(world.oracle_inputs_extra["m6_external_ledger"]["evidence_returns"]) == 1
+        assert not any(r["status"] == "SYNTHETIC_SELF_ASSERTED_RETURN" for r in world.oracle_inputs_extra["m6_w2_receipts"][1:])
+
+
+def test_w2_absence_leaves_no_late_wave_and_changed_source_only_changes_w2_line():
+    fixture, sha = load_fixture(FIXTURE, approved_sha256=ORIGINAL_FIXTURE_SHA256)
+    source_host = fixture["hosts"][0]
+    no_return = run_m6_world(source_host, fixture=fixture, fixture_sha256=sha, skip_w2=True)
+    assert not no_return.oracle_inputs_extra.get("m6_w2_actual_activations")
+    base = run_m6_world(source_host, fixture=fixture, fixture_sha256=sha)
+    alternative = copy.deepcopy(source_host)
+    next(st for st in alternative["stones"] if st.get("kind") == "W2_RETURN")["external_source"]["content"] += "; independent_labels=YES"
+    shifted = run_m6_world(alternative, fixture=fixture, fixture_sha256=sha)
+    old = base.oracle_inputs_extra["m6_w2_actual_activations"][0]
+    new = shifted.oracle_inputs_extra["m6_w2_actual_activations"][0]
+    assert old["source_sha256"] != new["source_sha256"]
+    assert old["run_id"] == new["run_id"]  # same operation, different pinned source evidence
+    from seshat.fabric_waves.m5_room_carpet import _branch_snapshot
+    assert _branch_snapshot(base.engine, branch="alpha", slug=base.slug).payload_hash == _branch_snapshot(
+        shifted.engine, branch="alpha", slug=shifted.slug
+    ).payload_hash
