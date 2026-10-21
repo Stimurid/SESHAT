@@ -225,7 +225,7 @@ jobs:
           # Run from a directory that contains no checkout, so only the wheel
           # can supply the fixture resource.
           cd "$RUNNER_TEMP"
-          "$RUNNER_TEMP/wheelenv/bin/seshat-m5-carpet" --output-dir "$RUNNER_TEMP/wheel-run" --no-subprocess-resume
+          "$RUNNER_TEMP/wheelenv/bin/seshat-m5-carpet" --output-dir "$RUNNER_TEMP/wheel-run"
           test -s "$RUNNER_TEMP/wheel-run/m5_portfolio_receipt.json"
           echo "PACKAGED_FIXTURE_RESOLVED_FROM_WHEEL=1"
       - name: Lint
@@ -264,6 +264,27 @@ jobs:
         with:
           name: m5-synthetic-artifacts
           path: ${{ runner.temp }}/m5-artifacts
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Stage M6 source-bound synthetic runtime witnesses
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/m6-artifacts"
+          mkdir -p "$stage"
+          src="$RUNNER_TEMP/seshat-m6-research/run"
+          if [ -d "$src" ]; then
+            cp -r "$src" "$stage/m6_carpet"
+          fi
+          git rev-parse HEAD > "$stage/source_commit.txt"
+          git rev-parse 'HEAD^{tree}' > "$stage/source_tree.txt"
+      - name: Upload M6 synthetic artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m6-synthetic-artifacts
+          path: ${{ runner.temp }}/m6-artifacts
           retention-days: 7
           if-no-files-found: warn
       - name: Print scope boundary
