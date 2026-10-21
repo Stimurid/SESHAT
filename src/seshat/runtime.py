@@ -60,7 +60,8 @@ class RuntimeSourceAccess:
         "application/json",
     }
     _SUPPORTED_MEDIA_TYPES: ClassVar[set[str]] = _TEXT_MEDIA_TYPES | {
-        "application/octet-stream"
+        "application/octet-stream",
+        "application/pdf",
     }
 
     def __init__(
