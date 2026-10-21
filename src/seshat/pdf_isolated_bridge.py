@@ -36,9 +36,11 @@ class IsolatedBridgePublic(BaseModel):
     schema_id: Literal["seshat.pdf_isolated_bridge.public.v1"] = (
         "seshat.pdf_isolated_bridge.public.v1"
     )
-    status: BridgeStatus
-    code: BridgeCode
-    claim_count: int = Field(ge=0, le=12)
+    # Public projection deliberately has NO candidate counts or per-case codes.
+    # An unknown caller cannot probe private source access via failure reasons.
+    status: Literal["NOT_ADMITTED"] = "NOT_ADMITTED"
+    code: Literal["NO_VERIFIED_QUOTE_PROOF"] = "NO_VERIFIED_QUOTE_PROOF"
+    claim_count: Literal[0] = 0
     admitted_quote_count: Literal[0] = 0
     semantic_entailment: Literal["NOT_ASSESSED"] = "NOT_ASSESSED"
     source_rights_independently_attested: Literal["NO"] = "NO"
@@ -68,9 +70,9 @@ class IsolatedBridgeReceipt(BaseModel):
     customer_release: Literal["NOT_AUTHORIZED"] = "NOT_AUTHORIZED"
 
     def public_view(self) -> IsolatedBridgePublic:
-        return IsolatedBridgePublic(
-            status=self.status, code=self.code, claim_count=self.claim_count
-        )
+        # Keep detailed rejection/observation statuses in the owner-private
+        # receipt; they are a source existence and quote-matching oracle.
+        return IsolatedBridgePublic()
 
 
 def verify_synthetic_claims_in_sandbox(
