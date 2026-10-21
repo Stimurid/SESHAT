@@ -162,11 +162,28 @@ def evaluate_m6_oracles(
     else:
         rows.append(_row("RX10", "RX10_F07_BYTE_EXTENT", NOT_TESTED, "no W2"))
 
-    if receipts and any(r.get("status") == "IDEMPOTENT_REPLAY" for r in receipts):
-        rows.append(_row("RX11", "RX11_W2_IDEMPOTENT", PASS, "replay observed"))
-    elif receipts:
-        rows.append(_row("RX11", "RX11_W2_IDEMPOTENT", NOT_TESTED, "single pass"))
+    replays = [r for r in receipts if r.get("status") == "IDEMPOTENT_REPLAY"]
+    if replays:
+        unchanged = all(
+            r.get("fresh_activations") == 0
+            and r.get("fresh_sediment") == 0
+            for r in replays
+        )
+        rows.append(
+            _row(
+                "RX11", "RX11_W2_IDEMPOTENT",
+                PASS if unchanged else FAIL,
+                "identical W2 return has zero fresh activations and sediment",
+                replay_count=len(replays),
+                all_zero_side_effects=unchanged,
+            )
+        )
     else:
-        rows.append(_row("RX11", "RX11_W2_IDEMPOTENT", NOT_TESTED, "no returns"))
+        rows.append(
+            _row(
+                "RX11", "RX11_W2_IDEMPOTENT",
+                NOT_TESTED, "no W2 replay attempted",
+            )
+        )
 
     return rows
