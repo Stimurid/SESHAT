@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from seshat.contracts import RawAccessPolicy, SourceAccessStatus
 from seshat.pdf_claims import MAX_RESPONSE_BYTES, ModelCandidate, _unique_pairs
+from seshat.pdf_page_evidence import _full_receipt_sha256
 from seshat.pdf_sandbox import (
     PdfSandboxError, SandboxQuoteObservation, _check_synthetic_pdf_fixture,
     _SYNTHETIC_CARRIER_ID, MAX_SANDBOX_PDF_BYTES,
@@ -151,6 +152,10 @@ def verify_synthetic_claims_in_sandbox(
         return result("BLOCKED", "F07_DENIED_OR_DRIFTED")
     if len(pdf) > MAX_SANDBOX_PDF_BYTES:
         return result("BLOCKED", "PDF_INPUT_LIMIT")
+    try:
+        original_read_digest = _full_receipt_sha256(receipt)
+    except (ValueError, TypeError, UnicodeError):
+        return result("BLOCKED", "F07_DENIED_OR_DRIFTED")
 
     observations: list[SandboxQuoteObservation] = []
     for quote in candidate.evidence:
@@ -171,6 +176,7 @@ def verify_synthetic_claims_in_sandbox(
             or obs.carrier_id != carrier_id
             or obs.source_version != version
             or obs.pdf_sha256 != pdf_hash
+            or obs.source_access_full_receipt_sha256 != original_read_digest
             or obs.pdf_byte_length != len(pdf)
             or obs.page_number != quote.page
             or obs.excerpt_sha256 != hashlib.sha256(
