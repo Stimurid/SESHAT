@@ -13,7 +13,6 @@ from seshat.fabric_waves.m6_w2_cycle import w2_observations
 _LEAKED_REFERENCE_MARKERS: tuple[str, ...] = (
     "DEVELOPMENT_EXPOSED_REFERENCE_ANSWER",
     "AUTHORIAL_WORKED_ANSWER",
-    "Z45HEMH2eHSr3DAM2tRGyawadS5",
 )
 
 
@@ -71,12 +70,24 @@ def evaluate_m6_oracles(
             )
         )
 
-    if re.search(r"DecisionRight", operator_markdown, re.I) and "NOT_AUTHORIZED" in operator_markdown:
-        rows.append(_row("RX05", "RX05_HUMAN_REJECT_NOT_PROMOTED", PASS, "reject boundary preserved"))
-    elif any(o.kind == "APORIA" for o in world.outcomes) and not w2_payload:
-        rows.append(_row("RX05", "RX05_HUMAN_REJECT_NOT_PROMOTED", PASS, "aporia without spoof right"))
-    else:
-        rows.append(_row("RX05", "RX05_HUMAN_REJECT_NOT_PROMOTED", NOT_TESTED, "no aporia gate"))
+    gate = world.oracle_inputs_extra.get("m6_unauthorized_decision_probe")
+    rejected = bool(gate and gate.get("attempted") and gate.get("rejected"))
+    human_decisions = [
+        e.event_id
+        for e in world.engine.ledger.events
+        if e.run_id in world.run_ids and e.kind.value == "HUMAN_DECISION"
+    ]
+    rows.append(
+        _row(
+            "RX05",
+            "RX05_HUMAN_REJECT_NOT_PROMOTED",
+            (PASS if rejected and not human_decisions else FAIL) if gate else NOT_TESTED,
+            "observed refused unauthorized accept attempt; no decision event entered active run",
+            attempted=bool(gate and gate.get("attempted")),
+            rejected=bool(gate and gate.get("rejected")),
+            human_decision_event_ids=human_decisions,
+        )
+    )
 
     phantom = re.findall(r"`([^`]+)`", operator_markdown + "\n" + str(bundle.get("revised_question") or ""))
     known = set(bundle.get("anchors") or ())
@@ -94,7 +105,7 @@ def evaluate_m6_oracles(
     for rec in receipts:
         known.add(str(rec.get("return_id") or ""))
         known.add(str(rec.get("carrier_id") or ""))
-    bad = [p for p in phantom if p and p not in known and not p.startswith("synthetic://")]
+    bad = [p for p in phantom if p and p not in known]
     if bad:
         rows.append(_row("RX06", "RX06_PHANTOM_CITATION", FAIL, f"unknown={bad[:3]}"))
     else:
@@ -115,11 +126,29 @@ def evaluate_m6_oracles(
 
     r05 = triad.get("R05", {})
     if w2_payload and r05.get("status") == "AVAILABLE":
-        prov = w2_payload.get("content_sha256")
-        if prov and str(prov) in str(r05.get("markdown", "")):
+        prov = str(w2_payload.get("content_sha256") or "")
+        admitted = [
+            record for record in receipts
+            if record.get("status") == "ADMITTED"
+            and record.get("carrier_id") == w2_payload.get("carrier_id")
+            and record.get("source_version") == w2_payload.get("source_version")
+            and record.get("content_sha256") == prov
+        ]
+        source_store = world.engine.carrier_store
+        digest_bound = False
+        if source_store is not None and admitted:
+            try:
+                observed_digest = source_store.pin_content_digest(
+                    str(w2_payload.get("carrier_id")),
+                    pinned_version=str(w2_payload.get("source_version")),
+                )
+                digest_bound = bool(prov) and observed_digest == prov
+            except (ValueError, KeyError):
+                digest_bound = False
+        if digest_bound and prov in str(r05.get("markdown", "")):
             rows.append(_row("RX09", "RX09_W2_PROVENANCE_IN_R05", PASS, f"digest={prov[:12]}"))
         else:
-            rows.append(_row("RX09", "RX09_W2_PROVENANCE_IN_R05", FAIL, "R05 missing W2 digest"))
+            rows.append(_row("RX09", "RX09_W2_PROVENANCE_IN_R05", FAIL, "R05 lacks admitted source/ledger/digest binding"))
     elif not w2_payload and r05.get("status") in ("PARTIAL", "BLOCKED_EXTERNAL_EVIDENCE"):
         rows.append(_row("RX09", "RX09_W2_PROVENANCE_IN_R05", PASS, "no W2 partial correctly"))
     else:
