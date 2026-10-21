@@ -338,7 +338,14 @@ def _execute_stone(
             stored_result=prior,
         )
 
-    base_states = [BASE_STONE_STATE, *( [BASE_SOURCE_STATE] if versions else [] ), *extra_base_states]
+    # Match room_builder tests: synthetic hosts always declare sources; the
+    # compiler must see SyntheticSourceVersion even if version lookup fails.
+    has_carriers = engine.carrier_store is not None and bool(carrier_ids)
+    base_states = [
+        BASE_STONE_STATE,
+        *([BASE_SOURCE_STATE] if has_carriers else []),
+        *extra_base_states,
+    ]
     manifest = compile_room_for_stone(
         host_id=str(world.host["host_id"]),
         host_slug=world.slug,

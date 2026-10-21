@@ -264,11 +264,13 @@ def test_response_must_be_exact_bytes():
 
 
 def test_no_hardcoded_real_source_in_the_bridge():
+    import re
     from pathlib import Path
 
     source = Path(
         __file__
     ).resolve().parents[1] / "src" / "seshat" / "pdf_claims_sandbox_bridge.py"
     text = source.read_text(encoding="utf-8")
-    assert ".pdf" not in text
+    # Module names may contain ``pdf``; forbid literal filesystem/URL sources.
+    assert re.search(r"""['"][^'"]+\.pdf['"]""", text) is None
     assert "http://" not in text and "https://" not in text

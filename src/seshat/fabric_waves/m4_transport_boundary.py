@@ -213,7 +213,13 @@ def preview_bounds(
         cut = cut[:-1]
 
     lines = raw.split(b"\n")
-    long_lines = [i for i, line in enumerate(lines, 1) if len(line) > LONG_LINE_BYTES]
+    preview_end = len(cut)
+    long_lines: list[int] = []
+    offset = 0
+    for index, line in enumerate(lines, 1):
+        if len(line) > LONG_LINE_BYTES and offset >= preview_end:
+            long_lines.append(index)
+        offset += len(line) + 1
     return {
         "stored_bytes": len(raw),
         "preview_bytes": len(cut),
