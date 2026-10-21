@@ -149,6 +149,9 @@ jobs:
                   assert row["evidence"], row["oracle_id"]
           s = data["summary"]
           assert s["pass"] + s["fail"] + s["not_tested"] == 20
+          # Strict acceptance: written oracles that never ran are not green.
+          assert s["pass"] == 20 and s["fail"] == 0 and s["not_tested"] == 0, s
+          assert s["all_passed"] is True, s
           print("RM_PASS=%d RM_FAIL=%d RM_NOT_TESTED=%d" % (s["pass"], s["fail"], s["not_tested"]))
           print("RM_NOT_TESTED_IDS=%s" % ",".join(s["not_tested_ids"]))
           PY
