@@ -297,6 +297,7 @@ def _run_world_with_m6_exports(
         "checkpoint": checkpoint,
         "rm_summary": oracle_summary(rm_rows),
         "m6_summary": oracle_summary(m6_rows),
+        "m6_rows": m6_rows,
         "frontier_probe": frontier,
         "resume_evidence": resume_evidence,
         "completed_source_versions": source_versions,
@@ -380,6 +381,7 @@ def run_m6_portfolio(
                 "m6_bundle": bundle,
                 "rm_summary": rm["summary"],
                 "m6_summary": oracle_summary(rx),
+                "m6_rows": rx,
                 "completed_source_versions": source_snapshots[slug],
                 "resumed_verified_prior": True,
             })
@@ -517,26 +519,37 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    rm_failed = sorted(
-        {
-            oid
-            for w in portfolio["worlds"]
-            for oid in w["rm_summary"].get("failed_ids") or ()
-        }
-    )
-    if rm_failed:
-        print(f"M5 RM FAIL: {', '.join(rm_failed)}", file=sys.stderr)
+    if len(portfolio.get("worlds") or ()) != 2:
+        print("M6_PORTFOLIO_WORLD_COUNT_INCOMPLETE", file=sys.stderr)
         return 1
-    m6_failed = sorted(
-        {
-            oid
-            for w in portfolio["worlds"]
-            for oid in w["m6_summary"].get("failed_ids") or ()
-        }
-    )
-    if m6_failed:
-        print(f"M6 RX FAIL: {', '.join(m6_failed)}", file=sys.stderr)
-        return 1
+    for item in portfolio["worlds"]:
+        rm = item["rm_summary"]
+        if not (rm.get("pass") == 20 and rm.get("fail") == 0 and rm.get("not_tested") == 0):
+            print(f"M5 RM INCOMPLETE: {item['world_slug']} {rm}", file=sys.stderr)
+            return 1
+        rows = item.get("m6_rows") or ()
+        ids = {row.get("oracle_id") for row in rows}
+        expected = {f"RX{k:02d}" for k in range(1, 12)}
+        exemptions = (
+            {"RX08"} if item["host_id"] == "WORLD_U_SYNTHETIC_UNIVERSITY"
+            else {"RX02", "RX03"} if item["host_id"] == "WORLD_O_SYNTHETIC_SERVICE"
+            else set()
+        )
+        observed_exemptions = {row["oracle_id"] for row in rows if row["observed"] == "NOT_TESTED"}
+        invalid_pass = [
+            row["oracle_id"] for row in rows
+            if row.get("observed") == "PASS" and not row.get("evidence")
+        ]
+        if (
+            ids != expected or len(rows) != 11 or observed_exemptions != exemptions
+            or invalid_pass or any(row.get("observed") == "FAIL" for row in rows)
+        ):
+            print(
+                f"M6_RX_NOT_ACCEPTED: {item['world_slug']} "
+                f"exemptions={observed_exemptions} invalid_pass={invalid_pass}",
+                file=sys.stderr,
+            )
+            return 1
     return 0
 
 
