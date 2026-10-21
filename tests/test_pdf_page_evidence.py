@@ -18,8 +18,10 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 from seshat.contracts import RawAccessPolicy, SourceCarrier, SourceContent
 from seshat.fabric_waves.source_access import FabricCarrierStore
 from seshat.pdf_page_evidence import (
+    PageExcerptQuery,
     PdfPageEvidenceError,
     check_pdf_page_excerpt,
+    _check_pdf_page_excerpts_from_bytes,
 )
 from seshat.runtime import EvidenceAccessError, RuntimeSourceAccess
 import seshat.pdf_page_evidence as pdf_page_evidence
@@ -622,3 +624,183 @@ def test_non_utf8_text_carrier_is_typed_denial_not_raw_decode_error(
             stone_payload=drill if policy is RawAccessPolicy.DRILLBACK else {},
             operation_id="synthetic-negative",
         )
+
+
+# -- Opus audit jx-fc199987dd7a CONDITIONAL_PASS rework: A/C regression tests -
+
+
+def test_unpaired_surrogate_extracted_text_fails_closed_not_raw_unicode_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A: an unpaired surrogate in extracted page text must come back as a
+    typed PdfPageEvidenceError, never a raw UnicodeEncodeError."""
+
+    def fake_extract(reader, page_number, page_count):
+        return "prefix \ud800 suffix"
+
+    monkeypatch.setattr(pdf_page_evidence, "_extract_bounded_page_text", fake_extract)
+    access = _access_for(PDF_A)
+    with pytest.raises(PdfPageEvidenceError) as caught:
+        check_pdf_page_excerpt(access, "pdf1", page_number=1, expected_excerpt="suffix")
+    assert caught.value.code == "PAGE_TEXT_UNICODE_INVALID"
+
+
+def test_safe_text_sha256_rejects_unpaired_surrogate_directly() -> None:
+    with pytest.raises(PdfPageEvidenceError) as caught:
+        pdf_page_evidence._safe_text_sha256("has a \udc00 lone low surrogate")
+    assert caught.value.code == "PAGE_TEXT_UNICODE_INVALID"
+
+
+def test_batch_matches_single_item_checks_across_two_distinct_pages() -> None:
+    """C: the batch helper must agree with the single-item function, given
+    the same already-admitted bytes/metadata, for every query."""
+
+    access = _access_for(PDF_B)
+    pdf_bytes, _, _, version, source_receipt = access.read_full_with_metadata("pdf1")
+    receipt_digest = hashlib.sha256(
+        json.dumps(
+            source_receipt.model_dump(mode="json", exclude_none=True),
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+    single_one = check_pdf_page_excerpt(
+        _access_for(PDF_B), "pdf1", page_number=1, expected_excerpt="Alpha section"
+    )
+    single_two = check_pdf_page_excerpt(
+        _access_for(PDF_B), "pdf1", page_number=2, expected_excerpt="Beta repeats alpha"
+    )
+
+    results = _check_pdf_page_excerpts_from_bytes(
+        pdf_bytes=pdf_bytes, carrier_id="pdf1", source_version=version,
+        source_access_full_receipt_sha256=receipt_digest,
+        queries=[
+            PageExcerptQuery(page_number=1, expected_excerpt="Alpha section"),
+            PageExcerptQuery(page_number=2, expected_excerpt="Beta repeats alpha"),
+        ],
+    )
+    assert len(results) == 2
+    batch_one, batch_two = results
+    assert not isinstance(batch_one, PdfPageEvidenceError)
+    assert not isinstance(batch_two, PdfPageEvidenceError)
+    assert batch_one.excerpt_sha256 == single_one.excerpt_sha256
+    assert batch_one.page_text_sha256 == single_one.page_text_sha256
+    assert batch_two.excerpt_sha256 == single_two.excerpt_sha256
+    assert batch_two.page_text_sha256 == single_two.page_text_sha256
+
+
+def test_batch_parses_once_and_extracts_once_per_distinct_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """C: 4 queries over 2 distinct pages must parse the PDF once and extract
+    each distinct page's text exactly once, not once per query."""
+
+    construct_calls: list[int] = []
+    real_reader_cls = pdf_page_evidence.PdfReader
+
+    class _CountingReader(real_reader_cls):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            construct_calls.append(1)
+            super().__init__(*args, **kwargs)
+
+    extract_calls: list[int] = []
+    real_extract = pdf_page_evidence._extract_bounded_page_text
+
+    def _counting_extract(reader, page_number, page_count):
+        extract_calls.append(page_number)
+        return real_extract(reader, page_number, page_count)
+
+    monkeypatch.setattr(pdf_page_evidence, "PdfReader", _CountingReader)
+    monkeypatch.setattr(pdf_page_evidence, "_extract_bounded_page_text", _counting_extract)
+
+    access = _access_for(PDF_B)
+    pdf_bytes, _, _, version, source_receipt = access.read_full_with_metadata("pdf1")
+    receipt_digest = hashlib.sha256(
+        json.dumps(
+            source_receipt.model_dump(mode="json", exclude_none=True),
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+    results = _check_pdf_page_excerpts_from_bytes(
+        pdf_bytes=pdf_bytes, carrier_id="pdf1", source_version=version,
+        source_access_full_receipt_sha256=receipt_digest,
+        queries=[
+            PageExcerptQuery(page_number=1, expected_excerpt="Alpha section"),
+            PageExcerptQuery(page_number=1, expected_excerpt="unique here"),
+            PageExcerptQuery(page_number=2, expected_excerpt="Beta repeats alpha"),
+            PageExcerptQuery(page_number=2, expected_excerpt="alpha again"),
+        ],
+    )
+    assert all(not isinstance(item, PdfPageEvidenceError) for item in results)
+    assert len(construct_calls) == 1
+    assert sorted(extract_calls) == [1, 2]
+
+
+def test_batch_document_level_failure_raised_once_for_whole_batch() -> None:
+    """C: a malformed document must fail closed once, not be attempted
+    per-query (there is nothing a per-query retry could recover)."""
+
+    with pytest.raises(PdfPageEvidenceError) as caught:
+        _check_pdf_page_excerpts_from_bytes(
+            pdf_bytes=b"NOT A PDF AT ALL",
+            carrier_id="pdf1",
+            source_version="1",
+            source_access_full_receipt_sha256="0" * 64,
+            queries=[
+                PageExcerptQuery(page_number=1, expected_excerpt="fox"),
+                PageExcerptQuery(page_number=1, expected_excerpt="dog"),
+            ],
+        )
+    assert caught.value.code == "MALFORMED_DOCUMENT"
+
+
+def test_batch_per_page_failure_isolated_from_other_queries() -> None:
+    """C: an out-of-range page for one query must not affect a different
+    query on a valid page in the same batch."""
+
+    access = _access_for(PDF_A)  # single-page PDF
+    pdf_bytes, _, _, version, source_receipt = access.read_full_with_metadata("pdf1")
+    receipt_digest = hashlib.sha256(
+        json.dumps(
+            source_receipt.model_dump(mode="json", exclude_none=True),
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+    results = _check_pdf_page_excerpts_from_bytes(
+        pdf_bytes=pdf_bytes, carrier_id="pdf1", source_version=version,
+        source_access_full_receipt_sha256=receipt_digest,
+        queries=[
+            PageExcerptQuery(page_number=2, expected_excerpt="fox"),
+            PageExcerptQuery(page_number=1, expected_excerpt="lazy dog."),
+            PageExcerptQuery(page_number=1, expected_excerpt="giraffe"),
+        ],
+    )
+    assert isinstance(results[0], PdfPageEvidenceError)
+    assert results[0].code == "PAGE_OUT_OF_RANGE"
+    assert not isinstance(results[1], PdfPageEvidenceError)
+    assert isinstance(results[2], PdfPageEvidenceError)
+    assert results[2].code == "EXCERPT_NOT_FOUND"
+
+
+def test_batch_ambiguous_and_strict_type_queries_returned_per_index() -> None:
+    access = _access_for(PDF_B)
+    pdf_bytes, _, _, version, source_receipt = access.read_full_with_metadata("pdf1")
+    receipt_digest = hashlib.sha256(
+        json.dumps(
+            source_receipt.model_dump(mode="json", exclude_none=True),
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+    results = _check_pdf_page_excerpts_from_bytes(
+        pdf_bytes=pdf_bytes, carrier_id="pdf1", source_version=version,
+        source_access_full_receipt_sha256=receipt_digest,
+        queries=[
+            PageExcerptQuery(page_number=2, expected_excerpt="alpha"),
+            PageExcerptQuery(page_number=True, expected_excerpt="alpha"),
+        ],
+    )
+    assert results[0].code == "EXCERPT_AMBIGUOUS"
+    assert results[1].code == "PAGE_NUMBER_INVALID"
