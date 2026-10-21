@@ -160,6 +160,24 @@ def test_no_oracle_reports_pass_without_evidence(portfolio, fixture_data):
                 assert row["evidence"], f"{row['oracle_id']} passed with no evidence"
 
 
+def test_both_worlds_have_strict_all_pass_and_nonempty_rm17_at_real_close(portfolio, fixture_data):
+    """The synthetic acceptance run must exercise every RM and preserve real sediment."""
+    _result, root = portfolio
+    dirs = world_dirs(root, fixture_data)
+    assert len(dirs) >= 2
+    for world_dir in dirs:
+        data = json.loads((world_dir / "oracles.json").read_text(encoding="utf-8"))
+        summary = data["summary"]
+        assert summary["all_passed"] is True, world_dir
+        assert (summary["pass"], summary["fail"], summary["not_tested"]) == (20, 0, 0)
+        rows = {item["oracle_id"]: item for item in data["rows"]}
+        rm17 = rows["RM17"]
+        assert rm17["observed"] == PASS
+        assert rm17["evidence"]["retained"] > 0
+        assert rm17["evidence"]["lost_sediment_ids"] == []
+        assert rm17["evidence"]["mutated_sediment_ids"] == []
+
+
 def test_oracle_summary_is_explicit_about_what_was_not_tested(portfolio, fixture_data):
     _result, root = portfolio
     for world_dir in world_dirs(root, fixture_data):
