@@ -374,7 +374,7 @@ def test_w2_actual_compiled_room_fires_source_dependent_activation_and_sediment(
         }
         assert link["source_sha256"] == receipt["content_sha256"]
         source_room = next(m for m in world.manifests if m.room_id == link["room_id"])
-        assert source_room.admitted_engine_threads == (f"m6-w2-evidence-{world.slug}-W2",)
+        assert source_room.admitted_engine_threads == (f"m6-w2-evidence-{world.slug}-{receipt['stone_id']}",)
         activation = next(a for a in world.engine.ledger.activations if a.activation_id == link["activation_id"])
         assert activation.outcome.value == "FIRED"
         assert activation.run_id == link["run_id"]
