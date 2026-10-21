@@ -86,7 +86,7 @@ def test_rm13_fails_when_the_untouched_branch_is_invalidated(idle_engine):
     alpha = DerivedSnapshot(records=(("obs-x-alpha", "1", "h"),))
     beta = DerivedSnapshot(records=(("obs-x-beta", "2", "h2"),))
 
-    def verdict():
+    def verdict(stale_after_delta: list[str] | None = None):
         rows = rows_by_id(
             evaluate_rm_oracles(
                 OracleInputs(
@@ -96,12 +96,13 @@ def test_rm13_fails_when_the_untouched_branch_is_invalidated(idle_engine):
                     alpha_after=alpha,
                     beta_before=beta,
                     beta_after=beta,
+                    stale_after_delta_ids=stale_after_delta,
                 )
             )
         )
         return rows["RM13"]
 
-    clean = verdict()
+    clean = verdict(stale_after_delta=[])
     assert clean["observed"] == PASS
     assert clean["evidence"]["untouched_branch_marked_stale"] == []
 
@@ -121,7 +122,7 @@ def test_rm13_fails_when_the_untouched_branch_is_invalidated(idle_engine):
             produced_by_stone_kind=StoneEventKind.QUERY,
         )
     )
-    dirty = verdict()
+    dirty = verdict(stale_after_delta=["obs-x-alpha"])
     assert dirty["observed"] == FAIL
     assert dirty["evidence"]["untouched_branch_marked_stale"] == ["obs-x-alpha"]
 
@@ -294,6 +295,28 @@ def test_rm19_fails_when_report_cites_phantom_record(idle_engine):
     )
     assert rows["RM19"]["observed"] == FAIL
     assert phantom in rows["RM19"]["evidence"]["dangling"]
+
+
+def test_rm19_resolves_stone_and_run_ids_when_declared(idle_engine):
+    engine, _ = idle_engine
+    rows = rows_by_id(
+        evaluate_rm_oracles(
+            OracleInputs(
+                engine=engine,
+                run_ids=[],
+                operator_report_markdown=(
+                    "Stone `A1` ran in room `synthetic-organisational-research:A1` "
+                    "as `m5-synthetic-organisational-research-A1`."
+                ),
+                operator_known_identifiers=(
+                    "A1",
+                    "synthetic-organisational-research:A1",
+                    "m5-synthetic-organisational-research-A1",
+                ),
+            )
+        )
+    )
+    assert rows["RM19"]["observed"] == PASS
 
 
 def test_rm19_filtered_ref_list_cannot_hide_phantom_in_markdown(idle_engine):

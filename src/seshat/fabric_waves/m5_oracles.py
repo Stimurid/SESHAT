@@ -90,6 +90,9 @@ class OracleInputs:
     # RM19: citations extracted from the rendered operator answer (not pre-filtered).
     operator_answer_refs: Sequence[str] | None = None
     operator_report_markdown: str | None = None
+    operator_known_identifiers: Sequence[str] | None = None
+    # RM13: stale view captured immediately after the delta stone, before later aporia.
+    stale_after_delta_ids: Sequence[str] | None = None
     # RM20: the capability binding the host declared.
     capability_binding: Mapping[str, tuple[str, ...]] | None = None
 
@@ -419,8 +422,6 @@ def evaluate_rm_oracles(inputs: OracleInputs) -> list[dict[str, Any]]:  # noqa: 
     )
 
     # -- RM13: staleness is transitive AND bounded to the changed branch -----
-    stale = engine.sediment.views["stale"].values()
-    stale_ids = sorted(r.sediment_id for r in stale)
     if inputs.alpha_after is None or inputs.beta_after is None:
         rows.append(
             _row(
@@ -428,10 +429,21 @@ def evaluate_rm_oracles(inputs: OracleInputs) -> list[dict[str, Any]]:  # noqa: 
                 "RM13_TRANSITIVE_STALENESS",
                 NOT_TESTED,
                 "no delta snapshots; a stale count alone proves nothing",
-                stale_sediment_ids=stale_ids,
+                stale_sediment_ids=[],
+            )
+        )
+    elif inputs.stale_after_delta_ids is None:
+        rows.append(
+            _row(
+                "RM13",
+                "RM13_TRANSITIVE_STALENESS",
+                NOT_TESTED,
+                "no stale snapshot at delta time; final aporia must not be folded in",
+                stale_sediment_ids=[],
             )
         )
     else:
+        stale_ids = sorted(inputs.stale_after_delta_ids)
         alpha_ids = {sid for sid, _, _ in inputs.alpha_after.records}
         beta_ids = {sid for sid, _, _ in inputs.beta_after.records}
         wrongly_stale = sorted(set(stale_ids) & alpha_ids)
@@ -575,6 +587,8 @@ def evaluate_rm_oracles(inputs: OracleInputs) -> list[dict[str, Any]]:  # noqa: 
         known = {r.sediment_id for r in engine.sediment.all_records()} | {
             a.activation_id for a in engine.ledger.activations
         }
+        if inputs.operator_known_identifiers:
+            known |= set(inputs.operator_known_identifiers)
         if inputs.operator_report_markdown is not None:
             refs = extract_operator_answer_refs(inputs.operator_report_markdown)
         else:

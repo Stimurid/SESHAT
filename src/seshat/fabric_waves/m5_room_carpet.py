@@ -56,8 +56,6 @@ from seshat.fabric_waves.m5_oracles import (
     oracle_summary,
 )
 from seshat.fabric_waves.m5_synthetic_hosts import (
-    BASE_SOURCE_STATE,
-    BASE_STONE_STATE,
     MISSING_SOURCE_NEED_STATE,
     SYNTHETIC_RIGHT,
     build_host_engine,
@@ -248,6 +246,42 @@ def _source_observations(
             digest = None
         out[cid] = SourceObservation(carrier_id=cid, version=version, content_sha256=digest)
     return out
+
+
+def _lookup_sediment(engine: WaveEngine, sediment_id: str):
+    """Return a sediment record from any view or the canonical store."""
+
+    for view in engine.sediment.views.values():
+        record = view.get(sediment_id)
+        if record is not None:
+            return record
+    return next(
+        (r for r in engine.sediment.all_records() if r.sediment_id == sediment_id),
+        None,
+    )
+
+
+def _stale_sediment_ids(engine: WaveEngine) -> list[str]:
+    return sorted(r.sediment_id for r in engine.sediment.views["stale"].values())
+
+
+def _operator_known_identifiers(world: WorldRun) -> list[str]:
+    """Identifiers the operator report may cite besides sediment and activations."""
+
+    engine = world.engine
+    ids: set[str] = set(world.run_ids)
+    for outcome in world.outcomes:
+        ids.add(outcome.stone_id)
+        if outcome.run_id:
+            ids.add(outcome.run_id)
+    for manifest in world.manifests:
+        ids.add(manifest.room_id)
+    for stone in world.host.get("stones") or ():
+        ids.add(str(stone["stone_id"]))
+    for run in engine.ledger.runs:
+        if run.run_id in world.run_ids:
+            ids.add(run.run_id)
+    return sorted(ids)
 
 
 def _branch_snapshot(engine: WaveEngine, *, branch: str, slug: str) -> DerivedSnapshot:
@@ -542,6 +576,7 @@ def run_world(
             # untouched branch look changed.
             alpha_after = _branch_snapshot(engine, branch="alpha", slug=slug)
             beta_after = _branch_snapshot(engine, branch="beta", slug=slug)
+            world.oracle_inputs_extra["stale_after_delta"] = _stale_sediment_ids(engine)
         if (
             index == 0
             and not world.resumed_from_checkpoint
@@ -756,16 +791,27 @@ def _self_attestation_probe(world: WorldRun, checkpoint: M5Checkpoint) -> dict[s
 def _unauthorized_decision_probe(world: WorldRun) -> dict[str, Any]:
     """An acceptance without a verified decision right must be refused."""
 
+    engine = world.engine
     target = next(
         (
             r.sediment_id
-            for r in world.engine.sediment.all_records()
+            for r in engine.sediment.all_records()
             if r.object_type == "synthetic.hypothesis_proposal"
         ),
         None,
     )
     if target is None:
-        return {"rejected": False, "reason": "NO_PROPOSAL_TO_ATTEMPT", "attempted": False}
+        slug = world.slug
+        for candidate in (
+            f"proposal-{slug}",
+            f"projection-{slug}",
+            f"reconcile-{slug}",
+        ):
+            if _lookup_sediment(engine, candidate) is not None:
+                target = candidate
+                break
+    if target is None:
+        return {"rejected": False, "reason": "NO_PROMOTABLE_SUBJECT", "attempted": False}
     reasons: list[str] = []
     # (a) a bare string is not human authority
     try:
@@ -850,7 +896,11 @@ def _operator_sections(world: WorldRun) -> tuple[dict[str, str], list[str]]:
 
         if kind == "QUERY":
             question_lines.append(f"- **{outcome.stone_id}**: {stone.get('question', '')}")
-            projection = produced.get(f"projection-{world.slug}")
+            proj_id = f"projection-{world.slug}"
+            projection = produced.get(proj_id) or _lookup_sediment(engine, proj_id)
+            produced_ids = (
+                outcome.stored_result.produced_sediment_ids if outcome.stored_result else ()
+            )
             if projection is not None:
                 refs.append(projection.sediment_id)
                 payload = projection.payload
@@ -860,6 +910,14 @@ def _operator_sections(world: WorldRun) -> tuple[dict[str, str], list[str]]:
                     f"their derived signals {'differ' if payload['divergent'] else 'agree'} "
                     f"(`{projection.sediment_id}`@{projection.version})."
                 )
+                if proj_id not in produced_ids or any(
+                    later.kind == "APORIA" for later in world.outcomes[world.outcomes.index(outcome) + 1 :]
+                ):
+                    unresolved_lines.append(
+                        f"- **{outcome.stone_id}**: this stone's run produced the projection above; "
+                        "a later APORIA stone re-derived both branches and may have moved the "
+                        "working view — the ledger record above is the version grounded for this stone."
+                    )
                 if payload["divergent"]:
                     unresolved_lines.append(
                         f"- **{outcome.stone_id}**: the two records disagree; the evidence held "
@@ -1425,6 +1483,8 @@ def run_two_worlds(
             ),
             operator_answer_refs=_filtered_refs,
             operator_report_markdown=operator_report_md,
+            operator_known_identifiers=_operator_known_identifiers(world),
+            stale_after_delta_ids=world.oracle_inputs_extra.get("stale_after_delta"),
             capability_binding=world.binding,
         )
         oracle_rows = evaluate_rm_oracles(inputs)
