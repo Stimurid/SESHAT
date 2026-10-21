@@ -272,7 +272,11 @@ def _check_with_slot(
 ) -> SandboxQuoteObservation:
     _preflight(image, synthetic_fixture=synthetic_fixture)
     try:
-        pdf, declared, actual, version, full = source_access.read_full_with_metadata(carrier_id)
+        # Each child attempt must ask the provider again: cached F07 receipts
+        # would miss revocation or byte drift between quotes.
+        pdf, declared, actual, version, full = (
+            source_access.read_fresh_full_with_metadata(carrier_id)
+        )
         digest = hashlib.sha256(pdf).hexdigest()
         if (
             declared != "application/pdf" or actual != "application/pdf"
