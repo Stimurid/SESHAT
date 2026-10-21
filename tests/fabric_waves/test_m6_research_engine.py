@@ -404,3 +404,26 @@ def test_w2_absence_leaves_no_late_wave_and_changed_source_only_changes_w2_line(
     assert _branch_snapshot(base.engine, branch="alpha", slug=base.slug).records == _branch_snapshot(
         shifted.engine, branch="alpha", slug=shifted.slug
     ).records
+
+
+def test_w2_rx09_rejects_forged_activation_and_source_digest():
+    from seshat.fabric_waves.m6_oracles import evaluate_m6_oracles
+    fixture, sha = load_fixture(FIXTURE, approved_sha256=ORIGINAL_FIXTURE_SHA256)
+    world = run_m6_world(fixture["hosts"][0], fixture=fixture, fixture_sha256=sha)
+    bundle = compose_report_bundle(world)
+    def row():
+        return next(
+            r for r in evaluate_m6_oracles(world, bundle, operator_markdown="")
+            if r["oracle_id"] == "RX09"
+        )
+    assert row()["observed"] == "PASS"
+    trace = world.oracle_inputs_extra["m6_w2_actual_activations"][0]
+    original = trace["activation_id"]
+    trace["activation_id"] = "made-up-activation"
+    assert row()["observed"] == "FAIL"
+    trace["activation_id"] = original
+    original_digest = trace["source_sha256"]
+    trace["source_sha256"] = "0" * 64
+    assert row()["observed"] == "FAIL"
+    trace["source_sha256"] = original_digest
+    assert row()["observed"] == "PASS"
