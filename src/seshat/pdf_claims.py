@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -193,6 +193,104 @@ def _unique_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
+class _AdmittedSource(NamedTuple):
+    """One admitted F07 FULL read, already checked against the candidate."""
+
+    candidate: ModelCandidate
+    pdf_bytes: bytes
+    version: str
+    pdf_digest: str
+    source_receipt: object
+    source_receipt_digest: str
+    pins: dict
+
+
+def _reject_fn(response_digest: str, tags: dict[str, object]):
+    def rejected(code: QuoteGateOutcomeCode, **kwargs: object) -> ModelQuoteGateReceipt:
+        return ModelQuoteGateReceipt(
+            status="REJECTED",
+            code=code,
+            response_sha256=response_digest,
+            method_id=tags["method_id"],
+            run_scope=tags["run_scope"],
+            **kwargs,
+        )
+
+    return rejected
+
+
+def _parse_and_admit(
+    *, access: RuntimeSourceAccess, carrier_id: str, response_json: bytes, response_digest: str,
+    tags: dict[str, object],
+) -> tuple[ModelQuoteGateReceipt | None, _AdmittedSource | None]:
+    """Strict whole-JSON candidate check plus exactly one admitted FULL read.
+
+    Shared by the in-process gate and the sandboxed bridge so both admit a
+    source on identical terms. Returns ``(rejection, None)`` or
+    ``(None, admitted)``; it never performs any extraction itself, so a
+    source-invalid candidate reaches no extractor at all.
+    """
+
+    rejected = _reject_fn(response_digest, tags)
+
+    if len(response_json) > MAX_RESPONSE_BYTES:
+        return rejected("RESPONSE_TOO_LARGE"), None
+    try:
+        raw = json.loads(response_json.decode("utf-8"), object_pairs_hook=_unique_pairs)
+        candidate = ModelCandidate.model_validate(raw)
+        tags["method_id"] = candidate.method_id
+        tags["run_scope"] = candidate.run_scope
+        if any(not item.strip() or len(item) > 2_000 for item in candidate.unknowns):
+            return rejected("CANDIDATE_SCHEMA_INVALID"), None
+        if any(not item.claim.strip() or not item.excerpt.strip() for item in candidate.evidence):
+            return rejected("CANDIDATE_SCHEMA_INVALID"), None
+    except (UnicodeError, ValueError, ValidationError, TypeError):
+        return rejected("CANDIDATE_SCHEMA_INVALID"), None
+
+    evidence_pairs = [(item.page, item.excerpt) for item in candidate.evidence]
+    if len(evidence_pairs) != len(set(evidence_pairs)):
+        return rejected("CANDIDATE_DUPLICATE_EVIDENCE"), None
+
+    if candidate.source_id != carrier_id:
+        return rejected("SOURCE_ID_MISMATCH"), None
+    if type(access) is not RuntimeSourceAccess:
+        return rejected("SOURCE_ACCESS_INVALID"), None
+    try:
+        pdf_bytes, declared_media, actual_media, version, source_receipt = (
+            access.read_full_with_metadata(carrier_id)
+        )
+    except EvidenceAccessError:
+        return rejected("SOURCE_ACCESS_DENIED"), None
+    if declared_media != "application/pdf" or actual_media != "application/pdf":
+        return rejected("PDF_MEDIA_TYPE_REQUIRED"), None
+    pdf_digest = hashlib.sha256(pdf_bytes).hexdigest()
+    if (
+        candidate.source_version != version
+        or source_receipt.status is not SourceAccessStatus.VERIFIED
+        or source_receipt.read_kind != "FULL"
+        or source_receipt.carrier_id != carrier_id
+        or source_receipt.source_version != version
+        or source_receipt.content_sha256 != pdf_digest
+        or source_receipt.byte_length != len(pdf_bytes)
+    ):
+        return rejected("SOURCE_VERSION_OR_RECEIPT_MISMATCH"), None
+    source_receipt_digest = _full_receipt_sha256(source_receipt)
+    return None, _AdmittedSource(
+        candidate=candidate,
+        pdf_bytes=pdf_bytes,
+        version=version,
+        pdf_digest=pdf_digest,
+        source_receipt=source_receipt,
+        source_receipt_digest=source_receipt_digest,
+        pins=dict(
+            source_id=carrier_id,
+            source_version=version,
+            pdf_sha256=pdf_digest,
+            source_access_full_receipt_sha256=source_receipt_digest,
+        ),
+    )
+
+
 def verify_pdf_model_claims(
     *, access: RuntimeSourceAccess, carrier_id: str, response_json: bytes
 ) -> ModelQuoteGateReceipt:
@@ -212,68 +310,27 @@ def verify_pdf_model_claims(
     response_digest = hashlib.sha256(response_json).hexdigest()
 
     tags: dict[str, object] = {"method_id": None, "run_scope": None}
+    rejected = _reject_fn(response_digest, tags)
 
-    def rejected(code: QuoteGateOutcomeCode, **kwargs: object) -> ModelQuoteGateReceipt:
-        return ModelQuoteGateReceipt(
-            status="REJECTED",
-            code=code,
-            response_sha256=response_digest,
-            method_id=tags["method_id"],
-            run_scope=tags["run_scope"],
-            **kwargs,
-        )
-
-    if len(response_json) > MAX_RESPONSE_BYTES:
-        return rejected("RESPONSE_TOO_LARGE")
-    try:
-        raw = json.loads(response_json.decode("utf-8"), object_pairs_hook=_unique_pairs)
-        candidate = ModelCandidate.model_validate(raw)
-        tags["method_id"] = candidate.method_id
-        tags["run_scope"] = candidate.run_scope
-        if any(not item.strip() or len(item) > 2_000 for item in candidate.unknowns):
-            return rejected("CANDIDATE_SCHEMA_INVALID")
-        if any(not item.claim.strip() or not item.excerpt.strip() for item in candidate.evidence):
-            return rejected("CANDIDATE_SCHEMA_INVALID")
-    except (UnicodeError, ValueError, ValidationError, TypeError):
-        return rejected("CANDIDATE_SCHEMA_INVALID")
-
-    evidence_pairs = [(item.page, item.excerpt) for item in candidate.evidence]
-    if len(evidence_pairs) != len(set(evidence_pairs)):
-        return rejected("CANDIDATE_DUPLICATE_EVIDENCE")
-
-    if candidate.source_id != carrier_id:
-        return rejected("SOURCE_ID_MISMATCH")
-    if type(access) is not RuntimeSourceAccess:
-        return rejected("SOURCE_ACCESS_INVALID")
-    try:
-        pdf_bytes, declared_media, actual_media, version, source_receipt = (
-            access.read_full_with_metadata(carrier_id)
-        )
-    except EvidenceAccessError:
-        return rejected("SOURCE_ACCESS_DENIED")
-    if declared_media != "application/pdf" or actual_media != "application/pdf":
-        return rejected("PDF_MEDIA_TYPE_REQUIRED")
-    pdf_digest = hashlib.sha256(pdf_bytes).hexdigest()
-    if (
-        candidate.source_version != version
-        or source_receipt.status is not SourceAccessStatus.VERIFIED
-        or source_receipt.read_kind != "FULL"
-        or source_receipt.carrier_id != carrier_id
-        or source_receipt.source_version != version
-        or source_receipt.content_sha256 != pdf_digest
-        or source_receipt.byte_length != len(pdf_bytes)
-    ):
-        return rejected("SOURCE_VERSION_OR_RECEIPT_MISMATCH")
-    source_receipt_digest = _full_receipt_sha256(source_receipt)
+    rejection, admitted = _parse_and_admit(
+        access=access, carrier_id=carrier_id, response_json=response_json,
+        response_digest=response_digest, tags=tags,
+    )
+    if rejection is not None:
+        return rejection
+    assert admitted is not None
+    candidate = admitted.candidate
+    pdf_bytes = admitted.pdf_bytes
+    version = admitted.version
+    pdf_digest = admitted.pdf_digest
+    source_receipt = admitted.source_receipt
+    source_receipt_digest = admitted.source_receipt_digest
+    pins = admitted.pins
 
     queries = [
         PageExcerptQuery(page_number=item.page, expected_excerpt=item.excerpt)
         for item in candidate.evidence
     ]
-    pins = dict(
-        source_id=carrier_id, source_version=version, pdf_sha256=pdf_digest,
-        source_access_full_receipt_sha256=source_receipt_digest,
-    )
     try:
         proofs = _check_pdf_page_excerpts_from_bytes(
             pdf_bytes=pdf_bytes,

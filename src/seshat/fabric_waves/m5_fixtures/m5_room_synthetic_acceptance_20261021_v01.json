@@ -1,0 +1,428 @@
+﻿{
+    "schema":  "seshat.room_formation.acceptance_fixture.v0.1",
+    "version":  "2026-10-21",
+    "origin":  "OWNER_AUTHORIZED_SEMANTIC_CONTRACT",
+    "status":  "SYNTHETIC_EXPECTED_INPUTS_ONLY__NO_ACTUAL_RUNTIME",
+    "basis_doc":  "https://docs.google.com/document/d/1gunkb2rIm1Nl5iV20yvXtKT9CwzTUBi3NYv8R4ZGbyY/edit",
+    "engine_issue":  "https://github.com/Stimurid/SESHAT/issues/60",
+    "source_exclusion_policy_version":  "OWNER_SOURCE_EXCLUSION_2026-10-21_MANDATORY",
+    "host_rights":  "NONE_REQUIRED_FOR_INVENTED_INPUTS__NO_REAL_WORLD_SOURCES",
+    "required_behaviors":  {
+                               "real_thread_roles_min":  6,
+                               "actual_wave_expected_for_future_test":  true,
+                               "actual_activation_receipt":  null,
+                               "real_fabric_acceptance":  false,
+                               "signed_independent_trust":  false
+                           },
+    "thread_registry":  [
+                            {
+                                "thread_id":  "N-S",
+                                "role":  "source and observation",
+                                "read_set":  [
+                                                 "SyntheticSourceVersion",
+                                                 "Stone"
+                                             ],
+                                "write_set":  [
+                                                  "Observation"
+                                              ],
+                                "requires_rights":  "SYNTHETIC_SELF_CONTAINED",
+                                "actual_activation_receipt":  null
+                            },
+                            {
+                                "thread_id":  "N-Q",
+                                "role":  "question/reframing",
+                                "read_set":  [
+                                                 "Stone",
+                                                 "Observation"
+                                             ],
+                                "write_set":  [
+                                                  "ResearchQuestion"
+                                              ],
+                                "requires_rights":  "SYNTHETIC_SELF_CONTAINED",
+                                "actual_activation_receipt":  null
+                            },
+                            {
+                                "thread_id":  "N-K",
+                                "role":  "concept distinctions",
+                                "read_set":  [
+                                                 "ResearchQuestion",
+                                                 "Observation"
+                                             ],
+                                "write_set":  [
+                                                  "ConceptAlternative"
+                                              ],
+                                "requires_rights":  "SYNTHETIC_SELF_CONTAINED",
+                                "actual_activation_receipt":  null
+                            },
+                            {
+                                "thread_id":  "N-E",
+                                "role":  "evidence and counterexample",
+                                "read_set":  [
+                                                 "Observation",
+                                                 "ConceptAlternative"
+                                             ],
+                                "write_set":  [
+                                                  "EvidenceWarrant"
+                                              ],
+                                "requires_rights":  "SYNTHETIC_SELF_CONTAINED",
+                                "actual_activation_receipt":  null
+                            },
+                            {
+                                "thread_id":  "N-C",
+                                "role":  "cross-thread reconciliation",
+                                "read_set":  [
+                                                 "EvidenceWarrant",
+                                                 "ConceptAlternative"
+                                             ],
+                                "write_set":  [
+                                                  "ReconciledStateOrAPORIA"
+                                              ],
+                                "requires_rights":  "SYNTHETIC_SELF_CONTAINED",
+                                "actual_activation_receipt":  null
+                            },
+                            {
+                                "thread_id":  "N-H",
+                                "role":  "decision-gated proposals",
+                                "read_set":  [
+                                                 "ReconciledStateOrAPORIA"
+                                             ],
+                                "write_set":  [
+                                                  "HypothesisProposal"
+                                              ],
+                                "requires_rights":  "SYNTHETIC_SELF_CONTAINED",
+                                "actual_activation_receipt":  null
+                            },
+                            {
+                                "thread_id":  "N-P",
+                                "role":  "source-grounded projection",
+                                "read_set":  [
+                                                 "ReconciledStateOrAPORIA",
+                                                 "EvidenceWarrant"
+                                             ],
+                                "write_set":  [
+                                                  "Resonance"
+                                              ],
+                                "requires_rights":  "SYNTHETIC_SELF_CONTAINED",
+                                "actual_activation_receipt":  null
+                            },
+                            {
+                                "thread_id":  "N-F",
+                                "role":  "frontier/ external evidence request",
+                                "read_set":  [
+                                                 "MissingSourceNeed"
+                                             ],
+                                "write_set":  [
+                                                  "ResearchNeed"
+                                              ],
+                                "requires_rights":  "SYNTHETIC_SELF_CONTAINED",
+                                "actual_activation_receipt":  null
+                            }
+                        ],
+    "hosts":  [
+                  {
+                      "host_id":  "SYNTHETIC_ORGANISATIONAL_RESEARCH",
+                      "scope":  "Fictional lab Zeta; no persons, clinical records or private PDFs",
+                      "source_versions":  [
+                                              {
+                                                  "id":  "synthetic://lab-zeta/control-a",
+                                                  "version":  "A1",
+                                                  "content":  "Method Alpha records a stable observation in material class T",
+                                                  "rights":  "SYNTHETIC_ALLOWED"
+                                              },
+                                              {
+                                                  "id":  "synthetic://lab-zeta/control-b",
+                                                  "version":  "B1",
+                                                  "content":  "Method Beta observation on modified material has unexplained variance",
+                                                  "rights":  "SYNTHETIC_ALLOWED"
+                                              }
+                                          ],
+                      "stones":  [
+                                     {
+                                         "stone_id":  "A1",
+                                         "kind":  "QUERY",
+                                         "question":  "Which investigative operations are supported and what evidence is missing?",
+                                         "depends_on":  [
+                                                            "A1",
+                                                            "B1"
+                                                        ],
+                                         "must_wave":  [
+                                                           "N-Q",
+                                                           "N-S",
+                                                           "N-K",
+                                                           "N-E",
+                                                           "N-C",
+                                                           "N-P"
+                                                       ],
+                                         "expected":  "ANSWER_WITH_LIMITATIONS"
+                                     },
+                                     {
+                                         "stone_id":  "A2",
+                                         "kind":  "SOURCE_DELTA",
+                                         "mutation":  {
+                                                          "source_id":  "synthetic://lab-zeta/control-b",
+                                                          "old_version":  "B1",
+                                                          "new_version":  "B2",
+                                                          "changed_field":  "B result control record",
+                                                          "new_content":  "Method Beta now has a corrected control record for the changed material"
+                                                      },
+                                         "must_preserve":  [
+                                                               "synthetic://lab-zeta/control-a@A1"
+                                                           ],
+                                         "must_rerun_only_dependencies_of":  [
+                                                                                 "synthetic://lab-zeta/control-b"
+                                                                             ],
+                                         "expected":  "SELECTIVE_REPLAY_WITH_STABLE_A_HASH"
+                                     },
+                                     {
+                                         "stone_id":  "A3",
+                                         "kind":  "APORIA",
+                                         "conflict":  {
+                                                          "claim_a":  "A research conclusion counts with one controlled series",
+                                                          "claim_b":  "An independent holdout is required",
+                                                          "resolution":  "UNKNOWN"
+                                                      },
+                                         "must_wave":  [
+                                                           "N-E",
+                                                           "N-K",
+                                                           "N-C"
+                                                       ],
+                                         "owner_decision_status":  "UNREQUESTED_UNTIL_REAL_DIVERGENCE",
+                                         "expected":  "APORIA_WITH_TWO_ALTERNATIVES"
+                                     }
+                                 ]
+                  },
+                  {
+                      "host_id":  "SYNTHETIC_SERVICE_SENSORS",
+                      "scope":  "Fictional municipal sensor-maintenance service, not actual weather data",
+                      "source_versions":  [
+                                              {
+                                                  "id":  "synthetic://service/sensor-1",
+                                                  "version":  "S1",
+                                                  "content":  "Sensor 1 reports an invented temperature signal on a maintenance bench",
+                                                  "rights":  "SYNTHETIC_ALLOWED"
+                                              },
+                                              {
+                                                  "id":  "synthetic://service/sensor-2",
+                                                  "version":  "S1",
+                                                  "content":  "Sensor 2 has an invented calibration warning",
+                                                  "rights":  "SYNTHETIC_ALLOWED"
+                                              }
+                                          ],
+                      "stones":  [
+                                     {
+                                         "stone_id":  "B1",
+                                         "kind":  "QUERY",
+                                         "question":  "Which service response is justified by the two fictional sensor records?",
+                                         "must_wave":  [
+                                                           "N-S",
+                                                           "N-Q",
+                                                           "N-E",
+                                                           "N-C",
+                                                           "N-P"
+                                                       ],
+                                         "expected":  "SERVICE_ANSWER_WITH_UNCERTAINTY"
+                                     },
+                                     {
+                                         "stone_id":  "B2",
+                                         "kind":  "SOURCE_DELTA",
+                                         "mutation":  {
+                                                          "source_id":  "synthetic://service/sensor-2",
+                                                          "old_version":  "S1",
+                                                          "new_version":  "S2",
+                                                          "changed_field":  "calibration flag",
+                                                          "new_content":  "Sensor 2 recalibration completed in this invented service scenario"
+                                                      },
+                                         "must_preserve":  [
+                                                               "synthetic://service/sensor-1@S1"
+                                                           ],
+                                         "expected":  "TARGETED_DEPENDENCY_REPLAY"
+                                     },
+                                     {
+                                         "stone_id":  "B3",
+                                         "kind":  "APORIA",
+                                         "conflict":  {
+                                                          "claim_a":  "sensor fault prevents escalation",
+                                                          "claim_b":  "operator demands conservative escalation",
+                                                          "resolution":  "OPERATOR_DECISION_REQUIRED"
+                                                      },
+                                         "expected":  "APORIA_OR_HUMAN_GATE"
+                                     }
+                                 ]
+                  }
+              ],
+    "expected_artifacts":  [
+                               "room_manifest.json",
+                               "stones.json",
+                               "room_events.jsonl",
+                               "waves.jsonl",
+                               "activations.jsonl",
+                               "sediment.json",
+                               "resonances.json",
+                               "carpet.html",
+                               "receipt.json"
+                           ],
+    "negative_oracles":  [
+                             {
+                                 "oracle_id":  "RM01",
+                                 "name":  "RM01_PLAN_NO_ACTIVATION",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  1
+                             },
+                             {
+                                 "oracle_id":  "RM02",
+                                 "name":  "RM02_REAL_ACTIVATION",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  2
+                             },
+                             {
+                                 "oracle_id":  "RM03",
+                                 "name":  "RM03_FANOUT_JOIN",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  3
+                             },
+                             {
+                                 "oracle_id":  "RM04",
+                                 "name":  "RM04_B_CHANGED_A_STABLE",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  4
+                             },
+                             {
+                                 "oracle_id":  "RM05",
+                                 "name":  "RM05_LATE_ELIGIBILITY",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  5
+                             },
+                             {
+                                 "oracle_id":  "RM06",
+                                 "name":  "RM06_REPLAY_IDEMPOTENT",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  6
+                             },
+                             {
+                                 "oracle_id":  "RM07",
+                                 "name":  "RM07_CROSS_HOST_ISOLATION",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  7
+                             },
+                             {
+                                 "oracle_id":  "RM08",
+                                 "name":  "RM08_OWNER_EXCLUSION",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  8
+                             },
+                             {
+                                 "oracle_id":  "RM09",
+                                 "name":  "RM09_RIGHTS_DENIAL",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  9
+                             },
+                             {
+                                 "oracle_id":  "RM10",
+                                 "name":  "RM10_E5_NO_PROMOTION",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  10
+                             },
+                             {
+                                 "oracle_id":  "RM11",
+                                 "name":  "RM11_NO_HUMAN_SWITCH",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  11
+                             },
+                             {
+                                 "oracle_id":  "RM12",
+                                 "name":  "RM12_APORIA_RETAINED",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  12
+                             },
+                             {
+                                 "oracle_id":  "RM13",
+                                 "name":  "RM13_TRANSITIVE_STALENESS",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  13
+                             },
+                             {
+                                 "oracle_id":  "RM14",
+                                 "name":  "RM14_SOURCE_ANCHOR_REQUIRED",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  14
+                             },
+                             {
+                                 "oracle_id":  "RM15",
+                                 "name":  "RM15_BUDGET_AND_SATURATION_DIFFER",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  15
+                             },
+                             {
+                                 "oracle_id":  "RM16",
+                                 "name":  "RM16_NO_PRIVILEGED_SERVER",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  16
+                             },
+                             {
+                                 "oracle_id":  "RM17",
+                                 "name":  "RM17_ROOM_CLOSE_PRESERVES_SEDIMENT",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  17
+                             },
+                             {
+                                 "oracle_id":  "RM18",
+                                 "name":  "RM18_SELF_ATTESTATION_BOUNDARY",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  18
+                             },
+                             {
+                                 "oracle_id":  "RM19",
+                                 "name":  "RM19_PRODUCT_VIEW_PROVENANCE",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  19
+                             },
+                             {
+                                 "oracle_id":  "RM20",
+                                 "name":  "RM20_ORGAN_NOT_ACTOR",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  20
+                             }
+                         ],
+    "stop_policy":  {
+                        "max_activations_per_stone":  16,
+                        "max_followup_rounds":  5,
+                        "budget":  "SYNTHETIC_UNLIMITED_AGENT_CALLS_NOT_AUTHORIZED",
+                        "source_retries":  "NO_AUTOMATIC_RETRY"
+                    },
+    "actual_execution":  {
+                             "stone_jobs":  [
+
+                                            ],
+                             "wave_receipts":  [
+
+                                               ],
+                             "fabric_receipts":  {
+                                                     "F04":  null,
+                                                     "F05":  null
+                                                 },
+                             "model_jobs":  [
+
+                                            ],
+                             "human_acceptance":  null
+                         }
+}
