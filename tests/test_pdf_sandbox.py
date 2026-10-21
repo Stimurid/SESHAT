@@ -720,3 +720,29 @@ def test_bridge_provider_revoked_between_first_and_second_child(monkeypatch):
     assert provider.calls == 3
     assert launched == [1]
     assert result.public_view().admitted_quote_count == 0
+
+
+def test_lower_rights_projection_is_constant_across_private_failure_causes():
+    from seshat.pdf_isolated_bridge import IsolatedBridgeReceipt
+
+    states = [
+        ("REJECTED", "INVALID_CANDIDATE", 0),
+        ("BLOCKED", "F07_DENIED_OR_DRIFTED", 2),
+        ("REJECTED", "SANDBOX_NOT_VERIFIED", 4),
+        ("BLOCKED", "SANDBOX_UNAVAILABLE", 2),
+        ("UNATTESTED_CHILD_OBSERVATIONS",
+         "ALL_CHILD_OBSERVATIONS_UNATTESTED", 2),
+    ]
+    public = []
+    for status, code, count in states:
+        receipt = IsolatedBridgeReceipt(
+            status=status, code=code, response_sha256="a" * 64,
+            source_id="hidden-source", source_version="private-version",
+            method_id="private-method", claim_count=count,
+        )
+        public.append(receipt.public_view().model_dump_json())
+    assert len(set(public)) == 1
+    assert '"claim_count":0' in public[0]
+    assert "hidden-source" not in public[0]
+    assert "F07_DENIED_OR_DRIFTED" not in public[0]
+    assert "ALL_CHILD_OBSERVATIONS_UNATTESTED" not in public[0]
