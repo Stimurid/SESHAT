@@ -155,6 +155,51 @@ jobs:
           print("RM_PASS=%d RM_FAIL=%d RM_NOT_TESTED=%d" % (s["pass"], s["fail"], s["not_tested"]))
           print("RM_NOT_TESTED_IDS=%s" % ",".join(s["not_tested_ids"]))
           PY
+      - name: M6 two-world research engine with R05-R07 triad
+        shell: bash
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/seshat-m6-research"
+          mkdir -p "$dest"
+          chmod 700 "$dest"
+          docker run --rm --network none --read-only --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m --mount "type=bind,source=$dest,target=/out" seshat-report:pr python -m seshat.fabric_waves.m6_research_engine --output-dir /out/run
+          test -s "$dest/run/m6_portfolio_receipt.json"
+          test -s "$dest/run/world-u-synthetic-university/m6_report_bundle.json"
+          test -s "$dest/run/world-u-synthetic-university/m6_external_ledger.json"
+          test -s "$dest/run/world-u-synthetic-university/carpet.html"
+          grep -q 'NONCOMPARABLE' "$dest/run/world-u-synthetic-university/m6_report.md"
+          python - "$dest/run/world-u-synthetic-university/m6_report_bundle.json" "$dest/run/world-u-synthetic-university/m6_report.md" <<'PY'
+          import json, sys
+          bundle = json.load(open(sys.argv[1], encoding="utf-8"))
+          report = open(sys.argv[2], encoding="utf-8").read()
+          r05 = next(r for r in bundle["reports"] if r["report_id"] == "R05")
+          observed = r05["w2_provenance"]
+          assert observed and bundle["w2_admitted"], "W2 absent from executed report"
+          assert r05["status"] == "AVAILABLE", "R05 not admitted to synthetic report"
+          assert observed["content_sha256"] in report, "report missing the actual W2 digest"
+          assert observed["carrier_id"] in report, "report missing the admitted carrier"
+          assert observed["source_version"] in report, "report missing source version"
+          assert any(
+              receipt.get("status") == "ADMITTED"
+              and receipt.get("content_sha256") == observed["content_sha256"]
+              for receipt in bundle["w2_receipts"]
+          ), "W2 report and registered return disagree"
+          assert observed["independent_f07_rights_attested"] is False
+          print("M6_W2_REPORT_SOURCE_BOUND=1")
+          PY
+          python - "$dest/run/world-u-synthetic-university/m6_oracles.json" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          rows = data if isinstance(data, list) else data.get("rows", data)
+          if isinstance(rows, dict):
+              rows = rows.get("rows", [])
+          fails = [r for r in rows if r.get("observed") == "FAIL"]
+          assert not fails, fails
+          ids = {r["oracle_id"] for r in rows}
+          assert "RX09" in ids and "RX10" in ids
+          print("M6_RX_PASS", len(rows))
+          PY
+          echo "M6_SYNTHETIC_PORTFOLIO=1"
       - name: M5 new-process resumed continuation from a checkpoint
         shell: bash
         run: |
@@ -237,6 +282,27 @@ jobs:
         with:
           name: m5-synthetic-artifacts
           path: ${{ runner.temp }}/m5-artifacts
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Stage M6 source-bound synthetic runtime witnesses
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/m6-artifacts"
+          mkdir -p "$stage"
+          src="$RUNNER_TEMP/seshat-m6-research/run"
+          if [ -d "$src" ]; then
+            cp -r "$src" "$stage/m6_carpet"
+          fi
+          git rev-parse HEAD > "$stage/source_commit.txt"
+          git rev-parse 'HEAD^{tree}' > "$stage/source_tree.txt"
+      - name: Upload M6 synthetic artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m6-synthetic-artifacts
+          path: ${{ runner.temp }}/m6-artifacts
           retention-days: 7
           if-no-files-found: warn
       - name: Print scope boundary

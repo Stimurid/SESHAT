@@ -1,0 +1,457 @@
+﻿{
+    "schema":  "seshat.room_formation.m6_research_fixture.v0.1",
+    "version":  "2026-10-21-m6",
+    "origin":  "OWNER_AUTHORIZED_SEMANTIC_CONTRACT",
+    "status":  "SYNTHETIC_EXPECTED_INPUTS_ONLY__NO_ACTUAL_RUNTIME",
+    "basis_doc":  "https://docs.google.com/document/d/1gunkb2rIm1Nl5iV20yvXtKT9CwzTUBi3NYv8R4ZGbyY/edit",
+    "engine_issue":  "https://github.com/Stimurid/SESHAT/issues/60",
+    "source_exclusion_policy_version":  "OWNER_SOURCE_EXCLUSION_2026-10-21_MANDATORY",
+    "host_rights":  "NONE_REQUIRED_FOR_INVENTED_INPUTS__NO_REAL_WORLD_SOURCES",
+    "required_behaviors":  {
+                               "real_thread_roles_min":  6,
+                               "actual_wave_expected_for_future_test":  true,
+                               "actual_activation_receipt":  null,
+                               "real_fabric_acceptance":  false,
+                               "signed_independent_trust":  false
+                           },
+    "thread_registry":  [
+                            {
+                                "thread_id":  "N-S",
+                                "role":  "source and observation",
+                                "read_set":  [
+                                                 "SyntheticSourceVersion",
+                                                 "Stone"
+                                             ],
+                                "write_set":  [
+                                                  "Observation"
+                                              ],
+                                "requires_rights":  "SYNTHETIC_SELF_CONTAINED",
+                                "actual_activation_receipt":  null
+                            },
+                            {
+                                "thread_id":  "N-Q",
+                                "role":  "question/reframing",
+                                "read_set":  [
+                                                 "Stone",
+                                                 "Observation"
+                                             ],
+                                "write_set":  [
+                                                  "ResearchQuestion"
+                                              ],
+                                "requires_rights":  "SYNTHETIC_SELF_CONTAINED",
+                                "actual_activation_receipt":  null
+                            },
+                            {
+                                "thread_id":  "N-K",
+                                "role":  "concept distinctions",
+                                "read_set":  [
+                                                 "ResearchQuestion",
+                                                 "Observation"
+                                             ],
+                                "write_set":  [
+                                                  "ConceptAlternative"
+                                              ],
+                                "requires_rights":  "SYNTHETIC_SELF_CONTAINED",
+                                "actual_activation_receipt":  null
+                            },
+                            {
+                                "thread_id":  "N-E",
+                                "role":  "evidence and counterexample",
+                                "read_set":  [
+                                                 "Observation",
+                                                 "ConceptAlternative"
+                                             ],
+                                "write_set":  [
+                                                  "EvidenceWarrant"
+                                              ],
+                                "requires_rights":  "SYNTHETIC_SELF_CONTAINED",
+                                "actual_activation_receipt":  null
+                            },
+                            {
+                                "thread_id":  "N-C",
+                                "role":  "cross-thread reconciliation",
+                                "read_set":  [
+                                                 "EvidenceWarrant",
+                                                 "ConceptAlternative"
+                                             ],
+                                "write_set":  [
+                                                  "ReconciledStateOrAPORIA"
+                                              ],
+                                "requires_rights":  "SYNTHETIC_SELF_CONTAINED",
+                                "actual_activation_receipt":  null
+                            },
+                            {
+                                "thread_id":  "N-H",
+                                "role":  "decision-gated proposals",
+                                "read_set":  [
+                                                 "ReconciledStateOrAPORIA"
+                                             ],
+                                "write_set":  [
+                                                  "HypothesisProposal"
+                                              ],
+                                "requires_rights":  "SYNTHETIC_SELF_CONTAINED",
+                                "actual_activation_receipt":  null
+                            },
+                            {
+                                "thread_id":  "N-P",
+                                "role":  "source-grounded projection",
+                                "read_set":  [
+                                                 "ReconciledStateOrAPORIA",
+                                                 "EvidenceWarrant"
+                                             ],
+                                "write_set":  [
+                                                  "Resonance"
+                                              ],
+                                "requires_rights":  "SYNTHETIC_SELF_CONTAINED",
+                                "actual_activation_receipt":  null
+                            },
+                            {
+                                "thread_id":  "N-F",
+                                "role":  "frontier/ external evidence request",
+                                "read_set":  [
+                                                 "MissingSourceNeed"
+                                             ],
+                                "write_set":  [
+                                                  "ResearchNeed"
+                                              ],
+                                "requires_rights":  "SYNTHETIC_SELF_CONTAINED",
+                                "actual_activation_receipt":  null
+                            }
+                        ],
+    "hosts":  [
+                  {
+                      "host_id":  "WORLD_U_SYNTHETIC_UNIVERSITY",
+                      "m6_profile":  "university_transfer",
+                      "scope":  "Invented university research field; coverage_proxy is not validated accuracy",
+                      "source_versions":  [
+                                              {
+                                                  "id":  "synthetic://world-u/group-alpha",
+                                                  "version":  "A1",
+                                                  "content":  "Group Alpha COVERAGE_PROXY 24/30 toy samples; denominator=30 labelled toy set",
+                                                  "rights":  "SYNTHETIC_ALLOWED"
+                                              },
+                                              {
+                                                  "id":  "synthetic://world-u/group-beta",
+                                                  "version":  "B1",
+                                                  "content":  "Group Beta COVERAGE_PROXY 15/18 toy samples; denominator=18 alternate label definition",
+                                                  "rights":  "SYNTHETIC_ALLOWED"
+                                              }
+                                          ],
+                      "stones":  [
+                                     {
+                                         "stone_id":  "U1",
+                                         "kind":  "QUERY",
+                                         "question":  "Which operations can local groups transfer to a third group, and how does external field evidence change the problem?",
+                                         "depends_on":  [
+                                                            "A1",
+                                                            "B1"
+                                                        ],
+                                         "must_wave":  [
+                                                           "N-Q",
+                                                           "N-S",
+                                                           "N-K",
+                                                           "N-E",
+                                                           "N-C",
+                                                           "N-P"
+                                                       ],
+                                         "expected":  "TRANSFER_WITH_EXTERNAL_NEED"
+                                     },
+                                     {
+                                         "stone_id":  "U2",
+                                         "kind":  "SOURCE_DELTA",
+                                         "mutation":  {
+                                                          "source_id":  "synthetic://world-u/group-beta",
+                                                          "old_version":  "B1",
+                                                          "new_version":  "B2",
+                                                          "changed_field":  "sample metadata denominator",
+                                                          "new_content":  "Group Beta COVERAGE_PROXY 16/20 toy samples; denominator=20 revised metadata edition B2"
+                                                      },
+                                         "must_preserve":  [
+                                                               "synthetic://world-u/group-alpha@A1"
+                                                           ],
+                                         "must_rerun_only_dependencies_of":  [
+                                                                                 "synthetic://world-u/group-beta"
+                                                                             ],
+                                         "expected":  "SELECTIVE_REPLAY_WITH_STABLE_A_HASH"
+                                     },
+                                     {
+                                         "stone_id":  "U3",
+                                         "kind":  "APORIA",
+                                         "conflict":  {
+                                                          "claim_a":  "Outside programme Echo independently confirms Beta labels",
+                                                          "claim_b":  "Late external note W2 reveals Echo reuses Beta original labels (not independent)",
+                                                          "resolution":  "LABEL_OVERLAP_APORIA"
+                                                      },
+                                         "must_wave":  [
+                                                           "N-E",
+                                                           "N-K",
+                                                           "N-C"
+                                                       ],
+                                         "owner_decision_status":  "UNREQUESTED_UNTIL_REAL_DIVERGENCE",
+                                         "expected":  "APORIA_WITH_TWO_ALTERNATIVES"
+                                     },
+                                     {
+                                         "stone_id":  "U4",
+                                         "kind":  "W2_RETURN",
+                                         "return_id":  "ret-world-u-echo-w2v1",
+                                         "request_id":  "need-world-u-external-echo",
+                                         "expected_overlap_with_beta":  true,
+                                         "external_source":  {
+                                                                 "id":  "synthetic://world-u/external-echo-programme",
+                                                                 "version":  "W2v1",
+                                                                 "content":  "Programme Echo COVERAGE_PROXY; sample_overlap_with_beta=YES; Echo reuses Beta original labels (not independent)",
+                                                                 "rights":  "SYNTHETIC_OWNER_GRANT"
+                                                             },
+                                         "expected":  "AUTHORIZED_W2_RETURN_WITH_OVERLAP"
+                                     }
+                                 ]
+                  },
+                  {
+                      "host_id":  "WORLD_O_SYNTHETIC_SERVICE",
+                      "m6_profile":  "service_calibration",
+                      "scope":  "Invented production sensor service; not biomedical or weather truth",
+                      "source_versions":  [
+                                              {
+                                                  "id":  "synthetic://world-o/sensor-alpha",
+                                                  "version":  "O1",
+                                                  "content":  "Toy sensor A stability log for fictional service unit; reported_condition=drift",
+                                                  "rights":  "SYNTHETIC_ALLOWED"
+                                              },
+                                              {
+                                                  "id":  "synthetic://world-o/calibration-beta",
+                                                  "version":  "O1",
+                                                  "content":  "Calibration protocol requires verified standard read before maintenance recommendation",
+                                                  "rights":  "SYNTHETIC_ALLOWED"
+                                              }
+                                          ],
+                      "stones":  [
+                                     {
+                                         "stone_id":  "O1",
+                                         "kind":  "QUERY",
+                                         "question":  "Which claims support an immediate bounded service action without owner approval?",
+                                         "must_wave":  [
+                                                           "N-S",
+                                                           "N-Q",
+                                                           "N-E",
+                                                           "N-C",
+                                                           "N-P"
+                                                       ],
+                                         "expected":  "SERVICE_ACTION_WITH_PROCEDURE_GATE"
+                                     },
+                                     {
+                                         "stone_id":  "O2",
+                                         "kind":  "SOURCE_DELTA",
+                                         "mutation":  {
+                                                          "source_id":  "synthetic://world-o/calibration-beta",
+                                                          "old_version":  "O1",
+                                                          "new_version":  "O2",
+                                                          "changed_field":  "calibration criterion",
+                                                          "new_content":  "Calibration protocol O2: stricter standard read required; immediate action not auto-approved"
+                                                      },
+                                         "must_preserve":  [
+                                                               "synthetic://world-o/sensor-alpha@O1"
+                                                           ],
+                                         "expected":  "TARGETED_DEPENDENCY_REPLAY"
+                                     },
+                                     {
+                                         "stone_id":  "O3",
+                                         "kind":  "APORIA",
+                                         "conflict":  {
+                                                          "claim_a":  "Signed test observation supports immediate instrument check",
+                                                          "claim_b":  "Procedure requires owner approval before maintenance escalation",
+                                                          "resolution":  "HUMAN_DECISION_RIGHT_REQUIRED"
+                                                      },
+                                         "expected":  "APORIA_OR_HUMAN_GATE"
+                                     },
+                                     {
+                                         "stone_id":  "O4",
+                                         "kind":  "W2_RETURN",
+                                         "return_id":  "ret-world-o-signed-w2v1",
+                                         "request_id":  "need-world-o-signed-observation",
+                                         "external_source":  {
+                                                                 "id":  "synthetic://world-o/signed-test-observation",
+                                                                 "version":  "W2v1",
+                                                                 "content":  "Signed synthetic test observation; maintenance_escalation_assertion=NONE; procedure_satisfied=bounded_check_only",
+                                                                 "rights":  "SYNTHETIC_OWNER_GRANT"
+                                                             },
+                                         "expected":  "AUTHORIZED_W2_WITHOUT_SAFETY_ESCALATION"
+                                     }
+                                 ]
+                  }
+              ],
+    "expected_artifacts":  [
+                               "room_manifest.json",
+                               "stones.json",
+                               "room_events.jsonl",
+                               "waves.jsonl",
+                               "activations.jsonl",
+                               "sediment.json",
+                               "resonances.json",
+                               "carpet.html",
+                               "receipt.json"
+                           ],
+    "negative_oracles":  [
+                             {
+                                 "oracle_id":  "RM01",
+                                 "name":  "RM01_PLAN_NO_ACTIVATION",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  1
+                             },
+                             {
+                                 "oracle_id":  "RM02",
+                                 "name":  "RM02_REAL_ACTIVATION",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  2
+                             },
+                             {
+                                 "oracle_id":  "RM03",
+                                 "name":  "RM03_FANOUT_JOIN",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  3
+                             },
+                             {
+                                 "oracle_id":  "RM04",
+                                 "name":  "RM04_B_CHANGED_A_STABLE",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  4
+                             },
+                             {
+                                 "oracle_id":  "RM05",
+                                 "name":  "RM05_LATE_ELIGIBILITY",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  5
+                             },
+                             {
+                                 "oracle_id":  "RM06",
+                                 "name":  "RM06_REPLAY_IDEMPOTENT",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  6
+                             },
+                             {
+                                 "oracle_id":  "RM07",
+                                 "name":  "RM07_CROSS_HOST_ISOLATION",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  7
+                             },
+                             {
+                                 "oracle_id":  "RM08",
+                                 "name":  "RM08_OWNER_EXCLUSION",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  8
+                             },
+                             {
+                                 "oracle_id":  "RM09",
+                                 "name":  "RM09_RIGHTS_DENIAL",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  9
+                             },
+                             {
+                                 "oracle_id":  "RM10",
+                                 "name":  "RM10_E5_NO_PROMOTION",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  10
+                             },
+                             {
+                                 "oracle_id":  "RM11",
+                                 "name":  "RM11_NO_HUMAN_SWITCH",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  11
+                             },
+                             {
+                                 "oracle_id":  "RM12",
+                                 "name":  "RM12_APORIA_RETAINED",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  12
+                             },
+                             {
+                                 "oracle_id":  "RM13",
+                                 "name":  "RM13_TRANSITIVE_STALENESS",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  13
+                             },
+                             {
+                                 "oracle_id":  "RM14",
+                                 "name":  "RM14_SOURCE_ANCHOR_REQUIRED",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  14
+                             },
+                             {
+                                 "oracle_id":  "RM15",
+                                 "name":  "RM15_BUDGET_AND_SATURATION_DIFFER",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  15
+                             },
+                             {
+                                 "oracle_id":  "RM16",
+                                 "name":  "RM16_NO_PRIVILEGED_SERVER",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  16
+                             },
+                             {
+                                 "oracle_id":  "RM17",
+                                 "name":  "RM17_ROOM_CLOSE_PRESERVES_SEDIMENT",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  17
+                             },
+                             {
+                                 "oracle_id":  "RM18",
+                                 "name":  "RM18_SELF_ATTESTATION_BOUNDARY",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  18
+                             },
+                             {
+                                 "oracle_id":  "RM19",
+                                 "name":  "RM19_PRODUCT_VIEW_PROVENANCE",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  19
+                             },
+                             {
+                                 "oracle_id":  "RM20",
+                                 "name":  "RM20_ORGAN_NOT_ACTOR",
+                                 "expected_in_strict_runtime":  "FAIL_CLOSED_OR_GROUNDED_RESULT",
+                                 "observed":  "NOT_RUN",
+                                 "index":  20
+                             }
+                         ],
+    "stop_policy":  {
+                        "max_activations_per_stone":  16,
+                        "max_followup_rounds":  5,
+                        "budget":  "SYNTHETIC_UNLIMITED_AGENT_CALLS_NOT_AUTHORIZED",
+                        "source_retries":  "NO_AUTOMATIC_RETRY"
+                    },
+    "actual_execution":  {
+                             "stone_jobs":  [
+
+                                            ],
+                             "wave_receipts":  [
+
+                                               ],
+                             "fabric_receipts":  {
+                                                     "F04":  null,
+                                                     "F05":  null
+                                                 },
+                             "model_jobs":  [
+
+                                            ],
+                             "human_acceptance":  null
+                         }
+}

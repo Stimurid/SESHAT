@@ -18,6 +18,7 @@ seshat-fabric-demo = "seshat.fabric_waves.demo:main"
 seshat-fabric-operator = "seshat.fabric_waves.operator:main"
 seshat-carpet-portfolio = "seshat.fabric_waves.carpet_portfolio:main"
 seshat-m5-carpet = "seshat.fabric_waves.m5_room_carpet:main"
+seshat-m6-research = "seshat.fabric_waves.m6_research_engine:main"
 seshat-fabric-external = "seshat.fabric_waves.external_carrier.host_cli:main"
 
 [project.optional-dependencies]
