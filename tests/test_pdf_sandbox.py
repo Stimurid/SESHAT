@@ -448,3 +448,169 @@ def test_sandbox_returns_host_bound_observation_without_child_side_channel(
     assert "offset" not in dumped and "f" * 64 not in dumped
     assert "999977" not in dumped
     assert result.excerpt_sha256 == hashlib.sha256(b"Bravo").hexdigest()
+
+
+def _bridge_candidate() -> dict:
+    return {
+        "schema": "seshat.pdf_claims.v1",
+        "method_id": "synthetic-method",
+        "source_id": "invented-sandbox-fixture",
+        "source_version": "v1",
+        "run_scope": "SYNTHETIC_QA",
+        "evidence": [
+            {"claim": "Page one", "page": 1, "excerpt": "Alpha",
+             "kind": "SOURCE_STATED"},
+            {"claim": "Page two", "page": 2, "excerpt": "Bravo",
+             "kind": "SOURCE_STATED"},
+        ],
+        "unknowns": ["External truth not assessed"],
+        "rights_independently_attested": "NO",
+        "scientific_acceptance": "NOT_ASSERTED",
+        "customer_release": "NOT_AUTHORIZED",
+    }
+
+
+def _bridge_run(candidate, *, access=None, image="synthetic:test"):
+    from seshat.pdf_isolated_bridge import verify_synthetic_claims_in_sandbox
+    return verify_synthetic_claims_in_sandbox(
+        access=access or _access(), carrier_id="invented-sandbox-fixture",
+        response_json=json.dumps(candidate).encode("utf-8"), image=image,
+    )
+
+
+def test_bridge_synthetic_child_success_is_unattested_not_verified(monkeypatch):
+    import seshat.pdf_isolated_bridge as bridge
+
+    def child(access, carrier_id, *, page_number, expected_excerpt, **kwargs):
+        pdf, _, _, version, _ = access.read_full_with_metadata(carrier_id)
+        return sandbox.SandboxQuoteObservation(
+            carrier_id=carrier_id, source_version=version,
+            source_access_full_receipt_sha256="f" * 64,
+            pdf_sha256=hashlib.sha256(pdf).hexdigest(),
+            pdf_byte_length=len(pdf), page_number=page_number,
+            excerpt_sha256=hashlib.sha256(expected_excerpt.encode()).hexdigest(),
+        )
+
+    monkeypatch.setattr(bridge, "_check_synthetic_pdf_fixture", child)
+    private = _bridge_run(_bridge_candidate())
+    assert private.status == "UNATTESTED_CHILD_OBSERVATIONS"
+    assert private.code == "ALL_CHILD_OBSERVATIONS_UNATTESTED"
+    assert len(private.observations) == 2
+    public = private.public_view()
+    assert public.admitted_quote_count == 0
+    assert public.semantic_entailment == "NOT_ASSESSED"
+    assert public.scientific_acceptance == "NOT_ASSERTED"
+    assert public.customer_release == "NOT_AUTHORIZED"
+    assert "invented-sandbox-fixture" not in public.model_dump_json()
+    assert "f" * 64 not in public.model_dump_json()
+
+
+def test_bridge_two_of_four_child_quotes_is_atomic_rejection(monkeypatch):
+    import seshat.pdf_isolated_bridge as bridge
+
+    candidate = _bridge_candidate()
+    candidate["evidence"] += [
+        {"claim": "Fabricated", "page": 1, "excerpt": "Not present",
+         "kind": "SOURCE_STATED"},
+        {"claim": "Also fabricated", "page": 2, "excerpt": "Never present",
+         "kind": "SOURCE_STATED"},
+    ]
+    count = [0]
+
+    def child(access, carrier_id, *, page_number, expected_excerpt, **kwargs):
+        count[0] += 1
+        if expected_excerpt in {"Not present", "Never present"}:
+            raise sandbox.PdfSandboxError("NOT_VERIFIED")
+        pdf, _, _, version, _ = access.read_full_with_metadata(carrier_id)
+        return sandbox.SandboxQuoteObservation(
+            carrier_id=carrier_id, source_version=version,
+            source_access_full_receipt_sha256="a" * 64,
+            pdf_sha256=hashlib.sha256(pdf).hexdigest(),
+            pdf_byte_length=len(pdf), page_number=page_number,
+            excerpt_sha256=hashlib.sha256(expected_excerpt.encode()).hexdigest(),
+        )
+
+    monkeypatch.setattr(bridge, "_check_synthetic_pdf_fixture", child)
+    result = _bridge_run(candidate)
+    assert result.status == "REJECTED"
+    assert result.code == "SANDBOX_NOT_VERIFIED"
+    assert result.public_view().admitted_quote_count == 0
+    assert count[0] == 3  # Stops on first false citation; never accepts partial.
+
+
+@pytest.mark.parametrize("alter", [
+    lambda c: c.update(source_version="v2"),
+    lambda c: c.update(source_id="forged-source"),
+    lambda c: c["evidence"][1].update(page=1, excerpt="Alpha"),
+    lambda c: c.update(rights_independently_attested="YES"),
+    lambda c: c.update(scientific_acceptance="ACCEPTED"),
+])
+def test_bridge_invalid_candidate_never_invokes_child(monkeypatch, alter):
+    import seshat.pdf_isolated_bridge as bridge
+    monkeypatch.setattr(
+        bridge, "_check_synthetic_pdf_fixture",
+        lambda *_a, **_k: pytest.fail("child must not run"),
+    )
+    candidate = _bridge_candidate()
+    alter(candidate)
+    receipt = _bridge_run(candidate)
+    assert receipt.status != "UNATTESTED_CHILD_OBSERVATIONS"
+    assert receipt.public_view().admitted_quote_count == 0
+
+
+@pytest.mark.parametrize("policy", [RawAccessPolicy.NEVER, RawAccessPolicy.DRILLBACK])
+def test_bridge_no_full_rights_never_invokes_child(monkeypatch, policy):
+    import seshat.pdf_isolated_bridge as bridge
+    monkeypatch.setattr(
+        bridge, "_check_synthetic_pdf_fixture",
+        lambda *_a, **_k: pytest.fail("child must not run"),
+    )
+    result = _bridge_run(_bridge_candidate(), access=_access(policy=policy))
+    assert result.status == "BLOCKED"
+
+
+def test_bridge_overlarge_pdf_never_invokes_child(monkeypatch):
+    import seshat.pdf_isolated_bridge as bridge
+    monkeypatch.setattr(
+        bridge, "_check_synthetic_pdf_fixture",
+        lambda *_a, **_k: pytest.fail("child must not run"),
+    )
+    result = _bridge_run(
+        _bridge_candidate(),
+        access=_access(padding=sandbox.MAX_SANDBOX_PDF_BYTES),
+    )
+    assert result.status == "BLOCKED"
+    assert result.code == "PDF_INPUT_LIMIT"
+
+
+def test_bridge_missing_sandbox_fails_closed(monkeypatch):
+    import seshat.pdf_isolated_bridge as bridge
+    monkeypatch.setattr(
+        bridge, "_check_synthetic_pdf_fixture",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            sandbox.PdfSandboxError("UNSUPPORTED_SANDBOX")
+        ),
+    )
+    result = _bridge_run(_bridge_candidate())
+    assert result.status == "BLOCKED"
+    assert result.code == "SANDBOX_UNAVAILABLE"
+
+
+@pytest.mark.docker
+def test_real_docker_isolated_bridge_synthetic_full_chain():
+    """Real Linux smoke: read F07, run child per claim, never mint verified."""
+    from seshat.pdf_isolated_bridge import verify_synthetic_claims_in_sandbox
+    image = os.environ.get("SESHAT_SYNTHETIC_PDF_TEST_IMAGE")
+    if not image:
+        if os.environ.get("SESHAT_DOCKER_SMOKE_REQUIRED") == "1":
+            pytest.fail("REQUIRED_DOCKER_SMOKE_IMAGE_MISSING")
+        pytest.skip("synthetic Docker image not configured")
+    positive = _bridge_candidate()
+    result = _bridge_run(positive, image=image)
+    assert result.status == "UNATTESTED_CHILD_OBSERVATIONS"
+    assert result.public_view().admitted_quote_count == 0
+    bad = _bridge_candidate()
+    bad["evidence"][1]["excerpt"] = "Nonexistent fabricated sentence"
+    failure = _bridge_run(bad, image=image)
+    assert failure.status == "REJECTED"
+    assert failure.code == "SANDBOX_NOT_VERIFIED"
