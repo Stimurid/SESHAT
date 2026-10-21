@@ -168,7 +168,25 @@ jobs:
           test -s "$dest/run/world-u-synthetic-university/m6_external_ledger.json"
           test -s "$dest/run/world-u-synthetic-university/carpet.html"
           grep -q 'NONCOMPARABLE' "$dest/run/world-u-synthetic-university/m6_report.md"
-          grep -q 'content_sha256' "$dest/run/world-u-synthetic-university/m6_report.md"
+          python - "$dest/run/world-u-synthetic-university/m6_report_bundle.json" "$dest/run/world-u-synthetic-university/m6_report.md" <<'PY'
+          import json, sys
+          bundle = json.load(open(sys.argv[1], encoding="utf-8"))
+          report = open(sys.argv[2], encoding="utf-8").read()
+          r05 = next(r for r in bundle["reports"] if r["report_id"] == "R05")
+          observed = r05["w2_provenance"]
+          assert observed and bundle["w2_admitted"], "W2 absent from executed report"
+          assert r05["status"] == "AVAILABLE", "R05 not admitted to synthetic report"
+          assert observed["content_sha256"] in report, "report missing the actual W2 digest"
+          assert observed["carrier_id"] in report, "report missing the admitted carrier"
+          assert observed["source_version"] in report, "report missing source version"
+          assert any(
+              receipt.get("status") == "ADMITTED"
+              and receipt.get("content_sha256") == observed["content_sha256"]
+              for receipt in bundle["w2_receipts"]
+          ), "W2 report and registered return disagree"
+          assert observed["independent_f07_rights_attested"] is False
+          print("M6_W2_REPORT_SOURCE_BOUND=1")
+          PY
           python - "$dest/run/world-u-synthetic-university/m6_oracles.json" <<'PY'
           import json, sys
           data = json.load(open(sys.argv[1], encoding="utf-8"))
