@@ -31,6 +31,10 @@ class _DictContentProvider:
 class FabricCarrierStore:
     """Version-pinned carrier bodies trusted by the engine host."""
 
+    _TEXT_PROJECTION_MEDIA_TYPES: frozenset[str] = frozenset(
+        {"text/plain", "text/markdown", "application/json"}
+    )
+
     def __init__(
         self,
         *,
@@ -167,11 +171,30 @@ class FabricCarrierStore:
             content_provider=provider,
             carrier_ids=carrier_ids,
         )
+        # Both FULL_REQUIRED and DRILLBACK return a TEXT invocation payload.
+        # Never project nontext (including ASCII-decodable PDF byte slices)
+        # through either path. Check both declared and loaded media identity.
+        non_text = [
+            cid for cid in carrier_ids
+            if (
+                cid in self._carriers
+                and self._carriers[cid].media_type is not None
+                and self._carriers[cid].media_type not in self._TEXT_PROJECTION_MEDIA_TYPES
+            ) or (
+                cid in self._contents
+                and self._contents[cid].media_type not in self._TEXT_PROJECTION_MEDIA_TYPES
+            )
+        ]
+        if non_text:
+            raise ValueError("SOURCE_MEDIA_TEXT_PROJECTION_UNSUPPORTED")
         if policy is RawAccessPolicy.FULL_REQUIRED:
             access.verify_all(carrier_ids)
-            text_parts = [
-                access.read_all(cid).decode("utf-8") for cid in carrier_ids
-            ]
+            try:
+                text_parts = [
+                    access.read_all(cid).decode("utf-8") for cid in carrier_ids
+                ]
+            except UnicodeDecodeError:
+                raise ValueError("SOURCE_TEXT_UTF8_INVALID") from None
             text = text_parts[0] if len(text_parts) == 1 else "\n".join(text_parts)
         else:
             # DRILLBACK: source-addressed slice when provided, else full trusted body.
@@ -180,7 +203,10 @@ class FabricCarrierStore:
                 from seshat.contracts import SourceAddress
 
                 addr = SourceAddress.model_validate(address)
-                text = access.read(addr).decode("utf-8")
+                try:
+                    text = access.read(addr).decode("utf-8")
+                except UnicodeDecodeError:
+                    raise ValueError("SOURCE_TEXT_UTF8_INVALID") from None
             else:
                 raise ValueError("SOURCE_ADDRESS_REQUIRED")
 

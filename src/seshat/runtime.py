@@ -60,7 +60,8 @@ class RuntimeSourceAccess:
         "application/json",
     }
     _SUPPORTED_MEDIA_TYPES: ClassVar[set[str]] = _TEXT_MEDIA_TYPES | {
-        "application/octet-stream"
+        "application/octet-stream",
+        "application/pdf",
     }
 
     def __init__(
@@ -290,6 +291,28 @@ class RuntimeSourceAccess:
             )
         )
         return content.content
+
+    def read_full_with_metadata(
+        self, carrier_id: str
+    ) -> tuple[bytes, str | None, str, str, SourceAccessReceipt]:
+        """Return one policy-validated FULL read and its declared metadata.
+
+        This is a local integrity/policy receipt from the configured provider;
+        it is not independent proof of source rights or caller identity.
+        Keeping metadata in the same call prevents a PDF parser from
+        promoting content-sniffed text/plain bytes into PDF evidence.
+        """
+        data = self.read_all(carrier_id)
+        carrier = self._carriers[carrier_id]
+        verified = self._validated[carrier_id]
+        receipt = self._receipts[-1].model_copy(deep=True)
+        return (
+            data,
+            carrier.media_type,
+            verified.media_type,
+            verified.source_version,
+            receipt,
+        )
 
     def read(self, address: SourceAddress) -> bytes:
         if self.policy is RawAccessPolicy.NEVER:

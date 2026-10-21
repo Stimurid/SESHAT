@@ -271,10 +271,46 @@ def test_never_denies_raw_fetch_but_allows_observation_only_operation() -> None:
 
 def test_unsupported_medium_fails_without_fabricated_reader() -> None:
     spec = _spec(RawAccessPolicy.FULL_REQUIRED)
-    sources = _source_provider({"c1": b"%PDF fixture"}, media_types={"c1": "application/pdf"})
+    sources = _source_provider({"c1": b"\x89PNG fixture"}, media_types={"c1": "image/png"})
 
     with pytest.raises(EvidenceAccessError) as caught:
         Runtime(sources).run(spec, _provider(spec, lambda access: {}), research_object_id="r1")
+
+    assert caught.value.code is SourceAccessErrorCode.UNSUPPORTED_MEDIA
+
+
+def test_pdf_medium_is_supported_for_full_required_opaque_read() -> None:
+    spec = _spec(RawAccessPolicy.FULL_REQUIRED)
+    data = b"%PDF-1.4 fixture bytes, opaque to the runtime"
+    sources = _source_provider({"c1": data}, media_types={"c1": "application/pdf"})
+
+    result = Runtime(sources).run(
+        spec,
+        _provider(spec, lambda access: {"seen_length": len(access.read_all("c1"))}),
+        research_object_id="r1",
+    )
+
+    assert result.payload == {"seen_length": len(data)}
+
+
+def test_pdf_medium_still_rejects_char_range_text_projection() -> None:
+    spec = _spec(RawAccessPolicy.DRILLBACK)
+    data = b"%PDF-1.4 fixture bytes, opaque to the runtime"
+    sources = _source_provider({"c1": data}, media_types={"c1": "application/pdf"})
+    address = SourceAddress(
+        carrier_id="c1",
+        source_version="1",
+        address_type="char_range",
+        start=0,
+        end=3,
+    )
+
+    with pytest.raises(EvidenceAccessError) as caught:
+        Runtime(sources).run(
+            spec,
+            _provider(spec, lambda access: access.read(address)),
+            research_object_id="r1",
+        )
 
     assert caught.value.code is SourceAccessErrorCode.UNSUPPORTED_MEDIA
 
