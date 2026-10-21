@@ -18,6 +18,7 @@ from seshat.fabric_waves.m5_synthetic_hosts import (
     SYNTHETIC_RIGHT,
     build_host_engine,
     host_slug,
+    verified_source_base_states,
 )
 from seshat.fabric_waves.room_builder import (
     ADMITTED,
@@ -159,6 +160,30 @@ def test_frontier_becomes_admissible_once_the_need_actually_exists(host_binding,
     )
     assert "N-F" not in before.planned_registry_threads
     assert "N-F" in after.planned_registry_threads
+
+
+def test_unverified_declared_source_does_not_count_as_available(host_binding, registry):
+    host, binding = host_binding
+    engine, _uri, _ = build_host_engine(host)
+    assert BASE_SOURCE_STATE in verified_source_base_states(engine, host)
+
+    from seshat.fabric_waves.scenarios import engine_for
+
+    bare = engine_for([])
+    bases = verified_source_base_states(bare, host)
+    assert BASE_SOURCE_STATE not in bases
+    plan = compile_room_for_stone(
+        host_id=host["host_id"],
+        host_slug=host_slug(host["host_id"]),
+        stone=host["stones"][0],
+        registry=registry,
+        thread_binding=binding,
+        available_base_states=list(bases),
+        granted_rights=[SYNTHETIC_RIGHT],
+        budget={},
+    )
+    assert plan.admitted_engine_threads == ()
+    assert all(cap.admission != DENIED_RIGHTS for cap in plan.planned)
 
 
 def test_withholding_the_declared_right_denies_admission(host_binding, registry):

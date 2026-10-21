@@ -277,6 +277,30 @@ def declared_source_versions(host: Mapping[str, Any]) -> dict[str, str]:
     }
 
 
+def verified_source_base_states(
+    engine: WaveEngine, host: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """Base states for room compilation from verified runtime source, not declarations alone."""
+
+    states: list[str] = [BASE_STONE_STATE]
+    declared = declared_source_versions(host)
+    carrier_ids = tuple(declared)
+    store = engine.carrier_store
+    if not carrier_ids or store is None:
+        return tuple(states)
+    versions = store.current_source_versions(carrier_ids)
+    for cid in carrier_ids:
+        version = versions.get(cid)
+        if version is None:
+            return tuple(states)
+        try:
+            store.pin_content_digest(cid, pinned_version=version)
+        except ValueError:
+            return tuple(states)
+    states.append(BASE_SOURCE_STATE)
+    return tuple(states)
+
+
 def build_host_engine(
     host: Mapping[str, Any],
 ) -> tuple[WaveEngine, dict[str, str], dict[str, tuple[str, ...]]]:
@@ -428,6 +452,7 @@ __all__ = [
     "build_host_engine",
     "carrier_id_from_uri",
     "declared_source_versions",
+    "verified_source_base_states",
     "host_slug",
     "observed_missing_source_needs",
 ]

@@ -261,6 +261,57 @@ def test_rm09_requires_denial_and_zero_activations(idle_engine):
     assert rows["RM09"]["observed"] == FAIL
 
 
+def test_rm09_requires_active_run_refusal_not_vacuous_zero(idle_engine):
+    engine, _ = idle_engine
+    rows = rows_by_id(
+        evaluate_rm_oracles(
+            OracleInputs(
+                engine=engine,
+                run_ids=[],
+                rights_denied_probe={
+                    "admission": "DENIED_RIGHTS",
+                    "activations": 0,
+                    "run_attempted": False,
+                },
+            )
+        )
+    )
+    assert rows["RM09"]["observed"] == FAIL
+
+
+def test_rm19_fails_when_report_cites_phantom_record(idle_engine):
+    engine, _ = idle_engine
+    phantom = "m5-phantom-sediment-never-written"
+    markdown = f"## Basis\n\nSee `{phantom}` for the claimed evidence.\n"
+    rows = rows_by_id(
+        evaluate_rm_oracles(
+            OracleInputs(
+                engine=engine,
+                run_ids=[],
+                operator_report_markdown=markdown,
+            )
+        )
+    )
+    assert rows["RM19"]["observed"] == FAIL
+    assert phantom in rows["RM19"]["evidence"]["dangling"]
+
+
+def test_rm19_filtered_ref_list_cannot_hide_phantom_in_markdown(idle_engine):
+    engine, _ = idle_engine
+    phantom = "dangling-run-id-not-in-ledger"
+    rows = rows_by_id(
+        evaluate_rm_oracles(
+            OracleInputs(
+                engine=engine,
+                run_ids=[],
+                operator_answer_refs=[],
+                operator_report_markdown=f"Inspect `{phantom}` in the run ledger.",
+            )
+        )
+    )
+    assert rows["RM19"]["observed"] == FAIL
+
+
 def test_rm20_rejects_a_thread_that_is_not_a_declared_capability(idle_engine):
     engine, binding = idle_engine
     rows = rows_by_id(

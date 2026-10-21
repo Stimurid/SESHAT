@@ -49,7 +49,11 @@ from seshat.fabric_waves.decision_gate import (
     TrustedDecisionAttestation,
     accept_with_attestation,
 )
-from seshat.fabric_waves.errors import sanitize_provider_error, sanitize_receipt_material
+from seshat.fabric_waves.errors import (
+    sanitize_aporia_detail,
+    sanitize_provider_error,
+    sanitize_receipt_material,
+)
 from seshat.fabric_waves.frontier import (
     LexicographicFrontierStrategy,
     _condition_holds,
@@ -1034,7 +1038,10 @@ class WaveEngine:
 
         if result.aporia is not None:
             # An APORIA explanation is untrusted provider output, not public text.
-            aporia_detail = result.aporia
+            aporia_activation_id = f"{wave_id}:{spec.thread_id}:{node.node_id}:aporia"
+            public_aporia_detail = sanitize_aporia_detail(
+                result.aporia, activation_id=aporia_activation_id
+            )
             result = result.model_copy(update={"aporia": "BODY_APORIA"})
             self.sediment.deposit(
                 SedimentRecord(
@@ -1073,7 +1080,7 @@ class WaveEngine:
                 receipts_hash=_material_hash({"aporia": result.aporia}),
                 method_body_refs=(resolved_ref,),
                 error_code="BODY_APORIA",
-                error_detail=aporia_detail,
+                error_detail=public_aporia_detail,
             )
 
         produced_ids: list[str] = []

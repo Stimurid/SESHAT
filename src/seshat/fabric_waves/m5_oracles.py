@@ -10,6 +10,7 @@ the consumed parent activations, not by a count of threads).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -28,6 +29,8 @@ FAIL = "FAIL"
 NOT_TESTED = "NOT_TESTED"
 
 RM_IDS: tuple[str, ...] = tuple(f"RM{i:02d}" for i in range(1, 21))
+
+_BACKTICK_REF = re.compile(r"`([^`]+)`")
 
 
 @dataclass(frozen=True)
@@ -84,10 +87,17 @@ class OracleInputs:
     # RM17: sediment identity captured immediately before/after room close.
     sediment_versions_before_close: Mapping[str, str] | None = None
     sediment_versions_after_close: Mapping[str, str] | None = None
-    # RM19: the operator answer actually rendered.
+    # RM19: citations extracted from the rendered operator answer (not pre-filtered).
     operator_answer_refs: Sequence[str] | None = None
+    operator_report_markdown: str | None = None
     # RM20: the capability binding the host declared.
     capability_binding: Mapping[str, tuple[str, ...]] | None = None
+
+
+def extract_operator_answer_refs(markdown: str) -> list[str]:
+    """Backtick citations from the operator report, including unknown ids."""
+
+    return list(dict.fromkeys(_BACKTICK_REF.findall(markdown)))
 
 
 def _row(rm_id: str, name: str, observed: str, detail: str, **evidence: Any) -> dict[str, Any]:
@@ -332,8 +342,13 @@ def evaluate_rm_oracles(inputs: OracleInputs) -> list[dict[str, Any]]:  # noqa: 
             _row(
                 "RM09",
                 "RM09_RIGHTS_DENIAL",
-                _verdict(ev.get("admission") == DENIED_RIGHTS and ev.get("activations") == 0),
-                "withholding the declared right denies admission and yields zero activations",
+                _verdict(
+                    ev.get("admission") == DENIED_RIGHTS
+                    and ev.get("activations") == 0
+                    and ev.get("run_attempted")
+                    and ev.get("outcome_status") == "NO_ADMITTED_CAPABILITY"
+                ),
+                "withholding the declared right refuses the run and yields zero fresh activations",
                 **ev,
             )
         )
@@ -552,7 +567,7 @@ def evaluate_rm_oracles(inputs: OracleInputs) -> list[dict[str, Any]]:  # noqa: 
         )
 
     # -- RM19: the operator answer cites records that exist ------------------
-    if inputs.operator_answer_refs is None:
+    if inputs.operator_report_markdown is None and inputs.operator_answer_refs is None:
         rows.append(
             _row("RM19", "RM19_PRODUCT_VIEW_PROVENANCE", NOT_TESTED, "no operator answer rendered")
         )
@@ -560,14 +575,17 @@ def evaluate_rm_oracles(inputs: OracleInputs) -> list[dict[str, Any]]:  # noqa: 
         known = {r.sediment_id for r in engine.sediment.all_records()} | {
             a.activation_id for a in engine.ledger.activations
         }
-        refs = list(inputs.operator_answer_refs)
+        if inputs.operator_report_markdown is not None:
+            refs = extract_operator_answer_refs(inputs.operator_report_markdown)
+        else:
+            refs = list(inputs.operator_answer_refs or ())
         dangling = sorted(set(refs) - known)
         rows.append(
             _row(
                 "RM19",
                 "RM19_PRODUCT_VIEW_PROVENANCE",
                 _verdict(bool(refs) and not dangling),
-                "every reference in the operator answer resolves to a real record or activation",
+                "every backtick citation in the operator answer resolves to a real record or activation",
                 references=len(refs),
                 dangling=dangling,
             )
@@ -619,5 +637,6 @@ __all__ = [
     "OracleInputs",
     "SourceObservation",
     "evaluate_rm_oracles",
+    "extract_operator_answer_refs",
     "oracle_summary",
 ]

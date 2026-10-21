@@ -47,6 +47,7 @@ from seshat.fabric_waves.m5_checkpoint import (
     write_checkpoint,
 )
 from seshat.fabric_waves.m5_oracles import (
+    FAIL,
     NOT_TESTED,
     DerivedSnapshot,
     OracleInputs,
@@ -62,6 +63,7 @@ from seshat.fabric_waves.m5_synthetic_hosts import (
     build_host_engine,
     carrier_id_from_uri,
     declared_source_versions,
+    verified_source_base_states,
     host_slug,
     observed_missing_source_needs,
 )
@@ -338,14 +340,7 @@ def _execute_stone(
             stored_result=prior,
         )
 
-    # Match room_builder tests: synthetic hosts always declare sources; the
-    # compiler must see SyntheticSourceVersion even if version lookup fails.
-    has_carriers = engine.carrier_store is not None and bool(carrier_ids)
-    base_states = [
-        BASE_STONE_STATE,
-        *([BASE_SOURCE_STATE] if has_carriers else []),
-        *extra_base_states,
-    ]
+    base_states = [*verified_source_base_states(engine, world.host), *extra_base_states]
     manifest = compile_room_for_stone(
         host_id=str(world.host["host_id"]),
         host_slug=world.slug,
@@ -606,7 +601,7 @@ def _frontier_probe(world: WorldRun) -> dict[str, Any]:
             stone=frontier_stone,
             registry=world.registry,
             thread_binding=world.binding,
-            available_base_states=[BASE_STONE_STATE, BASE_SOURCE_STATE, *extra],
+            available_base_states=[*verified_source_base_states(engine, world.host), *extra],
             granted_rights=[SYNTHETIC_RIGHT],
             budget={},
         )
@@ -624,7 +619,10 @@ def _frontier_probe(world: WorldRun) -> dict[str, Any]:
             stone=frontier_stone,
             registry=world.registry,
             thread_binding=world.binding,
-            available_base_states=[BASE_STONE_STATE, BASE_SOURCE_STATE, MISSING_SOURCE_NEED_STATE],
+            available_base_states=[
+                *verified_source_base_states(engine, world.host),
+                MISSING_SOURCE_NEED_STATE,
+            ],
             granted_rights=[SYNTHETIC_RIGHT],
             budget={},
         )
@@ -661,32 +659,36 @@ def _frontier_probe(world: WorldRun) -> dict[str, Any]:
 def _rights_probe(world: WorldRun) -> dict[str, Any]:
     """Withhold the declared right and observe denial plus zero activations."""
 
-    manifest = compile_room_for_stone(
-        host_id=str(world.host["host_id"]),
-        host_slug=world.slug,
-        stone={"stone_id": "RIGHTS_PROBE", "kind": "QUERY"},
-        registry=world.registry,
-        thread_binding=world.binding,
-        available_base_states=[BASE_STONE_STATE, BASE_SOURCE_STATE],
-        granted_rights=[],  # nothing granted
-        budget={},
+    uri_map = {
+        str(item["id"]): carrier_id_from_uri(str(item["id"]))
+        for item in world.host.get("source_versions") or ()
+    }
+    stone = {
+        "stone_id": "RIGHTS_PROBE",
+        "kind": "QUERY",
+        "question": "rights denial probe",
+        "must_wave": [],
+    }
+    before = len(world.engine.ledger.activations)
+    outcome = _execute_stone(
+        world,
+        stone,
+        uri_map=uri_map,
+        tick=850,
+        granted_rights=[],
     )
-    denied = [cap for cap in manifest.planned if cap.admission == DENIED_RIGHTS]
-    denied_threads = {tid for cap in denied for tid in cap.engine_thread_ids}
-    # The probe compiles only; a denied room is never admitted, so by
-    # construction it contributes no activation. Assert that directly.
-    activations = len(
-        [
-            a
-            for a in world.engine.ledger.activations
-            if a.run_id == f"m5-{world.slug}-RIGHTS_PROBE" and a.thread_id in denied_threads
-        ]
-    )
+    fresh = len(world.engine.ledger.activations) - before
+    manifest = outcome.manifest
+    denied = [cap for cap in (manifest.planned if manifest else ()) if cap.admission == DENIED_RIGHTS]
     return {
-        "admission": DENIED_RIGHTS if denied else ADMITTED,
+        "admission": DENIED_RIGHTS
+        if denied and not (manifest and manifest.admitted_engine_threads)
+        else ADMITTED,
         "denied_capabilities": sorted(cap.registry_id for cap in denied),
-        "activations": activations,
+        "activations": fresh,
         "withheld_right": SYNTHETIC_RIGHT,
+        "run_attempted": True,
+        "outcome_status": outcome.status,
     }
 
 
@@ -1388,6 +1390,8 @@ def run_two_worlds(
             (o.run_id for o in world.outcomes if o.kind == "QUERY" and o.run_id), None
         )
 
+        sections, _filtered_refs = _operator_sections(world)
+        operator_report_md = render_operator_report(world, sections)
         inputs = OracleInputs(
             engine=world.engine,
             run_ids=world.run_ids,
@@ -1419,7 +1423,8 @@ def run_two_worlds(
             sediment_versions_after_close=world.oracle_inputs_extra.get(
                 "sediment_versions_after_close"
             ),
-            operator_answer_refs=_operator_sections(world)[1],
+            operator_answer_refs=_filtered_refs,
+            operator_report_markdown=operator_report_md,
             capability_binding=world.binding,
         )
         oracle_rows = evaluate_rm_oracles(inputs)
@@ -1606,6 +1611,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"Wrote M5 carpet portfolio to {args.output_dir.resolve()}")
     if not_tested:
         print(f"{NOT_TESTED}: {', '.join(not_tested)}")
+    failed = sorted(
+        {
+            oid
+            for summary in portfolio["rm_summaries"]
+            for oid in summary["failed_ids"]
+        }
+    )
+    if failed:
+        print(f"{FAIL}: {', '.join(failed)}", file=sys.stderr)
+        return 1
     return 0
 
 
