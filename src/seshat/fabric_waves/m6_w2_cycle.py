@@ -361,12 +361,14 @@ def completed_source_versions(world: WorldRun) -> list[dict[str, str]]:
     from seshat.fabric_waves.m5_synthetic_hosts import declared_source_versions
 
     out: list[dict[str, str]] = []
-    for cid, ver in declared_source_versions(world.host).items():
-        try:
-            digest = store.pin_content_digest(cid, pinned_version=ver)
-        except ValueError:
-            digest = "UNREADABLE"
-        out.append({"carrier_id": cid, "version": ver, "content_sha256": digest})
+    declared = declared_source_versions(world.host)
+    actual = store.current_source_versions(tuple(declared))
+    for cid in declared:
+        current_version = actual.get(cid)
+        if current_version is None:
+            raise ValueError("M6_F09A_SOURCE_VERSION_NOT_OBSERVED")
+        digest = store.pin_content_digest(cid, pinned_version=current_version)
+        out.append({"carrier_id": cid, "version": current_version, "content_sha256": digest})
     for rec in w2_observations(world):
         payload = rec.payload or {}
         out.append(
