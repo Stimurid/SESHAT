@@ -214,3 +214,105 @@ def test_m6_oracle_rejects_forged_synthetic_uri_in_report():
         operator_markdown="Alleged support: `synthetic://world-u/not-admitted`",
     )
     assert next(r for r in rows if r["oracle_id"] == "RX06")["observed"] == "FAIL"
+
+
+def test_f09a_done_artifact_mutation_fails_before_skip(tmp_path):
+    from seshat.fabric_waves.m5_checkpoint import CheckpointRejected
+
+    root = tmp_path / "qualified"
+    run_m6_portfolio(
+        FIXTURE, root, approved_sha256=ORIGINAL_FIXTURE_SHA256,
+        verify_subprocess_resume=False,
+    )
+    manifest_path = root / "f09a_batch_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert all(item.get("artifact_hashes") for item in manifest["items"])
+    manifest["items"][0]["artifact_hashes"]["m6_report_bundle.json"] = "0" * 64
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2),
+        encoding="utf-8",
+    )
+    with pytest.raises(CheckpointRejected, match="F09A_ARTIFACT_HASH_MISMATCH"):
+        run_m6_portfolio(
+            FIXTURE, root, approved_sha256=ORIGINAL_FIXTURE_SHA256,
+            verify_subprocess_resume=False,
+            f09a_resume_after_slug="world-u-synthetic-university",
+        )
+
+
+def test_f09a_missing_or_forged_source_version_refuses_done_skip(tmp_path):
+    from seshat.fabric_waves.m5_checkpoint import CheckpointRejected
+
+    root = tmp_path / "versioned"
+    run_m6_portfolio(
+        FIXTURE, root, approved_sha256=ORIGINAL_FIXTURE_SHA256,
+        verify_subprocess_resume=False,
+    )
+    manifest_path = root / "f09a_batch_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["items"][0]["completed_source_versions"][0]["content_sha256"] = "UNREADABLE"
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2),
+        encoding="utf-8",
+    )
+    with pytest.raises(CheckpointRejected, match="F09A_DONE_SOURCE_VERSION_INVALID"):
+        run_m6_portfolio(
+            FIXTURE, root, approved_sha256=ORIGINAL_FIXTURE_SHA256,
+            verify_subprocess_resume=False,
+            f09a_resume_after_slug="world-u-synthetic-university",
+        )
+
+
+def test_f09a_new_process_resume_preserves_completed_world_bytes(tmp_path):
+    import shutil
+    import subprocess
+    import sys
+
+    first_slug = "world-u-synthetic-university"
+    second_slug = "world-o-synthetic-service"
+    completed = tmp_path / "full"
+    run_m6_portfolio(
+        FIXTURE, completed, approved_sha256=ORIGINAL_FIXTURE_SHA256,
+        verify_subprocess_resume=False,
+    )
+    root = tmp_path / "resumed"
+    root.mkdir()
+    shutil.copytree(completed / first_slug, root / first_slug)
+    manifest = json.loads(
+        (completed / "f09a_batch_manifest.json").read_text(encoding="utf-8")
+    )
+    first_sources = copy.deepcopy(manifest["items"][0]["completed_source_versions"])
+    first_hashes = copy.deepcopy(manifest["items"][0]["artifact_hashes"])
+    manifest["items"][1]["state"] = "QUEUED"
+    manifest["items"][1].pop("artifact_hashes", None)
+    manifest["items"][1]["completed_source_versions"] = []
+    (root / "f09a_batch_manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2),
+        encoding="utf-8",
+    )
+    before = (root / first_slug / "m6_report_bundle.json").read_bytes()
+    child = subprocess.run(
+        [
+            sys.executable, "-m", "seshat.fabric_waves.m6_research_engine",
+            "--fixture", str(FIXTURE),
+            "--fixture-sha256", ORIGINAL_FIXTURE_SHA256,
+            "--output-dir", str(root),
+            "--f09a-resume-after", first_slug,
+            "--no-subprocess-resume",
+        ],
+        capture_output=True, text=True, check=False,
+    )
+    assert child.returncode == 0, child.stderr
+    assert (root / second_slug / "m6_report_bundle.json").is_file()
+    assert (root / first_slug / "m6_report_bundle.json").read_bytes() == before
+    after = json.loads(
+        (root / "f09a_batch_manifest.json").read_text(encoding="utf-8")
+    )
+    assert all(item["state"] == "DONE" for item in after["items"])
+    assert after["items"][0]["completed_source_versions"] == first_sources
+    assert after["items"][0]["artifact_hashes"] == first_hashes
+    assert after["items"][1]["artifact_hashes"]
+    assert any(
+        v.get("version") == "O2"
+        for v in after["items"][1]["completed_source_versions"]
+    )
