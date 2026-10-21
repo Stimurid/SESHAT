@@ -108,7 +108,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run --rm --network none --read-only --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m seshat-report:pr python -m pytest -q -p no:cacheprovider tests/test_reports.py tests/test_batch.py tests/test_scientific_report.py tests/fabric_waves/test_report_bridge.py tests/fabric_waves/test_report_bridge_demo.py tests/test_pdf_page_evidence.py tests/test_pdf_sandbox.py tests/test_source_access.py
+          docker run --rm --network none --read-only --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m seshat-report:pr python -m pytest -q -p no:cacheprovider tests/test_reports.py tests/test_batch.py tests/test_scientific_report.py tests/fabric_waves/test_report_bridge.py tests/fabric_waves/test_report_bridge_demo.py tests/test_pdf_page_evidence.py tests/test_pdf_sandbox.py tests/test_pdf_claims.py tests/test_source_access.py tests/test_m4_transport_boundary.py tests/fabric_waves/test_m5_room_carpet.py
+      - name: M5 two-world carpet (bounded container)
+        shell: bash
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/seshat-m5-carpet"
+          mkdir -p "$dest"
+          chmod 700 "$dest"
+          docker run --rm --network none --read-only --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges --memory 512m --memory-swap 512m --pids-limit 64 --cpus 1 --tmpfs /tmp:rw,nosuid,nodev,size=256m --mount "type=bind,source=$dest,target=/out" seshat-report:pr python -m seshat.fabric_waves.m5_room_carpet --output-dir /out/run
+          test -s "$dest/run/m5_portfolio_receipt.json"
+          test -s "$dest/run/synthetic-organisational-research/report.md"
+          grep -q 'SYNTHETIC_ENGINEERING_ONLY' "$dest/run/synthetic-organisational-research/report.md"
           docker run --rm --network none --read-only --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m seshat-report:pr python -m ruff check --no-cache .
       - name: Print scope boundary
         shell: bash
