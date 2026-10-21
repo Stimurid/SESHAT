@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Mapping
 from typing import Any
@@ -9,6 +11,7 @@ from typing import Any
 from seshat.fabric_waves.m5_oracles import FAIL, NOT_TESTED, PASS, _row
 from seshat.fabric_waves.m5_room_carpet import WorldRun, _operator_known_identifiers
 from seshat.fabric_waves.m6_w2_cycle import w2_observations
+from seshat.fabric_waves.m6_report_composer import _coverage_axes_from_sources
 
 _LEAKED_REFERENCE_MARKERS: tuple[str, ...] = (
     "DEVELOPMENT_EXPOSED_REFERENCE_ANSWER",
@@ -41,10 +44,23 @@ def evaluate_m6_oracles(
 
     if profile == "university_transfer":
         r06 = triad.get("R06", {}).get("markdown", "")
-        if "NONCOMPARABLE" in r06:
-            rows.append(_row("RX02", "RX02_METRIC_DENOMINATOR_NONCOMPARABLE", PASS, "R06 refuses rank"))
+        axes = _coverage_axes_from_sources(world)
+        observed_denominators = [
+            m.group(1)
+            for axis in axes
+            for m in [re.search(r"denominator=(\\d+)", axis)]
+            if m is not None
+        ]
+        source_coverage_ok = (
+            len(observed_denominators) >= 2
+            and all(axis in r06 for axis in axes)
+            and all(value in r06 for value in observed_denominators)
+            and "NONCOMPARABLE" in r06
+        )
+        if source_coverage_ok:
+            rows.append(_row("RX02", "RX02_METRIC_DENOMINATOR_NONCOMPARABLE", PASS, "current source denominators and refusal match"))
         else:
-            rows.append(_row("RX02", "RX02_METRIC_DENOMINATOR_NONCOMPARABLE", FAIL, "R06 missing noncompare"))
+            rows.append(_row("RX02", "RX02_METRIC_DENOMINATOR_NONCOMPARABLE", FAIL, "R06 lacks actual current source axes"))
         initial = str(bundle.get("initial_question") or "")
         revised = str(bundle.get("revised_question") or "")
         overlap = bool(w2_payload and w2_payload.get("sample_overlap_with_beta"))
@@ -140,18 +156,64 @@ def evaluate_m6_oracles(
         rows.append(_row("RX09", "RX09_W2_PROVENANCE_IN_R05", FAIL, f"r05={r05.get('status')}"))
 
     if w2_payload:
-        if w2_payload.get("byte_length", 0) > 0 and w2_payload.get("reading_extent") == "FULL_REQUIRED":
-            rows.append(_row("RX10", "RX10_F07_BYTE_EXTENT", PASS, f"bytes={w2_payload.get('byte_length')}"))
+        store = world.engine.carrier_store
+        carrier_id = str(w2_payload.get("carrier_id") or "")
+        entry = store._contents.get(carrier_id) if store is not None else None
+        raw = (entry.content if isinstance(entry.content, bytes) else str(entry.content).encode("utf-8")) if entry else b""
+        bytes_match = (
+            bool(raw)
+            and hashlib.sha256(raw).hexdigest() == w2_payload.get("content_sha256")
+            and len(raw) == w2_payload.get("byte_length")
+            and w2_payload.get("reading_extent") == "FULL_SYNTHETIC_FIXTURE"
+        )
+        if bytes_match:
+            rows.append(_row("RX10", "RX10_SYNTHETIC_BYTE_EXTENT", PASS, f"actual synthetic bytes={len(raw)}"))
         else:
-            rows.append(_row("RX10", "RX10_F07_BYTE_EXTENT", FAIL, "incomplete F07 extent"))
+            rows.append(_row("RX10", "RX10_SYNTHETIC_BYTE_EXTENT", FAIL, "stored bytes/digest/version do not match W2"))
     else:
-        rows.append(_row("RX10", "RX10_F07_BYTE_EXTENT", NOT_TESTED, "no W2"))
+        rows.append(_row("RX10", "RX10_SYNTHETIC_BYTE_EXTENT", NOT_TESTED, "no W2"))
 
-    if receipts and any(r.get("status") == "IDEMPOTENT_REPLAY" for r in receipts):
-        rows.append(_row("RX11", "RX11_W2_IDEMPOTENT", PASS, "replay observed"))
+    if receipts and any(
+        r.get("status") == "IDEMPOTENT_REPLAY" and r.get("verified_no_new_evidence") is True
+        for r in receipts
+    ):
+        rows.append(_row("RX11", "RX11_W2_IDEMPOTENT", PASS, "duplicate observed with no new ledger/sediment"))
     elif receipts:
         rows.append(_row("RX11", "RX11_W2_IDEMPOTENT", NOT_TESTED, "single pass"))
     else:
         rows.append(_row("RX11", "RX11_W2_IDEMPOTENT", NOT_TESTED, "no returns"))
 
+    # Attach concrete run/source/report witnesses. A PASS without its own
+    # evidence is never accepted by the strict M6 gate.
+    public_digest = hashlib.sha256(public_text.encode("utf-8")).hexdigest()
+    for row in rows:
+        if row["observed"] != PASS:
+            continue
+        oid = row["oracle_id"]
+        evidence: dict[str, Any] = {
+            "host_id": str(world.host.get("host_id") or ""),
+            "report_sha256": public_digest,
+        }
+        if oid == "RX02":
+            evidence["current_source_axes"] = _coverage_axes_from_sources(world)
+        elif oid in ("RX03", "RX09", "RX10"):
+            evidence["w2_carrier_id"] = w2_payload.get("carrier_id") if w2_payload else None
+            evidence["w2_source_digest"] = w2_payload.get("content_sha256") if w2_payload else None
+            evidence["w2_bytes"] = w2_payload.get("byte_length") if w2_payload else None
+        elif oid == "RX04":
+            evidence["report_ids"] = [r["report_id"] for r in bundle.get("reports") or ()]
+        elif oid == "RX05":
+            evidence["human_gate"] = dict(human or {})
+        elif oid == "RX06":
+            evidence["resolved_backtick_refs"] = len(phantom)
+        elif oid == "RX08":
+            evidence["service_decision_right"] = "DecisionRight" in r07
+        elif oid == "RX11":
+            evidence["idempotent_return_ids"] = [
+                r.get("return_id") for r in receipts
+                if r.get("status") == "IDEMPOTENT_REPLAY" and r.get("verified_no_new_evidence")
+            ]
+        elif oid in ("RX01", "RX07"):
+            evidence["scanned_text_sha256"] = public_digest
+        row["evidence"] = evidence
     return rows
