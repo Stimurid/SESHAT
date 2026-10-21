@@ -128,8 +128,11 @@ detail string: it is not natural-language entailment.
 ## Fixtures and packaging
 
 The frozen original fixture
-(`m5_room_synthetic_acceptance_20261021_v01.json`, SHA-256
-`9feab9b1…a0e328`) is accepted by its pin. **Any other fixture requires a
+(`m5_room_synthetic_acceptance_20261021_v01.json`) is admitted by the digest of
+**canonical LF bytes as read from Git / the wheel**
+(`a4b4a0eb…ab94f20`, 24972 bytes). The owner handoff also recorded the same
+JSON with Windows CRLF (`9feab9b1…a0e328`, 25400 bytes) as provenance only;
+that digest is not used for admission. **Any other fixture requires a
 caller-approved digest** (`--fixture-sha256`), so an invented world can be run
 without hardcoding one world identity as the engine.
 

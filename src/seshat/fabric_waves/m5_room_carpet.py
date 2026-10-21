@@ -95,10 +95,16 @@ M5_ARTIFACTS: tuple[str, ...] = (
     "m5_checkpoint.json",
 )
 
-#: Digest of the frozen owner-authorised ORIGINAL fixture.  A different
-#: fixture may be run, but only with a digest the caller explicitly approves:
-#: one invented world is an input, not the identity of the engine.
-ORIGINAL_FIXTURE_SHA256 = "9feab9b1db1bfd2aedf239425898d9265c9dc2ad0f165b7778d2892c99a0e328"
+#: Canonical LF bytes as stored in Git and shipped in the wheel (Linux CI /
+#: ``git checkout`` on all platforms).  Integrity checks hash the file as read.
+ORIGINAL_FIXTURE_SHA256 = (
+    "a4b4a0eb7191cc564e21e9ef0e76688f1650b563e4de482dd95a76964ab94f20"
+)
+#: Owner handoff digest of the same JSON with CRLF line endings on Windows
+#: (25400 bytes).  Provenance only — not used for admission.
+OWNER_FIXTURE_CRLF_SHA256 = (
+    "9feab9b1db1bfd2aedf239425898d9265c9dc2ad0f165b7778d2892c99a0e328"
+)
 
 PACKAGE_FIXTURE_NAME = "m5_room_synthetic_acceptance_20261021_v01.json"
 
@@ -1420,6 +1426,8 @@ def run_two_worlds(
         "schema": "seshat.m5_portfolio_receipt.v2",
         "fixture_path": str(fixture_path),
         "fixture_sha256": fixture_sha,
+        "owner_fixture_crlf_sha256": OWNER_FIXTURE_CRLF_SHA256,
+        "fixture_byte_representation": "GIT_LF_CANONICAL",
         "worlds": world_receipts,
         "rm_summaries": heads,
         "synthetic_only": True,

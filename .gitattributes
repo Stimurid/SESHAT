@@ -1,0 +1,3 @@
+# Canonical LF for pinned synthetic fixtures (M5 acceptance JSON).
+tests/fixtures/*.json text eol=lf
+src/seshat/fabric_waves/m5_fixtures/*.json text eol=lf
