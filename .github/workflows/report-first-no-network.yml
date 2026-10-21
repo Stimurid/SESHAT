@@ -155,6 +155,26 @@ jobs:
           print("RM_PASS=%d RM_FAIL=%d RM_NOT_TESTED=%d" % (s["pass"], s["fail"], s["not_tested"]))
           print("RM_NOT_TESTED_IDS=%s" % ",".join(s["not_tested_ids"]))
           PY
+          # Check EVERY world, not only the first sample selected for presentation.
+          python - "$dest/run" <<'PY'
+          import json, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          files = sorted(root.glob("*/oracles.json"))
+          assert len(files) >= 2, files
+          for path in files:
+              data = json.loads(path.read_text(encoding="utf-8"))
+              summary = data["summary"]
+              assert (summary["pass"], summary["fail"], summary["not_tested"]) == (20, 0, 0), (path, summary)
+              assert summary["all_passed"] is True, path
+              rows = {r["oracle_id"]: r for r in data["rows"]}
+              assert len(rows) == 20, path
+              assert all(r["observed"] == "PASS" and r["evidence"] for r in rows.values()), path
+              rm17 = rows["RM17"]
+              assert rm17["evidence"]["retained"] > 0, path
+              assert not rm17["evidence"]["lost_sediment_ids"], path
+              assert not rm17["evidence"]["mutated_sediment_ids"], path
+              print("M5_WORLD_VERIFIED", path.parent.name, "RM17_RETAINED", rm17["evidence"]["retained"])
+          PY
       - name: M5 new-process resumed continuation from a checkpoint
         shell: bash
         run: |
@@ -220,6 +240,8 @@ jobs:
             cp -r "$src" "$stage/m5_carpet" || true
           fi
           git rev-parse HEAD > "$stage/source_commit.txt"
+          # Distinguish the ephemeral PR merge-check commit from the reviewed head.
+          echo "${{ github.event.pull_request.head.sha || github.sha }}" > "$stage/source_pr_head.txt"
           git rev-parse 'HEAD^{tree}' > "$stage/source_tree.txt"
           python - "$stage" <<'PY'
           import hashlib, pathlib, sys
