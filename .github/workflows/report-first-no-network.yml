@@ -165,7 +165,22 @@ jobs:
           docker run --rm --network none --read-only --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m --mount "type=bind,source=$dest,target=/out" seshat-report:pr python -m seshat.fabric_waves.m6_research_engine --output-dir /out/run
           test -s "$dest/run/m6_portfolio_receipt.json"
           test -s "$dest/run/world-u-synthetic-university/m6_report_bundle.json"
+          test -s "$dest/run/world-u-synthetic-university/m6_external_ledger.json"
+          test -s "$dest/run/world-u-synthetic-university/carpet.html"
           grep -q 'NONCOMPARABLE' "$dest/run/world-u-synthetic-university/m6_report.md"
+          grep -q 'content_sha256' "$dest/run/world-u-synthetic-university/m6_report.md"
+          python - "$dest/run/world-u-synthetic-university/m6_oracles.json" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          rows = data if isinstance(data, list) else data.get("rows", data)
+          if isinstance(rows, dict):
+              rows = rows.get("rows", [])
+          fails = [r for r in rows if r.get("observed") == "FAIL"]
+          assert not fails, fails
+          ids = {r["oracle_id"] for r in rows}
+          assert "RX09" in ids and "RX10" in ids
+          print("M6_RX_PASS", len(rows))
+          PY
           echo "M6_SYNTHETIC_PORTFOLIO=1"
       - name: M5 new-process resumed continuation from a checkpoint
         shell: bash

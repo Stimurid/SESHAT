@@ -10,6 +10,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any, Sequence
 
 from seshat.fabric_waves.m5_checkpoint import CheckpointRejected, write_checkpoint
@@ -27,8 +28,8 @@ from seshat.fabric_waves.m5_room_carpet import (
     _unauthorized_decision_probe,
     export_world,
     load_fixture,
-    run_world,
 )
+from seshat.fabric_waves.m6_w2_cycle import completed_source_versions, run_m6_world, split_host_stones
 from seshat.fabric_waves.m5_synthetic_hosts import host_slug
 from seshat.fabric_waves.m6_oracles import evaluate_m6_oracles
 from seshat.fabric_waves.m6_report_composer import (
@@ -40,7 +41,7 @@ from seshat.fabric_waves.m6_report_composer import (
 
 PACKAGE_FIXTURE_NAME = "m6_two_world_research_acceptance_20261021_v01.json"
 ORIGINAL_FIXTURE_SHA256 = (
-    "137d155b677cc11a0f82bb57880ff2ec6a7e3ddef0b2a758ec847df5e4b74b7c"
+    "fcebb73cb3f546a782af5e268e2795c2bd5de818ae222dafe346c74ffcfab479"
 )
 F09A_MANIFEST_VERSION = "F09A-M6-1"
 M6_ARTIFACTS: tuple[str, ...] = (
@@ -48,6 +49,8 @@ M6_ARTIFACTS: tuple[str, ...] = (
     "m6_report.md",
     "m6_report.html",
     "m6_oracles.json",
+    "m6_external_ledger.json",
+    "carpet.html",
     "f09a_batch_manifest.json",
     "f09a_batch_receipt.json",
 )
@@ -80,12 +83,21 @@ def _write_f09a_manifest(
     fixture_sha256: str,
     world_slugs: Sequence[str],
     completed: Sequence[str],
+    world_source_snapshots: Mapping[str, Sequence[Mapping[str, str]]] | None = None,
 ) -> dict[str, Any]:
+    snapshots = world_source_snapshots or {}
     manifest = {
         "manifest_version": F09A_MANIFEST_VERSION,
         "fixture_sha256": fixture_sha256,
         "concurrency": 1,
-        "items": [{"world_slug": slug, "state": "DONE" if slug in completed else "QUEUED"} for slug in world_slugs],
+        "items": [
+            {
+                "world_slug": slug,
+                "state": "DONE" if slug in completed else "QUEUED",
+                "completed_source_versions": list(snapshots.get(slug) or ()),
+            }
+            for slug in world_slugs
+        ],
         "synthetic_only": True,
     }
     (output_root / "f09a_batch_manifest.json").write_text(
@@ -105,13 +117,14 @@ def _run_world_with_m6_exports(
     verify_subprocess_resume: bool,
     portfolio_checkpoints: dict[str, Any],
 ) -> dict[str, Any]:
-    world = run_world(host, fixture=fixture, fixture_sha256=fixture_sha256)
+    world = run_m6_world(host, fixture=fixture, fixture_sha256=fixture_sha256)
     slug = world.slug
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    host_m5, _w2_only = split_host_stones(host)
     resume_evidence: dict[str, Any] | None = None
-    if verify_subprocess_resume and len(host.get("stones") or []) > 1:
-        partial_cp = _partial_checkpoint(host, fixture, fixture_sha256, stones_to_run=1)
+    if verify_subprocess_resume and len(host_m5.get("stones") or []) > 1:
+        partial_cp = _partial_checkpoint(host_m5, fixture, fixture_sha256, stones_to_run=1)
         cp_path = output_dir / "resume_after_first_stone.json"
         write_checkpoint(cp_path, partial_cp)
         child_dir = output_dir / "resume_probe"
@@ -137,7 +150,7 @@ def _run_world_with_m6_exports(
         )
         resume_evidence = _compare_resume(completed, child_dir, control=world)
 
-    frontier = _frontier_probe(world)
+    frontier = world.oracle_inputs_extra.get("m6_frontier_probe") or _frontier_probe(world)
     budget_probe = _budget_probe(world)
     foreign = next(
         (cp for hid, cp in portfolio_checkpoints.items() if hid != str(host["host_id"])),
@@ -202,6 +215,12 @@ def _run_world_with_m6_exports(
         json.dumps(m6_rows, ensure_ascii=False, sort_keys=True, indent=2),
         encoding="utf-8",
     )
+    ledger = world.oracle_inputs_extra.get("m6_external_ledger")
+    if ledger:
+        (output_dir / "m6_external_ledger.json").write_text(
+            json.dumps(ledger, ensure_ascii=False, sort_keys=True, indent=2),
+            encoding="utf-8",
+        )
 
     return {
         "world_slug": slug,
@@ -213,6 +232,7 @@ def _run_world_with_m6_exports(
         "m6_summary": oracle_summary(m6_rows),
         "frontier_probe": frontier,
         "resume_evidence": resume_evidence,
+        "completed_source_versions": completed_source_versions(world),
     }
 
 
@@ -235,6 +255,7 @@ def run_m6_portfolio(
     checkpoint_objects: dict[str, Any] = {}
     world_results: list[dict[str, Any]] = []
     completed_slugs: list[str] = []
+    source_snapshots: dict[str, list[dict[str, str]]] = {}
 
     if f09a_resume_after_slug:
         manifest_path = output_root / "f09a_batch_manifest.json"
@@ -270,12 +291,14 @@ def run_m6_portfolio(
         checkpoint_objects[str(host["host_id"])] = result.get("checkpoint")
         world_results.append(result)
         completed_slugs.append(slug)
+        source_snapshots[slug] = list(result.get("completed_source_versions") or ())
 
     manifest = _write_f09a_manifest(
         output_root,
         fixture_sha256=fixture_sha,
         world_slugs=slugs,
         completed=completed_slugs,
+        world_source_snapshots=source_snapshots,
     )
     receipt = {
         "schema": "seshat.m6_f09a_receipt.v1",

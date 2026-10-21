@@ -1,8 +1,4 @@
-"""Compose grounded R01–R07 report sections from an executed M5/M6 world run.
-
-All prose is derived from fixture metadata and sediment the engine actually
-produced. Nothing here asserts scientific truth or customer release.
-"""
+"""Compose grounded R01–R07 report sections from an executed M5/M6 world run."""
 
 from __future__ import annotations
 
@@ -13,8 +9,15 @@ from typing import Any, Literal
 
 from seshat.fabric_waves.m4_transport_boundary import assess_output_sections
 from seshat.fabric_waves.m5_room_carpet import REQUIRED_REPORT_SECTIONS, WorldRun, _lookup_sediment, _operator_sections
+from seshat.fabric_waves.m6_w2_cycle import w2_observations
 
-ReportAvailability = Literal["AVAILABLE", "PARTIAL", "BLOCKED_METHOD_RUNTIME", "BLOCKED_EXTERNAL_EVIDENCE"]
+ReportAvailability = Literal[
+    "AVAILABLE",
+    "PARTIAL",
+    "BLOCKED_METHOD_RUNTIME",
+    "BLOCKED_EXTERNAL_EVIDENCE",
+    "PRELIMINARY",
+]
 
 M6_MANDATORY_REPORT_IDS: tuple[str, ...] = ("R01", "R02", "R03", "R04", "R05", "R06", "R07")
 
@@ -32,17 +35,34 @@ def _initial_question(world: WorldRun) -> str:
     return ""
 
 
-def _revised_question(world: WorldRun, profile: str, divergent: bool, aporia_seen: bool) -> str:
+def _w2_primary(world: WorldRun) -> Mapping[str, Any] | None:
+    obs = w2_observations(world)
+    if not obs:
+        return None
+    return obs[-1].payload or {}
+
+
+def _revised_question(world: WorldRun, profile: str, divergent: bool, w2: Mapping[str, Any] | None) -> str:
     initial = _initial_question(world)
-    if profile == "university_transfer" and divergent and aporia_seen:
+    if profile == "university_transfer" and w2:
+        if w2.get("sample_overlap_with_beta"):
+            return (
+                "Under label-overlap between an external programme and Group Beta "
+                f"(source `{w2.get('carrier_id')}`@{w2.get('source_version')}), "
+                "what independent labels are required before any transfer recommendation?"
+            )
+        if w2.get("independent_labels_claimed"):
+            return initial
+    if profile == "service_calibration" and w2:
         return (
-            "Under label-overlap between an external programme and Group Beta, "
-            "what independent labels are required before any transfer recommendation?"
-        )
-    if profile == "service_calibration" and aporia_seen:
-        return (
-            "Given conflicting service rules and a signed test observation, "
+            "Given a signed synthetic test observation without maintenance escalation authority "
+            f"(`{w2.get('carrier_id')}`@{w2.get('source_version')}), "
             "which bounded check is authorized without owner DecisionRight?"
+        )
+    if profile == "university_transfer" and divergent:
+        return (
+            "With divergent local coverage_proxy readings only, what external evidence "
+            "is required before comparing groups?"
         )
     return initial
 
@@ -58,6 +78,26 @@ def _coverage_axes_from_sources(host: Mapping[str, Any]) -> list[str]:
     return axes
 
 
+def _r07_routes(profile: str, w2: Mapping[str, Any] | None, operator_next: str) -> list[str]:
+    if profile == "university_transfer":
+        routes = [
+            "direct handoff with explicit caveat on label independence",
+            "requalification using independent labels before transfer",
+            "new comparative inquiry with harmonised denominator",
+        ]
+        if w2 and not w2.get("sample_overlap_with_beta") and w2.get("independent_labels_claimed"):
+            routes[0] = "direct handoff where independent labels are evidenced in returned W2"
+    elif profile == "service_calibration":
+        routes = [
+            "immediate bounded instrument check (no escalation)",
+            "requalification against revised calibration protocol O2",
+            "new monitoring programme pending owner DecisionRight",
+        ]
+    else:
+        routes = ["scope requalification", "new inquiry", "pause pending rights"]
+    return routes
+
+
 def compose_report_section(
     report_id: str,
     world: WorldRun,
@@ -68,10 +108,12 @@ def compose_report_section(
     profile = str(world.host.get("m6_profile") or "generic")
     projection = _projection(world)
     divergent = bool(projection and projection.get("divergent"))
-    aporia_seen = any(o.kind == "APORIA" for o in world.outcomes)
+    w2 = _w2_primary(world)
     anchors: list[str] = []
     if projection:
         anchors.append(f"projection-{world.slug}")
+    if w2:
+        anchors.append(str(w2.get("sediment_id") or f"external-w2-{world.slug}"))
 
     if report_id == "R01":
         body = (
@@ -85,66 +127,90 @@ def compose_report_section(
             "Typed object–method–evidence graph (synthetic): nodes are sediment records "
             f"from run_ids {', '.join(world.run_ids) or 'none'}; edges follow activations only."
         )
-        status = "AVAILABLE"
+        status = "AVAILABLE" if world.run_ids else "PARTIAL"
     elif report_id == "R03":
-        body = (
-            "Substantive metadata from admitted carriers: "
-            + "; ".join(_coverage_axes_from_sources(world.host) or ["no coverage_proxy tagged sources"])
+        axes = _coverage_axes_from_sources(world.host)
+        status = "AVAILABLE" if axes else "PARTIAL"
+        body = "Substantive metadata from admitted carriers: " + (
+            "; ".join(axes) if axes else "no coverage_proxy tagged sources"
         )
-        status = "AVAILABLE"
     elif report_id == "R04":
         body = operator_sections.get("observed_facts") or "_no grounded facts recorded_"
         status = "AVAILABLE" if body.strip() and body != "_no grounded facts recorded_" else "PARTIAL"
     elif report_id == "R05":
-        if profile == "university_transfer":
+        if w2:
             body = (
-                "External field (synthetic W-carrier need): independent programme listing is "
-                "initially UNKNOWN; frontier capability "
-                f"{'fired' if frontier_probe and frontier_probe.get('fired_activation_id') else 'not observed'} "
-                f"after need `{frontier_probe.get('trigger_activation_id') if frontier_probe else 'n/a'}`."
+                "External field evidence returned and admitted under F07 synthetic owner grant: "
+                f"carrier `{w2.get('carrier_id')}` version `{w2.get('source_version')}` "
+                f"({w2.get('byte_length')} bytes, digest `{w2.get('content_sha256')}`). "
+                f"Producer run: `{w2.get('producer_run_id') or 'n/a'}`. "
+                "Coverage caveat: synthetic invented programme only; no world coverage claim."
             )
+            status = "AVAILABLE"
+        elif frontier_probe and frontier_probe.get("trigger_activation_id"):
+            body = (
+                "External field need witnessed at activation "
+                f"`{frontier_probe.get('trigger_activation_id')}`; "
+                "no W2 return admitted yet — external configurations remain PARTIAL."
+            )
+            status = "PARTIAL"
         else:
-            body = (
-                "Outside equipment inventory initially UNKNOWN; service scope limits any "
-                "immediate action claim to invented sensor/calibration carriers only."
-            )
-        status = "AVAILABLE"
+            body = "No witnessed external research need; external field UNKNOWN."
+            status = "BLOCKED_EXTERNAL_EVIDENCE"
     elif report_id == "R06":
-        if profile == "university_transfer" and divergent:
-            body = (
-                "Comparison axes: object=group results; metric=coverage_proxy; purpose=ranking. "
-                "Status: NONCOMPARABLE — denominators differ across Group Alpha and Group Beta; "
-                "direct percentage ranking is refused."
-            )
+        if profile == "university_transfer":
+            if w2 and w2.get("sample_overlap_with_beta"):
+                body = (
+                    "Comparison axes: object=group results vs external Echo programme; "
+                    "metric=coverage_proxy; purpose=ranking. "
+                    "Status: NONCOMPARABLE — external sample overlaps Beta labels; "
+                    "independence claim is not supported by returned W2 bytes."
+                )
+            elif divergent:
+                body = (
+                    "Comparison axes: object=group results; metric=coverage_proxy; purpose=ranking. "
+                    "Status: NONCOMPARABLE — denominators differ across Group Alpha and Group Beta; "
+                    "direct percentage ranking is refused."
+                )
+            else:
+                body = "Comparison axes: local groups only; external overlap not evidenced."
+            status = "AVAILABLE" if divergent or w2 else "PARTIAL"
         elif profile == "service_calibration":
             body = (
                 "Comparison axes: object=sensor observation vs calibration protocol; "
                 "metric=procedure satisfaction; purpose=maintenance readiness. "
-                "UNKNOWN where calibration authorization is missing."
+                + (
+                    "Returned W2 does not authorize safety escalation."
+                    if w2
+                    else "UNKNOWN where calibration authorization is missing."
+                )
             )
+            status = "AVAILABLE" if w2 or operator_sections.get("observed_facts") else "PARTIAL"
         else:
             body = "Comparison axes: UNKNOWN (no m6_profile)."
-        status = "AVAILABLE"
+            status = "PARTIAL"
     elif report_id == "R07":
-        revised = _revised_question(world, profile, divergent, aporia_seen)
-        routes = [
-            "direct handoff with explicit caveat on label independence",
-            "requalification using independent labels before transfer",
-            "new comparative inquiry with harmonised denominator",
-        ]
-        if profile == "service_calibration":
-            routes = [
-                "immediate bounded instrument check (no escalation)",
-                "requalification against revised calibration protocol O2",
-                "new monitoring programme pending owner DecisionRight",
-            ]
+        revised = _revised_question(world, profile, divergent, w2)
+        routes = _r07_routes(profile, w2, operator_sections.get("next_action", ""))
+        next_action = operator_sections.get("next_action", "_none_")[:400]
+        if w2 and profile == "university_transfer" and w2.get("sample_overlap_with_beta"):
+            discriminating = (
+                "requalification using independent labels before transfer "
+                f"(grounded in W2 sediment `{w2.get('carrier_id')}`)"
+            )
+        elif w2 and profile == "service_calibration":
+            discriminating = "immediate bounded instrument check (no escalation)"
+        else:
+            discriminating = next_action
         body = (
             f"Revised question: {revised}\n\n"
             "Alternative routes (synthetic, not authorized actions):\n"
             + "\n".join(f"- {r}" for r in routes)
-            + f"\n\nDiscriminating next action: {operator_sections.get('next_action', '_none_')[:400]}"
+            + f"\n\nDiscriminating next action: {discriminating}"
         )
-        status = "AVAILABLE"
+        if profile == "service_calibration":
+            body += "\n\nDecisionRight: owner approval required before maintenance escalation."
+        status = "PRELIMINARY" if not w2 and frontier_probe else "AVAILABLE"
     else:
         body = ""
         status = "BLOCKED_METHOD_RUNTIME"
@@ -156,6 +222,7 @@ def compose_report_section(
         "anchors": anchors,
         "synthetic_only": True,
         "scientific_acceptance": "NOT_PERFORMED",
+        "w2_provenance": w2,
     }
 
 
@@ -168,13 +235,13 @@ def compose_report_bundle(
     op_status, op_reason = assess_output_sections(sections, required=REQUIRED_REPORT_SECTIONS)
     projection = _projection(world)
     divergent = bool(projection and projection.get("divergent"))
-    aporia_seen = any(o.kind == "APORIA" for o in world.outcomes)
+    w2 = _w2_primary(world)
     profile = str(world.host.get("m6_profile") or "generic")
     reports = [
         compose_report_section(rid, world, sections, frontier_probe=frontier_probe)
         for rid in M6_MANDATORY_REPORT_IDS
     ]
-    missing = [r["report_id"] for r in reports if r["status"] not in {"AVAILABLE", "PARTIAL"}]
+    missing = [r["report_id"] for r in reports if r["status"] in {"BLOCKED_METHOD_RUNTIME"}]
     triad = [r for r in reports if r["report_id"] in {"R05", "R06", "R07"}]
     return {
         "schema": "seshat.m6_report_bundle.v1",
@@ -183,11 +250,13 @@ def compose_report_bundle(
         "operator_report_status": op_status,
         "operator_report_reason": op_reason,
         "initial_question": _initial_question(world),
-        "revised_question": _revised_question(world, profile, divergent, aporia_seen),
+        "revised_question": _revised_question(world, profile, divergent, w2),
         "reports": reports,
         "report_triad": triad,
         "report_completeness": "REPORT_INCOMPLETE" if missing else "REPORT_COMPLETE",
         "missing_mandatory_reports": missing,
+        "w2_admitted": w2 is not None,
+        "w2_receipts": list(world.oracle_inputs_extra.get("m6_w2_receipts") or ()),
         "synthetic_only": True,
     }
 
@@ -199,10 +268,26 @@ def render_public_markdown(bundle: Mapping[str, Any]) -> str:
         "SYNTHETIC_ENGINEERING_ONLY / NOT_SCIENCE_ACCEPTED / NOT_CUSTOMER_RELEASE",
         "",
         f"Completeness: **{bundle['report_completeness']}**",
+        f"W2 admitted: **{bundle.get('w2_admitted')}**",
         f"Initial question: {bundle.get('initial_question', '')}",
         f"Revised question: {bundle.get('revised_question', '')}",
         "",
+        "## Provenance drillback (W2)",
+        "",
     ]
+    w2 = None
+    for report in bundle.get("reports") or ():
+        if report.get("w2_provenance"):
+            w2 = report["w2_provenance"]
+            break
+    if w2:
+        lines.append(
+            f"- carrier `{w2.get('carrier_id')}` @ `{w2.get('source_version')}` "
+            f"sha256 `{w2.get('content_sha256')}` ({w2.get('byte_length')} bytes)"
+        )
+    else:
+        lines.append("- no external W2 sediment on record")
+    lines.append("")
     for report in bundle.get("reports") or ():
         lines.extend(
             [

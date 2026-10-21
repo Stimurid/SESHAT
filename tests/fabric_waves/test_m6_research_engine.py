@@ -1,5 +1,6 @@
 """M6 two-world research engine acceptance (issue #78 minimal vertical slice)."""
 
+import copy
 import json
 from pathlib import Path
 
@@ -10,6 +11,9 @@ from seshat.fabric_waves.m6_research_engine import (
     ORIGINAL_FIXTURE_SHA256,
     run_m6_portfolio,
 )
+from seshat.fabric_waves.m6_report_composer import compose_report_bundle
+from seshat.fabric_waves.m6_w2_cycle import run_m6_world
+from seshat.fabric_waves.m5_room_carpet import load_fixture
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / (
     "m6_two_world_research_acceptance_20261021_v01.json"
@@ -20,7 +24,10 @@ FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / (
 def portfolio(tmp_path_factory):
     root = tmp_path_factory.mktemp("m6")
     return run_m6_portfolio(
-        FIXTURE, root, approved_sha256=ORIGINAL_FIXTURE_SHA256, verify_subprocess_resume=True
+        FIXTURE,
+        root,
+        approved_sha256=ORIGINAL_FIXTURE_SHA256,
+        verify_subprocess_resume=False,
     ), root
 
 
@@ -42,18 +49,22 @@ def test_m6_artifacts_and_report_triad(portfolio):
             assert (world_dir / name).is_file(), f"{slug}/{name}"
         bundle = json.loads((world_dir / "m6_report_bundle.json").read_text(encoding="utf-8"))
         assert bundle["report_completeness"] == "REPORT_COMPLETE"
+        assert bundle.get("w2_admitted") is True
         triad_ids = [r["report_id"] for r in bundle["report_triad"]]
         assert triad_ids == ["R05", "R06", "R07"]
 
 
-def test_world_u_revised_question_and_noncomparable_ranking(portfolio):
+def test_world_u_revised_question_after_w2_overlap(portfolio):
     result, _root = portfolio
     university = next(
         w for w in result["worlds"] if w["host_id"] == "WORLD_U_SYNTHETIC_UNIVERSITY"
     )
     bundle = university["m6_bundle"]
     assert bundle["initial_question"] != bundle["revised_question"]
-    assert "label" in bundle["revised_question"].lower()
+    assert "independent labels" in bundle["revised_question"].lower()
+    r05 = next(r for r in bundle["reports"] if r["report_id"] == "R05")
+    assert r05["status"] == "AVAILABLE"
+    assert "content_sha256" in r05.get("w2_provenance", {}) or "digest" in r05["markdown"]
     r06 = next(r for r in bundle["reports"] if r["report_id"] == "R06")
     assert "NONCOMPARABLE" in r06["markdown"]
 
@@ -85,3 +96,30 @@ def test_f09a_manifest_serial_complete(portfolio, tmp_path):
     manifest = json.loads((root / "f09a_batch_manifest.json").read_text(encoding="utf-8"))
     assert all(item["state"] == "DONE" for item in manifest["items"])
     assert manifest["concurrency"] == 1
+    for item in manifest["items"]:
+        assert item.get("completed_source_versions")
+
+
+def test_mutant_w2_absent_leaves_r05_partial(tmp_path):
+    fixture, sha = load_fixture(FIXTURE, approved_sha256=ORIGINAL_FIXTURE_SHA256)
+    host = copy.deepcopy(next(h for h in fixture["hosts"] if h["host_id"] == "WORLD_U_SYNTHETIC_UNIVERSITY"))
+    host["stones"] = [s for s in host["stones"] if s.get("kind") != "W2_RETURN"]
+    world = run_m6_world(host, fixture=fixture, fixture_sha256=sha, skip_w2=True)
+    bundle = compose_report_bundle(world, frontier_probe={"trigger_activation_id": "need-x"})
+    assert bundle.get("w2_admitted") is False
+    r05 = next(r for r in bundle["reports"] if r["report_id"] == "R05")
+    assert r05["status"] == "PARTIAL"
+
+
+def test_mutant_independent_w2_does_not_force_label_overlap_question(tmp_path):
+    fixture, sha = load_fixture(FIXTURE, approved_sha256=ORIGINAL_FIXTURE_SHA256)
+    host = copy.deepcopy(next(h for h in fixture["hosts"] if h["host_id"] == "WORLD_U_SYNTHETIC_UNIVERSITY"))
+    for stone in host["stones"]:
+        if stone.get("kind") == "W2_RETURN":
+            stone["external_source"]["content"] = (
+                "Programme Echo COVERAGE_PROXY; independent_labels=YES; label_independence=CONFIRMED"
+            )
+            stone["expected_overlap_with_beta"] = False
+    world = run_m6_world(host, fixture=fixture, fixture_sha256=sha)
+    bundle = compose_report_bundle(world)
+    assert bundle["revised_question"] == bundle["initial_question"]
