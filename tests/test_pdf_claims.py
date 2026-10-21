@@ -529,3 +529,33 @@ def test_bounded_model_method_tag_still_passes() -> None:
     assert result.status == "EXACT_PDF_PAGE_EXCERPTS_VERIFIED"
     assert result.method_id == "method.schema:42-beta"
     assert "method.schema:42-beta" not in result.redacted_view().model_dump_json()
+
+
+@pytest.mark.parametrize("changes", [
+    {"exact_quote_count": 3},
+    {"exact_quote_count": 1},
+    {"code": "RESPONSE_TOO_LARGE"},
+    {"claim_count": 1, "exact_quote_count": 1},
+    {"run_scope": None},
+    {"status": "REJECTED", "code": "ALL_EXCERPTS_EXACT"},
+])
+def test_public_summary_rejects_inconsistent_reconstructed_status(changes) -> None:
+    from pydantic import ValidationError
+    from seshat.pdf_claims import PublicModelQuoteSummary
+
+    summary = _run(_candidate()).redacted_view()
+    tampered = {**summary.model_dump(), **changes}
+    with pytest.raises(ValidationError):
+        PublicModelQuoteSummary.model_validate(tampered)
+
+
+def test_rejected_public_summary_does_not_reveal_partial_quote_hit_count() -> None:
+    candidate = _candidate()
+    candidate["evidence"][0]["excerpt"] = "This invented text is absent."
+    receipt = _run(candidate)
+    assert receipt.code == "CLAIM_EVIDENCE_FAILED"
+    assert sum(item.code == "EXACT_QUOTE" for item in receipt.claims) == 1
+    public = receipt.redacted_view()
+    assert public.claim_count == 2
+    assert public.exact_quote_count == 0
+    assert public.status == "REJECTED"
