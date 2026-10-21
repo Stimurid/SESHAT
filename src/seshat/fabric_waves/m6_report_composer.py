@@ -140,7 +140,8 @@ def compose_report_section(
     elif report_id == "R05":
         if w2:
             body = (
-                "External field evidence returned and admitted under F07 synthetic owner grant: "
+                "Fictional W2 fixture returned to synthetic host; F07 rights are self-asserted, "
+                "not independently attested: "
                 f"carrier `{w2.get('carrier_id')}` version `{w2.get('source_version')}` "
                 f"({w2.get('byte_length')} bytes, digest `{w2.get('content_sha256')}`). "
                 f"Producer run: `{w2.get('producer_run_id') or 'n/a'}`. "
