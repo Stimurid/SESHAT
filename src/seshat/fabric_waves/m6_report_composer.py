@@ -140,7 +140,8 @@ def compose_report_section(
     elif report_id == "R05":
         if w2:
             body = (
-                "External field evidence returned and admitted under F07 synthetic owner grant: "
+                "Fictional external W2 test observation (self-asserted simulator receipt; "
+                "NO independently attested F07 owner rights): "
                 f"carrier `{w2.get('carrier_id')}` version `{w2.get('source_version')}` "
                 f"({w2.get('byte_length')} bytes, digest `{w2.get('content_sha256')}`). "
                 f"Producer run: `{w2.get('producer_run_id') or 'n/a'}`. "
@@ -256,6 +257,7 @@ def compose_report_bundle(
         "report_completeness": "REPORT_INCOMPLETE" if missing else "REPORT_COMPLETE",
         "missing_mandatory_reports": missing,
         "w2_admitted": w2 is not None,
+        "w2_authority": "SYNTHETIC_SELF_ASSERTED_NOT_REAL_F07" if w2 else "NO_W2",
         "w2_receipts": list(world.oracle_inputs_extra.get("m6_w2_receipts") or ()),
         "synthetic_only": True,
     }
