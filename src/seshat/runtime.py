@@ -314,6 +314,20 @@ class RuntimeSourceAccess:
             receipt,
         )
 
+    def read_fresh_full_with_metadata(
+        self, carrier_id: str
+    ) -> tuple[bytes, str | None, str, str, SourceAccessReceipt]:
+        """Force a new provider-backed FULL admission rather than reuse a cache.
+
+        This is still local/self-observed: the configured content provider,
+        not an independent authority, supplies authorization and bytes.
+        The old cached content is discarded before the new attempt; a revoked
+        or drifted source cannot fall back to a previously admitted snapshot.
+        For sequential operation-scoped probes (e.g. isolated PDF children).
+        """
+        self._validated.pop(carrier_id, None)
+        return self.read_full_with_metadata(carrier_id)
+
     def read(self, address: SourceAddress) -> bytes:
         if self.policy is RawAccessPolicy.NEVER:
             self._fail(
