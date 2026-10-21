@@ -278,7 +278,12 @@ def execute_w2_return(
         observed_digest = hashlib.sha256(observed_text.encode("utf-8")).hexdigest()
         if observed_version != version or observed_digest != pinned:
             from seshat.fabric_waves.method_body import BodyResult
-            return BodyResult(aporia="M6_W2_SOURCE_VERSION_OR_DIGEST_DRIFT")
+            return BodyResult(aporia=(
+                "M6_W2_SOURCE_VERSION_OR_DIGEST_DRIFT "
+                f"version={observed_version!r} expected={version!r} "
+                f"digest={observed_digest[:12]} expected_digest={pinned[:12]} "
+                f"text_chars={len(observed_text)} keys={sorted(data.keys())}"
+            ))
         observed_payload = {
             **proposal,
             "source_version": observed_version,
