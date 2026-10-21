@@ -145,10 +145,37 @@ def evaluate_m6_oracles(
     r05 = triad.get("R05", {})
     if w2_payload and r05.get("status") == "AVAILABLE":
         prov = w2_payload.get("content_sha256")
-        if prov and str(prov) in str(r05.get("markdown", "")):
-            rows.append(_row("RX09", "RX09_W2_PROVENANCE_IN_R05", PASS, f"digest={prov[:12]}"))
+        traces = list(world.oracle_inputs_extra.get("m6_w2_actual_activations") or ())
+        trace = traces[0] if len(traces) == 1 else None
+        actual = (
+            next(
+                (a for a in world.engine.ledger.activations
+                 if trace and a.activation_id == trace["activation_id"]
+                 and a.run_id == trace["run_id"] and a.outcome.value == "FIRED"),
+                None,
+            )
+            if trace else None
+        )
+        observed = (
+            next(
+                (rec for rec in world.engine.sediment.all_records()
+                 if trace and rec.sediment_id == trace["sediment_id"]
+                 and rec.version == trace["sediment_version"]
+                 and rec.payload.get("content_sha256") == prov),
+                None,
+            )
+            if trace else None
+        )
+        supported = (
+            prov and str(prov) in str(r05.get("markdown", ""))
+            and trace and trace["source_sha256"] == prov
+            and actual is not None and observed is not None
+            and trace["activation_id"] in r05.get("markdown", "")
+        )
+        if supported:
+            rows.append(_row("RX09", "RX09_W2_PROVENANCE_IN_R05", PASS, f"actual activation={trace['activation_id']}"))
         else:
-            rows.append(_row("RX09", "RX09_W2_PROVENANCE_IN_R05", FAIL, "R05 missing W2 digest"))
+            rows.append(_row("RX09", "RX09_W2_PROVENANCE_IN_R05", FAIL, "missing source-bound FIRED activation/sediment in R05"))
     elif not w2_payload and r05.get("status") in ("PARTIAL", "BLOCKED_EXTERNAL_EVIDENCE"):
         rows.append(_row("RX09", "RX09_W2_PROVENANCE_IN_R05", PASS, "no W2 partial correctly"))
     else:
@@ -199,6 +226,10 @@ def evaluate_m6_oracles(
             evidence["w2_carrier_id"] = w2_payload.get("carrier_id") if w2_payload else None
             evidence["w2_source_digest"] = w2_payload.get("content_sha256") if w2_payload else None
             evidence["w2_bytes"] = w2_payload.get("byte_length") if w2_payload else None
+            if oid == "RX09":
+                evidence["w2_actual_activation"] = (
+                    world.oracle_inputs_extra.get("m6_w2_actual_activations") or [None]
+                )[0]
         elif oid == "RX04":
             evidence["report_ids"] = [r["report_id"] for r in bundle.get("reports") or ()]
         elif oid == "RX05":
