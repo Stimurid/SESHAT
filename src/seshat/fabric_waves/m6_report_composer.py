@@ -177,7 +177,7 @@ def compose_report_section(
             observed_denominators = [
                 int(m.group(1))
                 for axis in observed_axes
-                for m in [re.search(r"denominator=(\\d+)", axis)]
+                for m in [re.search(r"denominator=(\d+)", axis)]
                 if m is not None
             ]
             sufficient = len(observed_denominators) >= 2
