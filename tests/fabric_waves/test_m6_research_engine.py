@@ -231,7 +231,7 @@ def test_f09a_new_process_resume_completes_second_world(tmp_path):
         FIXTURE,
         full,
         approved_sha256=ORIGINAL_FIXTURE_SHA256,
-        verify_subprocess_resume=False,
+        verify_subprocess_resume=True,
     )
     resume_root = tmp_path / "resume"
     resume_root.mkdir()
@@ -255,7 +255,6 @@ def test_f09a_new_process_resume_completes_second_world(tmp_path):
             str(resume_root),
             "--f09a-resume-after",
             u_slug,
-            "--no-subprocess-resume",
         ],
         capture_output=True,
         text=True,
@@ -312,14 +311,14 @@ def test_f09a_finished_batch_duplicate_new_process_preserves_exact_portfolio(tmp
     root = tmp_path / "batch"
     run_m6_portfolio(
         FIXTURE, root, approved_sha256=ORIGINAL_FIXTURE_SHA256,
-        verify_subprocess_resume=False,
+        verify_subprocess_resume=True,
     )
     names = ["f09a_batch_manifest.json", "f09a_batch_receipt.json", "m6_portfolio_receipt.json"]
     before = {name: (root / name).read_bytes() for name in names}
     resumed = subprocess.run(
         [sys.executable, "-m", "seshat.fabric_waves.m6_research_engine",
          "--fixture", str(FIXTURE), "--output-dir", str(root),
-         "--f09a-resume-after", "world-o-synthetic-service", "--no-subprocess-resume"],
+         "--f09a-resume-after", "world-o-synthetic-service"],
         capture_output=True, text=True, check=False,
     )
     assert resumed.returncode == 0, resumed.stderr
