@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from collections.abc import Mapping
 from typing import Any
@@ -48,7 +47,7 @@ def evaluate_m6_oracles(
         observed_denominators = [
             m.group(1)
             for axis in axes
-            for m in [re.search(r"denominator=(\\d+)", axis)]
+            for m in [re.search(r"denominator=(\d+)", axis)]
             if m is not None
         ]
         source_coverage_ok = (
