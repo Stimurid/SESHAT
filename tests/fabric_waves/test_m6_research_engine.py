@@ -101,8 +101,23 @@ def test_f09a_manifest_serial_complete(portfolio, tmp_path):
     manifest = json.loads((root / "f09a_batch_manifest.json").read_text(encoding="utf-8"))
     assert all(item["state"] == "DONE" for item in manifest["items"])
     assert manifest["concurrency"] == 1
+    expected_changed = {
+        "world-u-synthetic-university": ("m5-world-u-group-beta", "B2"),
+        "world-o-synthetic-service": ("m5-world-o-calibration-beta", "O2"),
+    }
     for item in manifest["items"]:
-        assert item.get("completed_source_versions")
+        versions = item.get("completed_source_versions")
+        assert versions
+        assert all(
+            v.get("content_sha256")
+            and v["content_sha256"] != "UNREADABLE"
+            for v in versions
+        ), versions
+        changed_carrier, changed_version = expected_changed[item["world_slug"]]
+        assert any(
+            v["carrier_id"] == changed_carrier and v["version"] == changed_version
+            for v in versions
+        ), versions
 
 
 def test_mutant_w2_absent_leaves_r05_partial(tmp_path):
