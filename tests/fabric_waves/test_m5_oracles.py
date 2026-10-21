@@ -319,6 +319,58 @@ def test_rm19_resolves_stone_and_run_ids_when_declared(idle_engine):
     assert rows["RM19"]["observed"] == PASS
 
 
+def test_rm17_not_tested_when_close_witness_is_empty(idle_engine):
+    engine, _ = idle_engine
+    rows = rows_by_id(
+        evaluate_rm_oracles(
+            OracleInputs(
+                engine=engine,
+                run_ids=[],
+                sediment_versions_before_close={},
+                sediment_versions_after_close={},
+            )
+        )
+    )
+    assert rows["RM17"]["observed"] == NOT_TESTED
+    assert rows["RM17"]["evidence"]["retained"] == 0
+
+
+def test_rm17_fails_when_a_retained_version_changes(idle_engine):
+    engine, _ = idle_engine
+    before = {"sed-retained": "v1", "sed-other": "v2"}
+    after = {"sed-retained": "v2", "sed-other": "v2"}
+    rows = rows_by_id(
+        evaluate_rm_oracles(
+            OracleInputs(
+                engine=engine,
+                run_ids=[],
+                sediment_versions_before_close=before,
+                sediment_versions_after_close=after,
+            )
+        )
+    )
+    assert rows["RM17"]["observed"] == FAIL
+    assert rows["RM17"]["evidence"]["mutated_sediment_ids"] == ["sed-retained"]
+
+
+def test_rm17_fails_when_a_retained_record_disappears(idle_engine):
+    engine, _ = idle_engine
+    before = {"sed-a": "v1", "sed-b": "v1"}
+    after = {"sed-a": "v1"}
+    rows = rows_by_id(
+        evaluate_rm_oracles(
+            OracleInputs(
+                engine=engine,
+                run_ids=[],
+                sediment_versions_before_close=before,
+                sediment_versions_after_close=after,
+            )
+        )
+    )
+    assert rows["RM17"]["observed"] == FAIL
+    assert rows["RM17"]["evidence"]["lost_sediment_ids"] == ["sed-b"]
+
+
 def test_rm19_filtered_ref_list_cannot_hide_phantom_in_markdown(idle_engine):
     engine, _ = idle_engine
     phantom = "dangling-run-id-not-in-ledger"
@@ -344,6 +396,26 @@ def test_rm20_rejects_a_thread_that_is_not_a_declared_capability(idle_engine):
     )
     # Nothing fired, so this cannot pass either.
     assert rows["RM20"]["observed"] == FAIL
+
+
+def test_rm19_fails_when_exported_report_bytes_include_forged_ref(idle_engine):
+    """RM19 must scan the public report markdown, not a sanitized ref list."""
+
+    engine, _ = idle_engine
+    forged = "forged-export-only-sediment-id"
+    exported = f"## Observed facts\n\nEvidence in `{forged}`.\n"
+    rows = rows_by_id(
+        evaluate_rm_oracles(
+            OracleInputs(
+                engine=engine,
+                run_ids=[],
+                operator_answer_refs=[],
+                operator_report_markdown=exported,
+            )
+        )
+    )
+    assert rows["RM19"]["observed"] == FAIL
+    assert forged in rows["RM19"]["evidence"]["dangling"]
 
 
 def test_summary_counts_not_tested_separately(idle_engine):

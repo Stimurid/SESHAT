@@ -543,19 +543,30 @@ def evaluate_rm_oracles(inputs: OracleInputs) -> list[dict[str, Any]]:  # noqa: 
     else:
         before = dict(inputs.sediment_versions_before_close)
         after = dict(inputs.sediment_versions_after_close)
-        lost = sorted(k for k in before if k not in after)
-        mutated = sorted(k for k in before if k in after and before[k] != after[k])
-        rows.append(
-            _row(
-                "RM17",
-                "RM17_ROOM_CLOSE_PRESERVES_SEDIMENT",
-                _verdict(not lost and not mutated),
-                "room close dropped no record and rewrote no version",
-                lost_sediment_ids=lost,
-                mutated_sediment_ids=mutated,
-                retained=len(before),
+        if not before:
+            rows.append(
+                _row(
+                    "RM17",
+                    "RM17_ROOM_CLOSE_PRESERVES_SEDIMENT",
+                    NOT_TESTED,
+                    "no nonempty sediment witness at any room close",
+                    retained=0,
+                )
             )
-        )
+        else:
+            lost = sorted(k for k in before if k not in after)
+            mutated = sorted(k for k in before if k in after and before[k] != after[k])
+            rows.append(
+                _row(
+                    "RM17",
+                    "RM17_ROOM_CLOSE_PRESERVES_SEDIMENT",
+                    _verdict(not lost and not mutated),
+                    "room close dropped no record and rewrote no version",
+                    lost_sediment_ids=lost,
+                    mutated_sediment_ids=mutated,
+                    retained=len(before),
+                )
+            )
 
     # -- RM18: a self-made receipt is not external authority -----------------
     if inputs.self_attestation_probe is None:

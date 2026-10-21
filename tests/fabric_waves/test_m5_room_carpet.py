@@ -18,12 +18,14 @@ from seshat.fabric_waves.m4_transport_boundary import (
     preview_bounds,
 )
 from seshat.fabric_waves.m5_oracles import NOT_TESTED, PASS
+from seshat.fabric_waves.m5_oracles import extract_operator_answer_refs
 from seshat.fabric_waves.m5_room_carpet import (
     M5_ARTIFACTS,
     ORIGINAL_FIXTURE_SHA256,
     REQUIRED_REPORT_SECTIONS,
     FixtureNotApproved,
     load_fixture,
+    main,
     run_two_worlds,
 )
 from seshat.fabric_waves.m5_synthetic_hosts import host_slug
@@ -165,8 +167,37 @@ def test_oracle_summary_is_explicit_about_what_was_not_tested(portfolio, fixture
     for world_dir in world_dirs(root, fixture_data):
         data = json.loads((world_dir / "oracles.json").read_text(encoding="utf-8"))
         summary = data["summary"]
-        assert summary["pass"] + summary["fail"] + summary["not_tested"] == 20
+        assert summary["pass"] == 20
+        assert summary["fail"] == 0
+        assert summary["not_tested"] == 0
         assert set(summary["not_tested_ids"]).isdisjoint(summary["failed_ids"])
+
+
+def test_rm17_pass_requires_nonempty_retained_sediment_witness(portfolio, fixture_data):
+    _result, root = portfolio
+    for world_dir in world_dirs(root, fixture_data):
+        rows = {
+            r["oracle_id"]: r
+            for r in json.loads((world_dir / "oracles.json").read_text(encoding="utf-8"))["rows"]
+        }
+        rm17 = rows["RM17"]
+        assert rm17["observed"] == PASS
+        assert rm17["evidence"]["retained"] > 0
+
+
+def test_rm19_oracle_uses_exported_report_markdown_bytes(portfolio, fixture_data):
+    _result, root = portfolio
+    for world_dir in world_dirs(root, fixture_data):
+        report_md = (world_dir / "report.md").read_text(encoding="utf-8")
+        rows = {
+            r["oracle_id"]: r
+            for r in json.loads((world_dir / "oracles.json").read_text(encoding="utf-8"))["rows"]
+        }
+        rm19 = rows["RM19"]
+        refs = extract_operator_answer_refs(report_md)
+        assert rm19["observed"] == PASS
+        assert refs
+        assert rm19["evidence"]["dangling"] == []
 
 
 @pytest.mark.parametrize("oracle_id", ["RM01", "RM02", "RM03", "RM12"])
@@ -380,3 +411,30 @@ def test_portfolio_states_local_execution_boundary(portfolio):
     assert result["scientific_acceptance"] == "NOT_PERFORMED"
     assert (root / "m5_portfolio_receipt.json").is_file()
     assert len(result["worlds"]) == 2
+
+
+def test_main_exits_nonzero_when_portfolio_has_not_tested_oracles(monkeypatch, tmp_path):
+    def _fake_portfolio(*_args, **_kwargs):
+        return {
+            "rm_summaries": [{"not_tested_ids": ["RM17"], "failed_ids": []}],
+            "worlds": [],
+        }
+
+    monkeypatch.setattr(
+        "seshat.fabric_waves.m5_room_carpet.run_two_worlds",
+        _fake_portfolio,
+    )
+    monkeypatch.setattr(
+        "seshat.fabric_waves.m5_room_carpet.default_fixture_path",
+        lambda: FIXTURE,
+    )
+    assert (
+        main(
+            [
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--no-subprocess-resume",
+            ]
+        )
+        == 1
+    )
