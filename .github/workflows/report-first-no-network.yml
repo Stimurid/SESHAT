@@ -283,6 +283,37 @@ jobs:
           path: ${{ runner.temp }}/m5-artifacts
           retention-days: 7
           if-no-files-found: warn
+      - name: Archive completed M6 invented-world research reports
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="$RUNNER_TEMP/seshat-m6-research/run"
+          stage="$RUNNER_TEMP/m6-synthetic-artifacts"
+          test -s "$src/m6_portfolio_receipt.json"
+          mkdir -p "$stage"
+          cp -r "$src" "$stage/m6_research"
+          git rev-parse HEAD > "$stage/source_commit.txt"
+          git rev-parse 'HEAD^{tree}' > "$stage/source_tree.txt"
+          echo "${{ github.event.pull_request.head.sha || github.sha }}" > "$stage/source_pr_head.txt"
+          python - "$stage" <<'PY'
+          import hashlib, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          files = sorted(p for p in root.rglob("*") if p.is_file())
+          (root / "runtime_hashes.txt").write_text(
+              "\n".join(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(root)}" for p in files) + "\n",
+              encoding="utf-8",
+          )
+          print("M6_INVENTED_ARTIFACT_FILES", len(files))
+          PY
+      - name: Upload M6 invented-world reports
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m6-synthetic-research-artifacts
+          path: ${{ runner.temp }}/m6-synthetic-artifacts
+          retention-days: 7
+          if-no-files-found: error
       - name: Print scope boundary
         shell: bash
         run: |
