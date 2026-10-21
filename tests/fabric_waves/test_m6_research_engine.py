@@ -12,7 +12,12 @@ from seshat.fabric_waves.m6_research_engine import (
     run_m6_portfolio,
 )
 from seshat.fabric_waves.m6_report_composer import compose_report_bundle
-from seshat.fabric_waves.m6_w2_cycle import run_m6_world
+from seshat.fabric_waves.m6_w2_cycle import (
+    admit_synthetic_carrier,
+    run_m6_world,
+    w2_observations,
+)
+from seshat.fabric_waves.m6_oracles import evaluate_m6_oracles
 from seshat.fabric_waves.m5_room_carpet import load_fixture
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / (
@@ -123,3 +128,74 @@ def test_mutant_independent_w2_does_not_force_label_overlap_question(tmp_path):
     world = run_m6_world(host, fixture=fixture, fixture_sha256=sha)
     bundle = compose_report_bundle(world)
     assert bundle["revised_question"] == bundle["initial_question"]
+
+
+def test_m6_true_new_process_resume_with_w2_excluded(tmp_path):
+    result = run_m6_portfolio(
+        FIXTURE, tmp_path / "m6-resume",
+        approved_sha256=ORIGINAL_FIXTURE_SHA256,
+        verify_subprocess_resume=True,
+    )
+    assert len(result["worlds"]) == 2
+    for world in result["worlds"]:
+        evidence = world["resume_evidence"]
+        assert evidence["child_process_completed"], evidence
+        assert evidence["matches_uninterrupted_control"], evidence
+        assert world["rm_summary"]["pass"] == 20, world["rm_summary"]
+        assert world["rm_summary"]["not_tested"] == 0
+
+
+def test_w2_test_adapter_denies_real_uri_before_source_store_mutation():
+    fixture, sha = load_fixture(FIXTURE, approved_sha256=ORIGINAL_FIXTURE_SHA256)
+    host = copy.deepcopy(
+        next(h for h in fixture["hosts"] if h["host_id"] == "WORLD_U_SYNTHETIC_UNIVERSITY")
+    )
+    world = run_m6_world(host, fixture=fixture, fixture_sha256=sha, skip_w2=True)
+    store = world.engine.carrier_store
+    assert store is not None
+    before = set(store._carriers)
+    with pytest.raises(ValueError, match="M6_W2_SOURCE_NOT_IN_TEST_NAMESPACE"):
+        admit_synthetic_carrier(
+            world, source_uri="https://example.org/private.pdf",
+            version="v1", text="not a fictional carrier",
+        )
+    assert set(store._carriers) == before
+    assert not w2_observations(world)
+
+
+def test_w2_return_does_not_consume_fixture_expected_answer_and_replay_is_pure():
+    fixture, sha = load_fixture(FIXTURE, approved_sha256=ORIGINAL_FIXTURE_SHA256)
+    host = copy.deepcopy(
+        next(h for h in fixture["hosts"] if h["host_id"] == "WORLD_U_SYNTHETIC_UNIVERSITY")
+    )
+    world = run_m6_world(host, fixture=fixture, fixture_sha256=sha)
+    observations = w2_observations(world)
+    assert len(observations) == 1
+    assert "expected_overlap_with_beta" not in observations[0].payload
+    assert observations[0].payload["independent_f07_rights_attested"] is False
+    assert "SYNTHETIC_SELF_ASSERTED_RETURN" in observations[0].provenance
+    receipts = world.oracle_inputs_extra["m6_w2_receipts"]
+    assert [r["status"] for r in receipts] == ["ADMITTED", "IDEMPOTENT_REPLAY"]
+    assert receipts[-1]["fresh_sediment"] == 0
+    assert receipts[-1]["fresh_activations"] == 0
+    bundle = compose_report_bundle(world)
+    rows = evaluate_m6_oracles(world, bundle, operator_markdown="Synthetic-only receipt")
+    rx11 = next(r for r in rows if r["oracle_id"] == "RX11")
+    assert rx11["observed"] == "PASS", rx11
+    receipts[-1]["fresh_sediment"] = 1
+    mutated = evaluate_m6_oracles(world, bundle, operator_markdown="Synthetic-only receipt")
+    assert next(r for r in mutated if r["oracle_id"] == "RX11")["observed"] == "FAIL"
+
+
+def test_m6_oracle_rejects_forged_synthetic_uri_in_report():
+    fixture, sha = load_fixture(FIXTURE, approved_sha256=ORIGINAL_FIXTURE_SHA256)
+    host = copy.deepcopy(
+        next(h for h in fixture["hosts"] if h["host_id"] == "WORLD_U_SYNTHETIC_UNIVERSITY")
+    )
+    world = run_m6_world(host, fixture=fixture, fixture_sha256=sha)
+    bundle = compose_report_bundle(world)
+    rows = evaluate_m6_oracles(
+        world, bundle,
+        operator_markdown="Alleged support: `synthetic://world-u/not-admitted`",
+    )
+    assert next(r for r in rows if r["oracle_id"] == "RX06")["observed"] == "FAIL"
