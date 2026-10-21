@@ -220,7 +220,7 @@ def execute_w2_return(
     if not source_uri or not version or not text:
         raise ValueError("M6_W2_INCOMPLETE_SOURCE_SPEC")
 
-    if ext.get("rights", "SYNTHETIC_ALLOWED") != "SYNTHETIC_ALLOWED":
+    if ext.get("rights", "SYNTHETIC_OWNER_GRANT") not in ("SYNTHETIC_ALLOWED", "SYNTHETIC_OWNER_GRANT"):
         raise ValueError("M6_W2_RIGHTS_DENIED_IN_TEST_FIXTURE")
     _require_synthetic_test_source(world, source_uri, version, text)
     needs = observed_missing_source_needs(world.engine, world.run_ids)
