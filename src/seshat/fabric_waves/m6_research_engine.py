@@ -257,7 +257,16 @@ def run_m6_portfolio(
     slugs = [host_slug(str(h["host_id"])) for h in hosts]
 
     checkpoints: dict[str, Any] = {}
+    # Prepare an actual foreign-host checkpoint from every M5 synthetic core
+    # BEFORE evaluating either host. Otherwise world one cannot exercise RM07.
+    from seshat.fabric_waves.m5_room_carpet import _checkpoint_for
     checkpoint_objects: dict[str, Any] = {}
+    for foreign_host in hosts:
+        m5_foreign, _ = split_host_stones(foreign_host)
+        control = run_world(
+            m5_foreign, fixture=fixture, fixture_sha256=fixture_sha
+        )
+        checkpoint_objects[str(foreign_host["host_id"])] = _checkpoint_for(control)
     world_results: list[dict[str, Any]] = []
     completed_slugs: list[str] = []
     source_snapshots: dict[str, list[dict[str, str]]] = {}
