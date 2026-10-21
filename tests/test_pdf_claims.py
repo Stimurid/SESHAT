@@ -497,3 +497,35 @@ def test_schema_field_uses_alias_without_shadowing_basemodel_schema_method() -> 
     receipt_dumped = receipt.model_dump(mode="json")
     assert receipt_dumped["schema"] == "seshat.pdf_claims.receipt.v1"
     assert "schema_id" not in receipt_dumped
+
+
+
+def test_public_summary_rejects_arbitrary_private_code() -> None:
+    """A structurally forged private receipt must not launder model text via code."""
+    from pydantic import ValidationError
+
+    forged = _run(_candidate()).model_copy(
+        update={"code": "restricted private title or source secret"}
+    )
+    with pytest.raises(ValidationError):
+        forged.redacted_view()
+
+
+@pytest.mark.parametrize("method_id", [chr(0xD800), "secret paper title", "unsafe;command"])
+def test_model_method_tag_cannot_embed_surrogate_or_secret_prose(method_id: str) -> None:
+    candidate = _candidate()
+    candidate["method_id"] = method_id
+    result = _run(candidate)
+    assert result.status == "REJECTED"
+    assert result.code == "CANDIDATE_SCHEMA_INVALID"
+    assert result.method_id is None
+    assert "restricted" not in result.redacted_view().model_dump_json()
+
+
+def test_bounded_model_method_tag_still_passes() -> None:
+    candidate = _candidate()
+    candidate["method_id"] = "method.schema:42-beta"
+    result = _run(candidate)
+    assert result.status == "EXACT_PDF_PAGE_EXCERPTS_VERIFIED"
+    assert result.method_id == "method.schema:42-beta"
+    assert "method.schema:42-beta" not in result.redacted_view().model_dump_json()

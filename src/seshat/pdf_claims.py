@@ -21,10 +21,20 @@ from seshat.pdf_page_evidence import (
     PageExcerptQuery,
     PdfPageEvidenceError,
     _check_pdf_page_excerpts_from_bytes,
+    _full_receipt_sha256,
 )
 from seshat.runtime import EvidenceAccessError, RuntimeSourceAccess
 
 MAX_RESPONSE_BYTES = 32_768
+
+# Closed output vocabulary: a public summary must never carry caller text.
+QuoteGateOutcomeCode = Literal[
+    "RESPONSE_TOO_LARGE", "CANDIDATE_SCHEMA_INVALID",
+    "CANDIDATE_DUPLICATE_EVIDENCE", "SOURCE_ID_MISMATCH",
+    "SOURCE_ACCESS_INVALID", "SOURCE_ACCESS_DENIED",
+    "PDF_MEDIA_TYPE_REQUIRED", "SOURCE_VERSION_OR_RECEIPT_MISMATCH",
+    "CLAIM_EVIDENCE_FAILED", "ALL_EXCERPTS_EXACT",
+]
 
 
 class _Strict(BaseModel):
@@ -51,7 +61,9 @@ class ModelCandidate(_Strict):
     # shadows pydantic.BaseModel's own deprecated schema() method; by_alias
     # dumping above keeps the external JSON key exactly "schema".
     schema_id: Literal["seshat.pdf_claims.v1"] = Field(alias="schema")
-    method_id: str = Field(min_length=1, max_length=128)
+    method_id: str = Field(
+        min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]{1,128}$"
+    )
     source_id: str = Field(min_length=1, max_length=256)
     source_version: str = Field(min_length=1, max_length=128)
     run_scope: Literal["SYNTHETIC_QA"]
@@ -85,7 +97,7 @@ class PublicModelQuoteSummary(_Strict):
         alias="schema", default="seshat.pdf_claims.public_summary.v1"
     )
     status: Literal["REJECTED", "EXACT_PDF_PAGE_EXCERPTS_VERIFIED"]
-    code: str = Field(min_length=1, max_length=80)
+    code: QuoteGateOutcomeCode
     claim_count: int = Field(ge=0)
     exact_quote_count: int = Field(ge=0)
     # The model-supplied method_id is private, even though it is not a source
@@ -118,9 +130,12 @@ class ModelQuoteGateReceipt(_Strict):
         alias="schema", default="seshat.pdf_claims.receipt.v1"
     )
     status: Literal["REJECTED", "EXACT_PDF_PAGE_EXCERPTS_VERIFIED"]
-    code: str = Field(min_length=1, max_length=80)
+    code: QuoteGateOutcomeCode
     response_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    method_id: str | None = Field(default=None, min_length=1, max_length=128)
+    method_id: str | None = Field(
+        default=None, min_length=1, max_length=128,
+        pattern=r"^[A-Za-z0-9._:-]{1,128}$"
+    )
     run_scope: Literal["SYNTHETIC_QA"] | None = None
     source_id: str | None = Field(default=None, min_length=1)
     source_version: str | None = Field(default=None, min_length=1)
@@ -198,7 +213,7 @@ def verify_pdf_model_claims(
 
     tags: dict[str, object] = {"method_id": None, "run_scope": None}
 
-    def rejected(code: str, **kwargs: object) -> ModelQuoteGateReceipt:
+    def rejected(code: QuoteGateOutcomeCode, **kwargs: object) -> ModelQuoteGateReceipt:
         return ModelQuoteGateReceipt(
             status="REJECTED",
             code=code,
@@ -249,12 +264,7 @@ def verify_pdf_model_claims(
         or source_receipt.byte_length != len(pdf_bytes)
     ):
         return rejected("SOURCE_VERSION_OR_RECEIPT_MISMATCH")
-    source_receipt_digest = hashlib.sha256(
-        json.dumps(
-            source_receipt.model_dump(mode="json", exclude_none=True),
-            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
+    source_receipt_digest = _full_receipt_sha256(source_receipt)
 
     queries = [
         PageExcerptQuery(page_number=item.page, expected_excerpt=item.excerpt)
@@ -269,7 +279,7 @@ def verify_pdf_model_claims(
             pdf_bytes=pdf_bytes,
             carrier_id=carrier_id,
             source_version=version,
-            source_access_full_receipt_sha256=source_receipt_digest,
+            source_receipt=source_receipt,
             queries=queries,
         )
     except PdfPageEvidenceError as exc:
@@ -287,13 +297,18 @@ def verify_pdf_model_claims(
             diagnostics_list.append(ClaimDiagnostic(index=index, code=result.code))
             continue
         proof = result
+        # Defensive INTERNAL invariant only: the private batch helper is
+        # passed exactly one immutable F07 snapshot, not a second provider
+        # read. It cannot independently detect source drift or TOCTOU.
         if (
             proof.source_version != version
             or proof.pdf_sha256 != pdf_digest
             or proof.carrier_id != carrier_id
             or proof.source_access_full_receipt_sha256 != source_receipt_digest
         ):
-            diagnostics_list.append(ClaimDiagnostic(index=index, code="SOURCE_DRIFT"))
+            diagnostics_list.append(
+                ClaimDiagnostic(index=index, code="INTERNAL_PROOF_MISMATCH")
+            )
             continue
         diagnostics_list.append(
             ClaimDiagnostic(

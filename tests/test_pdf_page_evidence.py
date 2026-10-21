@@ -15,7 +15,10 @@ import pytest
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
-from seshat.contracts import RawAccessPolicy, SourceCarrier, SourceContent
+from seshat.contracts import (
+    RawAccessPolicy, SourceAccessReceipt, SourceAccessStatus,
+    SourceCarrier, SourceContent,
+)
 from seshat.fabric_waves.source_access import FabricCarrierStore
 from seshat.pdf_page_evidence import (
     PageExcerptQuery,
@@ -657,13 +660,6 @@ def test_batch_matches_single_item_checks_across_two_distinct_pages() -> None:
 
     access = _access_for(PDF_B)
     pdf_bytes, _, _, version, source_receipt = access.read_full_with_metadata("pdf1")
-    receipt_digest = hashlib.sha256(
-        json.dumps(
-            source_receipt.model_dump(mode="json", exclude_none=True),
-            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
-
     single_one = check_pdf_page_excerpt(
         _access_for(PDF_B), "pdf1", page_number=1, expected_excerpt="Alpha section"
     )
@@ -673,7 +669,7 @@ def test_batch_matches_single_item_checks_across_two_distinct_pages() -> None:
 
     results = _check_pdf_page_excerpts_from_bytes(
         pdf_bytes=pdf_bytes, carrier_id="pdf1", source_version=version,
-        source_access_full_receipt_sha256=receipt_digest,
+        source_receipt=source_receipt,
         queries=[
             PageExcerptQuery(page_number=1, expected_excerpt="Alpha section"),
             PageExcerptQuery(page_number=2, expected_excerpt="Beta repeats alpha"),
@@ -715,16 +711,9 @@ def test_batch_parses_once_and_extracts_once_per_distinct_page(
 
     access = _access_for(PDF_B)
     pdf_bytes, _, _, version, source_receipt = access.read_full_with_metadata("pdf1")
-    receipt_digest = hashlib.sha256(
-        json.dumps(
-            source_receipt.model_dump(mode="json", exclude_none=True),
-            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
-
     results = _check_pdf_page_excerpts_from_bytes(
         pdf_bytes=pdf_bytes, carrier_id="pdf1", source_version=version,
-        source_access_full_receipt_sha256=receipt_digest,
+        source_receipt=source_receipt,
         queries=[
             PageExcerptQuery(page_number=1, expected_excerpt="Alpha section"),
             PageExcerptQuery(page_number=1, expected_excerpt="unique here"),
@@ -746,7 +735,12 @@ def test_batch_document_level_failure_raised_once_for_whole_batch() -> None:
             pdf_bytes=b"NOT A PDF AT ALL",
             carrier_id="pdf1",
             source_version="1",
-            source_access_full_receipt_sha256="0" * 64,
+            source_receipt=SourceAccessReceipt(
+                carrier_id="pdf1", source_version="1", read_kind="FULL",
+                status=SourceAccessStatus.VERIFIED,
+                content_sha256=hashlib.sha256(b"NOT A PDF AT ALL").hexdigest(),
+                byte_length=len(b"NOT A PDF AT ALL"),
+            ),
             queries=[
                 PageExcerptQuery(page_number=1, expected_excerpt="fox"),
                 PageExcerptQuery(page_number=1, expected_excerpt="dog"),
@@ -761,16 +755,9 @@ def test_batch_per_page_failure_isolated_from_other_queries() -> None:
 
     access = _access_for(PDF_A)  # single-page PDF
     pdf_bytes, _, _, version, source_receipt = access.read_full_with_metadata("pdf1")
-    receipt_digest = hashlib.sha256(
-        json.dumps(
-            source_receipt.model_dump(mode="json", exclude_none=True),
-            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
-
     results = _check_pdf_page_excerpts_from_bytes(
         pdf_bytes=pdf_bytes, carrier_id="pdf1", source_version=version,
-        source_access_full_receipt_sha256=receipt_digest,
+        source_receipt=source_receipt,
         queries=[
             PageExcerptQuery(page_number=2, expected_excerpt="fox"),
             PageExcerptQuery(page_number=1, expected_excerpt="lazy dog."),
@@ -787,16 +774,9 @@ def test_batch_per_page_failure_isolated_from_other_queries() -> None:
 def test_batch_ambiguous_and_strict_type_queries_returned_per_index() -> None:
     access = _access_for(PDF_B)
     pdf_bytes, _, _, version, source_receipt = access.read_full_with_metadata("pdf1")
-    receipt_digest = hashlib.sha256(
-        json.dumps(
-            source_receipt.model_dump(mode="json", exclude_none=True),
-            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
-
     results = _check_pdf_page_excerpts_from_bytes(
         pdf_bytes=pdf_bytes, carrier_id="pdf1", source_version=version,
-        source_access_full_receipt_sha256=receipt_digest,
+        source_receipt=source_receipt,
         queries=[
             PageExcerptQuery(page_number=2, expected_excerpt="alpha"),
             PageExcerptQuery(page_number=True, expected_excerpt="alpha"),
@@ -804,3 +784,17 @@ def test_batch_ambiguous_and_strict_type_queries_returned_per_index() -> None:
     )
     assert results[0].code == "EXCERPT_AMBIGUOUS"
     assert results[1].code == "PAGE_NUMBER_INVALID"
+
+
+
+def test_private_batch_helper_refuses_mismatched_f07_read_bytes() -> None:
+    """One checksum-bound F07 FULL receipt cannot be applied to another PDF."""
+    access = _access_for(PDF_B)
+    _, _, _, version, source_receipt = access.read_full_with_metadata("pdf1")
+    with pytest.raises(PdfPageEvidenceError) as caught:
+        _check_pdf_page_excerpts_from_bytes(
+            pdf_bytes=PDF_A, carrier_id="pdf1", source_version=version,
+            source_receipt=source_receipt,
+            queries=[PageExcerptQuery(page_number=1, expected_excerpt="lazy dog.")],
+        )
+    assert caught.value.code == "SOURCE_RECEIPT_MISMATCH"

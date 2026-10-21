@@ -29,3 +29,16 @@ Post-Opus rework scoped+PDF/SourceAccess **120 PASS**, Ruff PASS. Native Windows
 ## Remaining gates
 
 Source and method rights are STILL unproven for original works; this module accepts `run_scope=SYNTHETIC_QA` only. Parent #68 requires OS-bounded PDF execution before any real/untrusted source: tracked separately at https://github.com/Stimurid/SESHAT/issues/70 . The gate no longer reparses per quote: it parses once and extracts each distinct cited page once. Real/untrusted originals still require the separately reviewed OS resource sandbox #70, because Python extraction limits do not stop CPU/memory bombs before checking. The whole project still lacks genuine authorial MethodBody execution with certified F07 rights/G1 causal ledger and scientific/client acceptance. Keep #68 and this dependent change DRAFT, no merge, no release.
+
+
+## Second independent Opus review remediation (current successor after 4be062b)
+
+Read-only exact SHA audit of `4be062b` returned CONDITIONAL_PASS for synthetic quote-gate engineering, REAL_AUTHORIAL_SCIENCE=NOT_READY. The reviewer confirmed ONE F07 admission/read, ONE PDF parse, typed Unicode/duplicate rejection, no source text or real source, and no quote-to-semantic-entailment promotion. Additional medium findings were closed in the next code revision:
+
+* Internal multi-excerpt helper now requires a complete typed `SourceAccessReceipt` and checks the actual PDF bytes hash, identity, version and length against it, then derives its own receipt SHA. Its previous arbitrary caller-supplied digest string is no longer accepted. This is still a PRIVATE helper, not an independent rights authority.
+* The former redundant `SOURCE_DRIFT` per-proof branch is labelled `INTERNAL_PROOF_MISMATCH` and explicitly documented as an invariant within ONE read; it is not falsely represented as another live provider read or source freshness check.
+* Public `code` is now a strict closed `QuoteGateOutcomeCode` Literal. Arbitrary caller text on a forged private receipt is rejected when projected via `redacted_view()`, rather than laundered into a public summary.
+* Model-supplied `method_id` on candidate and private receipt is restricted to bounded ASCII safe identifier characters. Surrogate, prose and control/punctuation injection are rejected as malformed schema before source access. The public summary omits it entirely.
+* Additional negatives verify a forged public code cannot be projected, invalid method labels fail safely, and a private helper cannot apply a genuine F07 receipt from PDF-B to PDF-A. Use only invented fixtures.
+
+Owner-controlled AORUS targeted QA on this patch: **126 PASS / Ruff PASS**; full native project regression **837 passed, 1 skipped, 2 pre-existing warnings, EXIT_CODE=0 in 107.12s**. Private full-run receipt: `C:\AI\llm\aiye-executor\handoffs\SESHAT-20261012\PR71_OPUS_FINAL_REWORK_FULL_REGRESSION.log`. The remediated successor must still get its OWN remote CI and independent next-SHA review. In-process pypdf remains SYNTHETIC_QA ONLY; OS sandbox #70 is a separate hard prerequisite for untrusted originals.

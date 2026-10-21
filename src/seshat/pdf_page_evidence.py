@@ -46,7 +46,7 @@ from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from seshat.contracts import SourceAccessStatus
+from seshat.contracts import SourceAccessReceipt, SourceAccessStatus
 from seshat.runtime import RuntimeSourceAccess
 
 try:
@@ -263,6 +263,18 @@ def _safe_text_sha256(text: str, *, code: str = "PAGE_TEXT_UNICODE_INVALID") -> 
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _full_receipt_sha256(receipt: SourceAccessReceipt) -> str:
+    """Stable checksum of one F07-local FULL read receipt, not a signature."""
+    return hashlib.sha256(
+        json.dumps(
+            receipt.model_dump(mode="json", exclude_none=True),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def check_pdf_page_excerpt(
     source_access: RuntimeSourceAccess,
     carrier_id: str,
@@ -314,14 +326,7 @@ def check_pdf_page_excerpt(
         raise PdfPageEvidenceError(
             "SOURCE_RECEIPT_MISMATCH", "validated FULL source receipt is inconsistent"
         )
-    source_receipt_digest = hashlib.sha256(
-        json.dumps(
-            source_receipt.model_dump(mode="json", exclude_none=True),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
+    source_receipt_digest = _full_receipt_sha256(source_receipt)
 
     reader = _open_pdf_reader(pdf_bytes, pdf_byte_length)
     page_count = _bounded_page_count(reader)
@@ -353,12 +358,12 @@ def _check_pdf_page_excerpts_from_bytes(
     pdf_bytes: bytes,
     carrier_id: str,
     source_version: str,
-    source_access_full_receipt_sha256: str,
+    source_receipt: SourceAccessReceipt,
     queries: Sequence[PageExcerptQuery],
 ) -> list[PdfPageEvidenceReceipt | PdfPageEvidenceError]:
     """Check many (page, excerpt) queries against one already-admitted PDF read.
 
-    ``pdf_bytes``, ``source_version`` and ``source_access_full_receipt_sha256``
+    ``pdf_bytes``, ``source_version`` and ``source_receipt``
     must all come from exactly one prior, already-validated
     ``RuntimeSourceAccess.read_full_with_metadata`` call (media type, source
     receipt consistency and digest/version binding already checked by the
@@ -388,6 +393,23 @@ def _check_pdf_page_excerpts_from_bytes(
 
     pdf_sha256 = hashlib.sha256(pdf_bytes).hexdigest()
     pdf_byte_length = len(pdf_bytes)
+    # Validate the *receipt object*, not a caller-supplied digest string.
+    # The helper is PRIVATE and still does not grant owner/legal rights:
+    # F07 admission is the responsibility of verify_pdf_model_claims.
+    if (
+        type(source_receipt) is not SourceAccessReceipt
+        or source_receipt.status is not SourceAccessStatus.VERIFIED
+        or source_receipt.read_kind != "FULL"
+        or source_receipt.carrier_id != carrier_id
+        or source_receipt.source_version != source_version
+        or source_receipt.content_sha256 != pdf_sha256
+        or source_receipt.byte_length != pdf_byte_length
+    ):
+        raise PdfPageEvidenceError(
+            "SOURCE_RECEIPT_MISMATCH",
+            "private batch helper rejected source/receipt inconsistency",
+        )
+    source_access_full_receipt_sha256 = _full_receipt_sha256(source_receipt)
     reader = _open_pdf_reader(pdf_bytes, pdf_byte_length)
     page_count = _bounded_page_count(reader)
 
