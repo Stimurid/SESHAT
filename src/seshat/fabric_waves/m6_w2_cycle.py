@@ -273,17 +273,22 @@ def execute_w2_return(
     def observe_w2(inv):
         data = inv.carried_payload
         observed_text = str(data.get("text") or "")
-        versions = data.get("source_versions") or {}
-        observed_version = str(versions.get(carrier_id) or "")
+        # Engine invocations expose the authenticated source manifest, not
+        # the provider's free-form source_versions map. Read the exact F07
+        # receipts and compare them to the synthetic host-pinned source.
+        manifest = data.get("source_access_manifest")
+        source_receipts = manifest.receipts if manifest else ()
+        pinned_receipt = any(
+            r.carrier_id == carrier_id
+            and r.source_version == version
+            and r.content_sha256 == pinned
+            for r in source_receipts
+        )
         observed_digest = hashlib.sha256(observed_text.encode("utf-8")).hexdigest()
-        if observed_version != version or observed_digest != pinned:
+        if not pinned_receipt or observed_digest != pinned:
             from seshat.fabric_waves.method_body import BodyResult
-            return BodyResult(aporia=(
-                "M6_W2_SOURCE_VERSION_OR_DIGEST_DRIFT "
-                f"version={observed_version!r} expected={version!r} "
-                f"digest={observed_digest[:12]} expected_digest={pinned[:12]} "
-                f"text_chars={len(observed_text)} keys={sorted(data.keys())}"
-            ))
+            return BodyResult(aporia="M6_W2_SOURCE_VERSION_OR_DIGEST_DRIFT")
+        observed_version = version
         observed_payload = {
             **proposal,
             "source_version": observed_version,
