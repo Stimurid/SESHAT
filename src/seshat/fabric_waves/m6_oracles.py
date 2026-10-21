@@ -83,6 +83,14 @@ def evaluate_m6_oracles(
 
     phantom = re.findall(r"`([^`]+)`", public_text)
     known = set(bundle.get("anchors") or ())
+    known.add(str(world.host.get("host_id") or ""))
+    # Only allow literal source versions and digests witnessed in the actual W2
+    # sediment, not arbitrary backticks or synthetic:// URL-shaped guesses.
+    for observed_w2 in w2:
+        payload = observed_w2.payload or {}
+        for key in ("source_version", "content_sha256", "producer_run_id", "source_uri"):
+            if payload.get(key):
+                known.add(str(payload[key]))
     for record in world.engine.sediment.all_records():
         known.add(record.sediment_id)
     for activation in world.engine.ledger.activations:
