@@ -96,6 +96,9 @@ class PdfPageEvidenceReceipt(BaseModel):
     rights_independently_attested: Literal["NO"] = "NO"
     human_acceptance: Literal["NOT_ASSERTED"] = "NOT_ASSERTED"
     acceptance: Literal["PROPOSED"] = "PROPOSED"
+    # Set only by the sandbox wrapper. The host checks shape and bounds, but
+    # cannot independently prove the child's extracted page text or offset.
+    sandbox_child_observation_provenance: Literal["CHILD_ASSERTED_UNATTESTED"] | None = None
 
 
 def check_pdf_page_excerpt(

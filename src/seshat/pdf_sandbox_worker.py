@@ -8,12 +8,11 @@ import json
 import sys
 
 from seshat.contracts import RawAccessPolicy, SourceCarrier, SourceContent
-from seshat.pdf_page_evidence import (
-    MAX_PDF_BYTES, PdfPageEvidenceError, check_pdf_page_excerpt,
-)
+from seshat.pdf_page_evidence import PdfPageEvidenceError, check_pdf_page_excerpt
 from seshat.runtime import RuntimeSourceAccess
 
-MAX_ENVELOPE = 70 * 1024 * 1024
+MAX_SANDBOX_PDF_BYTES = 8 * 1024 * 1024
+MAX_ENVELOPE = 12 * 1024 * 1024
 MAX_EXCERPT = 4096
 
 
@@ -46,7 +45,7 @@ def _run(data: bytes) -> dict[str, object]:
     ):
         raise ValueError("invalid fields")
     pdf = base64.b64decode(request["pdf_b64"], validate=True)
-    if not 0 < len(pdf) <= MAX_PDF_BYTES:
+    if not 0 < len(pdf) <= MAX_SANDBOX_PDF_BYTES:
         raise ValueError("invalid PDF size")
     digest = hashlib.sha256(pdf).hexdigest()
     carrier = SourceCarrier(
@@ -66,7 +65,9 @@ def _run(data: bytes) -> dict[str, object]:
         access, carrier_id, page_number=page, expected_excerpt=excerpt,
     )
     # The child copy's local F07 receipt is not a rights assertion. Parent replaces it.
-    return receipt.model_dump(mode="json", exclude={"source_access_full_receipt_sha256"})
+    return receipt.model_dump(
+        mode="json", exclude={"source_access_full_receipt_sha256", "sandbox_child_observation_provenance"},
+    )
 
 
 def main() -> int:
