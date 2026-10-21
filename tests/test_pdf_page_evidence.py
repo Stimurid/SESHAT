@@ -8,6 +8,7 @@ no fixtures committed to disk, no network, no OCR.
 from __future__ import annotations
 
 import hashlib
+import json
 from io import BytesIO
 
 import pytest
@@ -94,13 +95,15 @@ def _access_for(
     complete: bool = True,
     authorized: bool = True,
     missing_content: bool = False,
+    carrier_media_type: str | None = "application/pdf",
+    content_media_type: str = "application/pdf",
 ) -> RuntimeSourceAccess:
     actual_sha = hashlib.sha256(pdf_bytes).hexdigest()
     carrier = SourceCarrier(
         carrier_id=carrier_id,
         source_identity=f"source:{carrier_id}",
         version=version,
-        media_type="application/pdf",
+        media_type=carrier_media_type,
         content_sha256=carrier_sha256 or actual_sha,
         byte_length=carrier_byte_length if carrier_byte_length is not None else len(pdf_bytes),
     )
@@ -109,7 +112,7 @@ def _access_for(
         contents[carrier_id] = SourceContent(
             carrier_id=carrier_id,
             source_version=content_version or version,
-            media_type="application/pdf",
+            media_type=content_media_type,
             content=pdf_bytes,
             content_sha256=actual_sha,
             byte_length=len(pdf_bytes),
@@ -454,6 +457,9 @@ def test_receipt_model_rejects_fabricated_positive_rights_or_acceptance() -> Non
 
     forged = {
         "carrier_id": "public-fixture",
+        "source_version": "v1",
+        "source_access_policy": "FULL_REQUIRED",
+        "source_access_full_receipt_sha256": "f" * 64,
         "pdf_sha256": "0" * 64,
         "pdf_byte_length": 100,
         "page_number": 1,
@@ -486,3 +492,90 @@ def test_page_extraction_length_is_bounded(monkeypatch: pytest.MonkeyPatch) -> N
     with pytest.raises(PdfPageEvidenceError) as caught:
         check_pdf_page_excerpt(access, "pdf1", page_number=1, expected_excerpt="fox")
     assert caught.value.code == "PATHOLOGICAL_SIZE"
+
+
+# -- Opus independent exact-SHA review H1/M2/M3: proven negative contracts --
+
+
+def test_pdf_drillback_ascii_byte_slice_cannot_become_fabric_text() -> None:
+    """Even an ASCII-readable PDF byte range is never source TEXT for G1."""
+    digest = hashlib.sha256(PDF_A).hexdigest()
+    carrier = SourceCarrier(
+        carrier_id="pdf1",
+        source_identity="synthetic-test:pdf1",
+        version="1",
+        media_type="application/pdf",
+        content_sha256=digest,
+        byte_length=len(PDF_A),
+    )
+    body = SourceContent(
+        carrier_id="pdf1", source_version="1", media_type="application/pdf",
+        content=PDF_A, content_sha256=digest, byte_length=len(PDF_A),
+        complete=True, authorized=True,
+    )
+    store = FabricCarrierStore(carriers={"pdf1": carrier}, contents={"pdf1": body})
+    # %PDF-... is ASCII; a generic UTF-8 decode would erroneously succeed.
+    with pytest.raises(ValueError, match="SOURCE_MEDIA_TEXT_PROJECTION_UNSUPPORTED"):
+        store.resolve_payload(
+            policy=RawAccessPolicy.DRILLBACK,
+            carrier_ids=("pdf1",),
+            stone_payload={"drillback_address": {
+                "carrier_id": "pdf1", "source_version": "1",
+                "address_type": "byte_range", "start": 0, "end": 6
+            }},
+            operation_id="independent-pdf-review",
+        )
+
+
+@pytest.mark.parametrize(
+    ("declared_media_type", "actual_media_type"),
+    [("text/plain", "text/plain"), (None, "application/pdf")],
+)
+def test_pdf_header_cannot_self_upgrade_a_non_pdf_carrier(
+    declared_media_type: str | None, actual_media_type: str,
+) -> None:
+    """Content sniffing never becomes source-admission authority."""
+    access = _access_for(
+        PDF_A,
+        carrier_media_type=declared_media_type,
+        content_media_type=actual_media_type,
+    )
+    with pytest.raises(PdfPageEvidenceError) as caught:
+        check_pdf_page_excerpt(access, "pdf1", page_number=1, expected_excerpt="fox")
+    assert caught.value.code == "PDF_MEDIA_TYPE_REQUIRED"
+
+
+def test_mismatched_pdf_and_text_metadata_denied_by_source_access() -> None:
+    access = _access_for(
+        PDF_A, carrier_media_type="text/plain", content_media_type="application/pdf",
+    )
+    with pytest.raises(EvidenceAccessError) as caught:
+        check_pdf_page_excerpt(access, "pdf1", page_number=1, expected_excerpt="fox")
+    assert caught.value.code.value == "SOURCE_DRIFT"
+
+
+def test_pdf_page_receipt_binds_source_version_policy_and_exact_full_read() -> None:
+    access = _access_for(PDF_A, version="fixed-pdf-v7")
+    receipt = check_pdf_page_excerpt(
+        access, "pdf1", page_number=1, expected_excerpt="brown fox",
+    )
+    assert receipt.source_version == "fixed-pdf-v7"
+    assert receipt.source_access_policy == "FULL_REQUIRED"
+    assert receipt.pdf_sha256 == hashlib.sha256(PDF_A).hexdigest()
+
+    manifest = access.manifest()
+    assert manifest.policy is RawAccessPolicy.FULL_REQUIRED
+    assert len(manifest.receipts) == 1
+    full = manifest.receipts[0]
+    assert full.source_version == receipt.source_version
+    assert full.content_sha256 == receipt.pdf_sha256
+    assert full.read_kind == "FULL"
+    assert receipt.source_access_full_receipt_sha256 == hashlib.sha256(
+        json.dumps(
+            full.model_dump(mode="json", exclude_none=True),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    assert receipt.rights_independently_attested == "NO"

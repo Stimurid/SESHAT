@@ -30,11 +30,13 @@ Scope and limits (read before using this module elsewhere):
 from __future__ import annotations
 
 import hashlib
+import json
 from io import BytesIO
 from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from seshat.contracts import SourceAccessStatus
 from seshat.runtime import RuntimeSourceAccess
 
 try:
@@ -45,7 +47,9 @@ except ImportError as exc:  # pragma: no cover - dependency declared in pyprojec
         "seshat.pdf_page_evidence requires the 'pypdf' dependency to be installed"
     ) from exc
 
-_EXTRACTOR_VERSION: str = getattr(pypdf, "__version__", "unknown")
+_EXTRACTOR_VERSION: str = getattr(pypdf, "__version__", "")
+if not _EXTRACTOR_VERSION:
+    raise ImportError("PDF extractor version unavailable: cannot create reproducible evidence")
 
 _EXTRACTOR_NAME: Final[str] = "pypdf"
 
@@ -65,16 +69,20 @@ class PdfPageEvidenceError(ValueError):
 
 
 class PdfPageEvidenceReceipt(BaseModel):
-    """Durable/public-safe receipt.
+    """OWNER-PRIVATE and source-access-scoped, not customer/public-safe.
 
-    Deliberately contains no PDF bytes and no page or excerpt text -- only
-    hashes, lengths, counts, and explicit honesty flags. Never persist the
-    original PDF or full page text alongside this receipt.
+    Hashes of short excerpts are guessable fingerprints, as are source SHA
+    and carrier IDs. Nothing here independently grants source rights.
+    Never export this model unfiltered to users who cannot access the
+    corresponding source; create a separate authorized redacted view.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     carrier_id: str = Field(min_length=1)
+    source_version: str = Field(min_length=1)
+    source_access_policy: Literal["FULL_REQUIRED"] = "FULL_REQUIRED"
+    source_access_full_receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     pdf_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     pdf_byte_length: int = Field(ge=1)
     page_number: int = Field(ge=1)
@@ -124,12 +132,37 @@ def check_pdf_page_excerpt(
 
     effective_length = length if length is not None else len(expected_excerpt)
 
-    # Bytes come only from the admitted, integrity-checked carrier. Any
-    # policy/version/digest/authorization failure raises EvidenceAccessError
-    # here and propagates unchanged -- this module adds no bypass.
-    pdf_bytes = source_access.read_all(carrier_id)
+    # The same authorized FULL read supplies both raw bytes and source
+    # metadata. Do not infer media type from a leading "%PDF-" signature:
+    # only a declared and validated PDF carrier can yield PDF page evidence.
+    pdf_bytes, declared_media, actual_media, version, source_receipt = (
+        source_access.read_full_with_metadata(carrier_id)
+    )
+    if declared_media != "application/pdf" or actual_media != "application/pdf":
+        raise PdfPageEvidenceError(
+            "PDF_MEDIA_TYPE_REQUIRED", "carrier was not admitted as application/pdf"
+        )
     pdf_sha256 = hashlib.sha256(pdf_bytes).hexdigest()
     pdf_byte_length = len(pdf_bytes)
+    if (
+        source_receipt.status is not SourceAccessStatus.VERIFIED
+        or source_receipt.read_kind != "FULL"
+        or source_receipt.carrier_id != carrier_id
+        or source_receipt.source_version != version
+        or source_receipt.content_sha256 != pdf_sha256
+        or source_receipt.byte_length != pdf_byte_length
+    ):
+        raise PdfPageEvidenceError(
+            "SOURCE_RECEIPT_MISMATCH", "validated FULL source receipt is inconsistent"
+        )
+    source_receipt_digest = hashlib.sha256(
+        json.dumps(
+            source_receipt.model_dump(mode="json", exclude_none=True),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
     if pdf_byte_length == 0 or not pdf_bytes.startswith(b"%PDF-"):
         raise PdfPageEvidenceError("MALFORMED_DOCUMENT", "missing PDF header signature")
@@ -214,6 +247,8 @@ def check_pdf_page_excerpt(
 
     return PdfPageEvidenceReceipt(
         carrier_id=carrier_id,
+        source_version=version,
+        source_access_full_receipt_sha256=source_receipt_digest,
         pdf_sha256=pdf_sha256,
         pdf_byte_length=pdf_byte_length,
         page_number=page_number,

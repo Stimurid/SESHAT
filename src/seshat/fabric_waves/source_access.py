@@ -171,19 +171,24 @@ class FabricCarrierStore:
             content_provider=provider,
             carrier_ids=carrier_ids,
         )
+        # Both FULL_REQUIRED and DRILLBACK return a TEXT invocation payload.
+        # Never project nontext (including ASCII-decodable PDF byte slices)
+        # through either path. Check both declared and loaded media identity.
+        non_text = [
+            cid for cid in carrier_ids
+            if (
+                cid in self._carriers
+                and self._carriers[cid].media_type is not None
+                and self._carriers[cid].media_type not in self._TEXT_PROJECTION_MEDIA_TYPES
+            ) or (
+                cid in self._contents
+                and self._contents[cid].media_type not in self._TEXT_PROJECTION_MEDIA_TYPES
+            )
+        ]
+        if non_text:
+            raise ValueError("SOURCE_MEDIA_TEXT_PROJECTION_UNSUPPORTED")
         if policy is RawAccessPolicy.FULL_REQUIRED:
             access.verify_all(carrier_ids)
-            # Verified above: every carrier_id is present in self._contents.
-            # Non-text media (e.g. application/pdf) must never reach a UTF-8
-            # text decode here -- some binary bodies happen to decode without
-            # raising, which would silently fabricate garbled "text" instead
-            # of failing closed.
-            non_text = [
-                cid for cid in carrier_ids
-                if self._contents[cid].media_type not in self._TEXT_PROJECTION_MEDIA_TYPES
-            ]
-            if non_text:
-                raise ValueError("SOURCE_MEDIA_TEXT_PROJECTION_UNSUPPORTED")
             text_parts = [
                 access.read_all(cid).decode("utf-8") for cid in carrier_ids
             ]
