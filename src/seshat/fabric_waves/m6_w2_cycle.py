@@ -10,6 +10,7 @@ import json
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlsplit
 
 from seshat.contracts import RawAccessPolicy
 from seshat.fabric_waves.contracts import EpistemicLevel, MethodBodyRef, StoneEventKind
@@ -45,6 +46,47 @@ def split_host_stones(host: Mapping[str, Any]) -> tuple[dict[str, Any], list[dic
     return host_m5, w2
 
 
+_SYNTHETIC_TEST_HOSTS = frozenset((
+    "WORLD_U_SYNTHETIC_UNIVERSITY",
+    "WORLD_O_SYNTHETIC_SERVICE",
+))
+
+
+def _require_synthetic_test_source(
+    world: WorldRun, source_uri: str, version: str, text: str
+) -> None:
+    """Never admit a real or unrelated carrier through the fictional W2 adapter."""
+
+    if str(world.host.get("host_id")) not in _SYNTHETIC_TEST_HOSTS:
+        raise ValueError("M6_W2_ONLY_FROZEN_SYNTHETIC_HOSTS")
+    uri = urlsplit(source_uri)
+    declared = [
+        str(item.get("id") or "")
+        for item in world.host.get("source_versions") or ()
+    ]
+    namespaces = {
+        urlsplit(item).netloc
+        for item in declared
+        if urlsplit(item).scheme == "synthetic"
+    }
+    if (
+        uri.scheme != "synthetic"
+        or not uri.netloc
+        or uri.netloc not in namespaces
+        or not uri.path.startswith("/")
+        or ".." in uri.path.split("/")
+        or source_uri in declared
+    ):
+        raise ValueError("M6_W2_SOURCE_NOT_IN_TEST_NAMESPACE")
+    if any(
+        str(item.get("rights") or "") != "SYNTHETIC_ALLOWED"
+        for item in world.host.get("source_versions") or ()
+    ):
+        raise ValueError("M6_W2_SYNTHETIC_FIXTURE_RIGHTS_MISSING")
+    if not version or len(version) > 64 or not text or len(text.encode("utf-8")) > 16384:
+        raise ValueError("M6_W2_SYNTHETIC_PAYLOAD_NOT_BOUNDED")
+
+
 def admit_synthetic_carrier(
     world: WorldRun,
     *,
@@ -52,8 +94,9 @@ def admit_synthetic_carrier(
     version: str,
     text: str,
 ) -> tuple[str, str, int]:
-    """Host-inject a new synthetic external carrier and return (carrier_id, digest, byte_len)."""
+    """Inject ONLY a fictional fixture carrier, never a real external source."""
 
+    _require_synthetic_test_source(world, source_uri, version, text)
     store = world.engine.carrier_store
     if store is None:
         raise ValueError("M6_W2_NO_CARRIER_STORE")
@@ -133,7 +176,7 @@ def _build_evidence_return(
         request_id=request.request_id,
         started_at=_utc_now(),
         ended_at=_utc_now(),
-        result_provenance=("F07_SYNTHETIC_OWNER_GRANT", f"bytes:{byte_length}"),
+        result_provenance=("SYNTHETIC_SELF_ASSERTED_TEST_RECEIPT", f"bytes:{byte_length}"),
         result_digest=material_hash(proposal),
         allowed_source_rights=RawAccessPolicy.FULL_REQUIRED,
     )
@@ -177,6 +220,9 @@ def execute_w2_return(
     if not source_uri or not version or not text:
         raise ValueError("M6_W2_INCOMPLETE_SOURCE_SPEC")
 
+    if ext.get("rights", "SYNTHETIC_ALLOWED") != "SYNTHETIC_ALLOWED":
+        raise ValueError("M6_W2_RIGHTS_DENIED_IN_TEST_FIXTURE")
+    _require_synthetic_test_source(world, source_uri, version, text)
     needs = observed_missing_source_needs(world.engine, world.run_ids)
     if require_prior_need and not needs:
         raise ValueError("M6_W2_NO_WITNESSED_NEED")
@@ -214,8 +260,6 @@ def execute_w2_return(
     pinned = store.pin_content_digest(carrier_id, pinned_version=version)
 
     parsed = _parse_w2_fields(text)
-    if "expected_overlap_with_beta" in stone:
-        parsed["expected_overlap_with_beta"] = bool(stone["expected_overlap_with_beta"])
     proposal = {
         "schema": "m6.external_w2_observation.v1",
         "carrier_id": carrier_id,
@@ -224,6 +268,8 @@ def execute_w2_return(
         "content_sha256": pinned,
         "byte_length": byte_len,
         "reading_extent": "FULL_REQUIRED",
+        "independent_f07_rights_attested": False,
+        "attestation_status": "SYNTHETIC_SELF_ASSERTED_TEST_ONLY",
         "producer_run_id": world.run_ids[-1] if world.run_ids else None,
         **parsed,
     }
@@ -251,7 +297,7 @@ def execute_w2_return(
         payload=proposal,
         payload_hash=digest,
         provenance=(
-            "HOST_VERIFIED_EXTERNAL_RETURN",
+            "SYNTHETIC_SELF_ASSERTED_RETURN",
             f"return:{return_id}",
             f"request:{request_id}",
             f"source:{carrier_id}@{version}",
