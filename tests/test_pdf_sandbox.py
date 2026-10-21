@@ -272,10 +272,27 @@ def test_mocked_argv_timeout_cleanup_and_no_source_in_commands(monkeypatch) -> N
         "--tmpfs": "/tmp:rw,nosuid,nodev,size=16m",
         "--log-driver": "none",
     }
-    assert "--read-only" in launch
+    # Docker uses last-option-wins: duplicates defeat first-occurrence tests.
+    expected_launch_prefix = [
+        "docker", "run", "--rm", "-i", "--pull", "never", "--name",
+        launch[launch.index("--name") + 1],
+        "--log-driver", "none", "--network", "none", "--read-only",
+        "--user", "65532:65532", "--cap-drop", "ALL",
+        "--security-opt", "no-new-privileges", "--pids-limit", "32",
+        "--memory", "256m", "--memory-swap", "256m",
+        "--cpus", "1", "--tmpfs", "/tmp:rw,nosuid,nodev,size=16m",
+        "synthetic:test", "python", "-m", "seshat.pdf_sandbox_worker",
+    ]
+    assert launch == expected_launch_prefix
     for option, expected in values.items():
+        assert launch.count(option) == 1
         assert launch[launch.index(option) + 1] == expected
-    assert "-t" not in launch and "--env" not in launch and "--mount" not in launch
+    assert launch.count("--read-only") == 1
+    for unsafe in (
+        "--privileged", "--cap-add", "--volume", "-v", "--device",
+        "--pid", "--userns", "--ipc", "--env", "--mount", "-t",
+    ):
+        assert unsafe not in launch
     assert cleanup[:3] == ["docker", "rm", "--force"]
     assert cleanup[-1] == launch[launch.index("--name") + 1]
     assert inspection[:3] == ["docker", "ps", "-a"]
