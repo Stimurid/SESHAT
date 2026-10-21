@@ -13,7 +13,7 @@ from seshat.fabric_waves.m6_w2_cycle import w2_observations
 _LEAKED_REFERENCE_MARKERS: tuple[str, ...] = (
     "DEVELOPMENT_EXPOSED_REFERENCE_ANSWER",
     "AUTHORIAL_WORKED_ANSWER",
-    "Z45HEMH2eHSr3DAM2tRGyawadS5",
+    "AUTHORIAL_REFERENCE_RESULT_NOT_FOR_EXECUTION",
 )
 
 
@@ -26,7 +26,8 @@ def evaluate_m6_oracles(
     rows: list[dict[str, Any]] = []
     profile = str(world.host.get("m6_profile") or "")
     triad = {r["report_id"]: r for r in bundle.get("report_triad") or ()}
-    public_text = operator_markdown + "\n" + str(bundle.get("revised_question") or "")
+    report_text = "\n".join(str(r.get("markdown") or "") for r in bundle.get("reports") or ())
+    public_text = operator_markdown + "\n" + str(bundle.get("revised_question") or "") + "\n" + report_text
     w2 = w2_observations(world)
     w2_payload = w2[-1].payload if w2 else None
     receipts = list(world.oracle_inputs_extra.get("m6_w2_receipts") or ())
@@ -71,14 +72,16 @@ def evaluate_m6_oracles(
             )
         )
 
-    if re.search(r"DecisionRight", operator_markdown, re.I) and "NOT_AUTHORIZED" in operator_markdown:
-        rows.append(_row("RX05", "RX05_HUMAN_REJECT_NOT_PROMOTED", PASS, "reject boundary preserved"))
-    elif any(o.kind == "APORIA" for o in world.outcomes) and not w2_payload:
-        rows.append(_row("RX05", "RX05_HUMAN_REJECT_NOT_PROMOTED", PASS, "aporia without spoof right"))
+    # A word in the report or an APORIA event is NOT a witnessed refusal.
+    human = world.oracle_inputs_extra.get("m6_human_refusal")
+    if not human or not human.get("attempted"):
+        rows.append(_row("RX05", "RX05_HUMAN_REJECT_NOT_PROMOTED", NOT_TESTED, "no actual human-refusal probe"))
+    elif human.get("rejected") and human.get("accepted_view_size_after") == 0:
+        rows.append(_row("RX05", "RX05_HUMAN_REJECT_NOT_PROMOTED", PASS, "two real unauthorized decision operations rejected"))
     else:
-        rows.append(_row("RX05", "RX05_HUMAN_REJECT_NOT_PROMOTED", NOT_TESTED, "no aporia gate"))
+        rows.append(_row("RX05", "RX05_HUMAN_REJECT_NOT_PROMOTED", FAIL, "unauthorized decision not refused"))
 
-    phantom = re.findall(r"`([^`]+)`", operator_markdown + "\n" + str(bundle.get("revised_question") or ""))
+    phantom = re.findall(r"`([^`]+)`", public_text)
     known = set(bundle.get("anchors") or ())
     for record in world.engine.sediment.all_records():
         known.add(record.sediment_id)
@@ -91,16 +94,19 @@ def evaluate_m6_oracles(
         if world_outcome.manifest is not None:
             known.add(world_outcome.manifest.room_id)
     known.update(_operator_known_identifiers(world))
+    for src in world.host.get("source_versions") or ():
+        known.add(str(src.get("id") or ""))
     for rec in receipts:
         known.add(str(rec.get("return_id") or ""))
         known.add(str(rec.get("carrier_id") or ""))
-    bad = [p for p in phantom if p and p not in known and not p.startswith("synthetic://")]
+        known.add(str(rec.get("source_uri") or ""))
+    bad = [p for p in phantom if p and p not in known]
     if bad:
         rows.append(_row("RX06", "RX06_PHANTOM_CITATION", FAIL, f"unknown={bad[:3]}"))
     else:
         rows.append(_row("RX06", "RX06_PHANTOM_CITATION", PASS, "citations bounded"))
 
-    if "PRIVATE_" in operator_markdown or "manifest_sha256" in operator_markdown.lower():
+    if "PRIVATE_" in public_text or "manifest_sha256" in public_text.lower():
         rows.append(_row("RX07", "RX07_NO_PRIVATE_MANIFEST_LEAK", FAIL, "private token in public view"))
     else:
         rows.append(_row("RX07", "RX07_NO_PRIVATE_MANIFEST_LEAK", PASS, "no manifest leak"))
