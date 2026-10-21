@@ -643,8 +643,6 @@ def test_bridge_rejects_drifted_child_f07_receipt_even_with_same_pdf_sha(monkeyp
 def test_bridge_fresh_provider_read_rejects_revocation_or_drift_before_docker(
     monkeypatch, drift,
 ):
-    import seshat.pdf_isolated_bridge as bridge
-
     access = _access()
     original = access._content_provider.content
 
