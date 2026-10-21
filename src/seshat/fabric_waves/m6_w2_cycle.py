@@ -354,7 +354,7 @@ def execute_w2_return(
     ]
     if len(fired) != 1 or len(records) != 1:
         selected = [
-            (a.run_id, a.thread_id, a.outcome.value, a.error_code)
+            (a.run_id, a.thread_id, a.outcome.value, a.error_code, a.error_detail)
             for a in engine.ledger.activations if a.run_id == run_id
         ]
         raise ValueError(
