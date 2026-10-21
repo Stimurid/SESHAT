@@ -108,6 +108,9 @@ def evaluate_m6_oracles(
                 known.add(str(payload[key]))
     for record in world.engine.sediment.all_records():
         known.add(record.sediment_id)
+        known.add(record.version)
+    for manifest in world.manifests:
+        known.add(manifest.room_id)
     for activation in world.engine.ledger.activations:
         known.add(activation.activation_id)
     for world_outcome in world.outcomes:
