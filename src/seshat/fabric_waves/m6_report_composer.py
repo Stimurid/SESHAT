@@ -10,6 +10,7 @@ from typing import Any, Literal
 from seshat.fabric_waves.m4_transport_boundary import assess_output_sections
 from seshat.fabric_waves.m5_room_carpet import REQUIRED_REPORT_SECTIONS, WorldRun, _lookup_sediment, _operator_sections
 from seshat.fabric_waves.m6_w2_cycle import w2_observations
+from seshat.fabric_waves.m5_synthetic_hosts import carrier_id_from_uri
 
 ReportAvailability = Literal[
     "AVAILABLE",
@@ -67,14 +68,24 @@ def _revised_question(world: WorldRun, profile: str, divergent: bool, w2: Mappin
     return initial
 
 
-def _coverage_axes_from_sources(host: Mapping[str, Any]) -> list[str]:
+def _coverage_axes_from_sources(world: WorldRun) -> list[str]:
+    """Current, actually stored source revisions, never stale fixture declarations."""
+    store = world.engine.carrier_store
+    if store is None:
+        return []
     axes: list[str] = []
-    for item in host.get("source_versions") or ():
-        content = str(item.get("content") or "")
+    for item in world.host.get("source_versions") or ():
+        uri = str(item["id"])
+        cid = carrier_id_from_uri(uri)
+        version = store.current_source_versions((cid,)).get(cid)
+        entry = store._contents.get(cid)  # synthetic in-memory test host
+        if version is None or entry is None:
+            continue
+        content = entry.content.decode("utf-8") if isinstance(entry.content, bytes) else str(entry.content)
         if "COVERAGE_PROXY" in content:
             m = re.search(r"denominator=([^;]+)", content)
             denom = m.group(1).strip() if m else "UNKNOWN_DENOMINATOR"
-            axes.append(f"{item.get('id')}@{item.get('version')}: coverage_proxy denominator={denom}")
+            axes.append(f"{uri}@{version}: coverage_proxy denominator={denom}")
     return axes
 
 
@@ -129,7 +140,7 @@ def compose_report_section(
         )
         status = "AVAILABLE" if world.run_ids else "PARTIAL"
     elif report_id == "R03":
-        axes = _coverage_axes_from_sources(world.host)
+        axes = _coverage_axes_from_sources(world)
         status = "AVAILABLE" if axes else "PARTIAL"
         body = "Substantive metadata from admitted carriers: " + (
             "; ".join(axes) if axes else "no coverage_proxy tagged sources"
@@ -160,33 +171,57 @@ def compose_report_section(
             status = "BLOCKED_EXTERNAL_EVIDENCE"
     elif report_id == "R06":
         if profile == "university_transfer":
-            if w2 and w2.get("sample_overlap_with_beta"):
-                body = (
-                    "Comparison axes: object=group results vs external Echo programme; "
-                    "metric=coverage_proxy; purpose=ranking. "
-                    "Status: NONCOMPARABLE — external sample overlaps Beta labels; "
-                    "independence claim is not supported by returned W2 bytes."
-                )
-            elif divergent:
-                body = (
-                    "Comparison axes: object=group results; metric=coverage_proxy; purpose=ranking. "
-                    "Status: NONCOMPARABLE — denominators differ across Group Alpha and Group Beta; "
-                    "direct percentage ranking is refused."
-                )
-            else:
-                body = "Comparison axes: local groups only; external overlap not evidenced."
-            status = "AVAILABLE" if divergent or w2 else "PARTIAL"
-        elif profile == "service_calibration":
+            # The two denominators and editions are read from current admitted
+            # synthetic carrier bytes, not from source declarations or profile text.
+            observed_axes = _coverage_axes_from_sources(world)
+            observed_denominators = [
+                int(m.group(1))
+                for axis in observed_axes
+                for m in [re.search(r"denominator=(\\d+)", axis)]
+                if m is not None
+            ]
+            sufficient = len(observed_denominators) >= 2
+            overlap = bool(w2 and w2.get("sample_overlap_with_beta"))
+            independent = bool(w2 and w2.get("independent_labels_claimed"))
+            comparison = (
+                "Status: NONCOMPARABLE — returned W2 reports overlapping Beta labels, "
+                "so the external sample is not an independent observation."
+                if overlap else
+                "Status: NONCOMPARABLE — local sources use different label definitions; "
+                "independence and harmonised units are not established."
+            )
             body = (
-                "Comparison axes: object=sensor observation vs calibration protocol; "
-                "metric=procedure satisfaction; purpose=maintenance readiness. "
+                "Observed current synthetic carriers: " + ("; ".join(observed_axes) if observed_axes else "UNKNOWN")
+                + ". Comparison axes: object=local labelled groups vs external programme; "
+                + "operation=coverage-proxy sampling; metric=labelled count/denominator; "
+                + "unit=toy-labelled sample (label harmonisation UNKNOWN); "
+                + "purpose=transfer or ranking (ranking NOT_AUTHORIZED). "
+                + comparison
+                + (" W2 independent-label claim is recorded, but is not a human acceptance."
+                   if independent else " Counterexample: apparent percentages can share Beta labels.")
+            )
+            status = "AVAILABLE" if sufficient and w2 else "PARTIAL"
+        elif profile == "service_calibration":
+            sources = world.engine.carrier_store
+            actual_versions = {}
+            if sources is not None:
+                ids = [carrier_id_from_uri(str(x["id"])) for x in world.host.get("source_versions") or ()]
+                actual_versions = sources.current_source_versions(tuple(ids))
+            current = ", ".join(f"{k}@{v}" for k, v in sorted(actual_versions.items()))
+            body = (
+                "Observed current source editions: " + (current or "UNKNOWN") + ". "
+                "Comparison axes: object=toy sensor condition vs calibration rule; "
+                "operation=standard-read before maintenance; "
+                "metric=reported drift vs procedure compliance; "
+                "unit=different measurement/decision domains (no common scalar); "
+                "purpose=bounded service action vs escalation. "
                 + (
-                    "Returned W2 does not authorize safety escalation."
-                    if w2
-                    else "UNKNOWN where calibration authorization is missing."
+                    "Returned W2 supplies no owner authority for escalation. "
+                    "Counterexample: absence of an escalation assertion is not calibration clearance."
+                    if w2 else "W2 independent standard observation UNKNOWN; escalation remains blocked."
                 )
             )
-            status = "AVAILABLE" if w2 or operator_sections.get("observed_facts") else "PARTIAL"
+            status = "AVAILABLE" if w2 and actual_versions else "PARTIAL"
         else:
             body = "Comparison axes: UNKNOWN (no m6_profile)."
             status = "PARTIAL"
