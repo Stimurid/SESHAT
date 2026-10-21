@@ -50,6 +50,9 @@ F09A_HASHED_ARTIFACTS: tuple[str, ...] = (
     "m6_report_bundle.json",
     "m6_report.md",
     "m6_report.html",
+    "m6_oracles.json",
+    "m6_external_ledger.json",
+    "m6_source_versions.json",
 )
 M6_ARTIFACTS: tuple[str, ...] = (
     "m6_report_bundle.json",
@@ -57,6 +60,7 @@ M6_ARTIFACTS: tuple[str, ...] = (
     "m6_report.html",
     "m6_oracles.json",
     "m6_external_ledger.json",
+    "m6_source_versions.json",
     "carpet.html",
     "f09a_batch_manifest.json",
     "f09a_batch_receipt.json",
@@ -108,9 +112,18 @@ def _verify_f09a_done_item(output_root: Path, item: Mapping[str, Any]) -> None:
     if not isinstance(stored, Mapping) or not stored:
         raise CheckpointRejected("F09A_DONE_WITHOUT_ARTIFACT_HASHES")
     actual = _world_artifact_hashes(world_dir)
+    if set(stored) != set(F09A_HASHED_ARTIFACTS) or set(actual) != set(F09A_HASHED_ARTIFACTS):
+        raise CheckpointRejected("F09A_INCOMPLETE_DONE_ARTIFACT_SET")
     for name, expected in stored.items():
         if actual.get(name) != expected:
             raise CheckpointRejected("F09A_ARTIFACT_HASH_MISMATCH")
+    source_path = world_dir / "m6_source_versions.json"
+    try:
+        actual_versions = json.loads(source_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise CheckpointRejected("F09A_SOURCE_VERSION_SNAPSHOT_INVALID") from exc
+    if actual_versions != item.get("completed_source_versions") or not actual_versions:
+        raise CheckpointRejected("F09A_SOURCE_VERSIONS_MISMATCH")
 
 
 def _write_f09a_manifest(
@@ -270,6 +283,11 @@ def _run_world_with_m6_exports(
             json.dumps(ledger, ensure_ascii=False, sort_keys=True, indent=2),
             encoding="utf-8",
         )
+    source_versions = completed_source_versions(world)
+    (output_dir / "m6_source_versions.json").write_text(
+        json.dumps(source_versions, ensure_ascii=False, sort_keys=True, indent=2),
+        encoding="utf-8",
+    )
 
     return {
         "world_slug": slug,
@@ -281,7 +299,7 @@ def _run_world_with_m6_exports(
         "m6_summary": oracle_summary(m6_rows),
         "frontier_probe": frontier,
         "resume_evidence": resume_evidence,
-        "completed_source_versions": completed_source_versions(world),
+        "completed_source_versions": source_versions,
     }
 
 
@@ -325,15 +343,46 @@ def run_m6_portfolio(
             raise CheckpointRejected("F09A_FIXTURE_SHA_MISMATCH")
         for item in prior.get("items") or ():
             _verify_f09a_done_item(output_root, item)
+        old_items = list(prior.get("items") or ())
+        if [item.get("world_slug") for item in old_items] != slugs:
+            raise CheckpointRejected("F09A_UNEXPECTED_WORLD_ROSTER")
         completed_slugs = [
             item["world_slug"]
-            for item in prior.get("items") or ()
+            for item in old_items
             if item.get("state") == "DONE"
         ]
+        for item in old_items:
+            if item.get("state") == "DONE":
+                source_snapshots[item["world_slug"]] = list(item["completed_source_versions"])
+                artifact_hashes[item["world_slug"]] = dict(item["artifact_hashes"])
+        if len(completed_slugs) == len(slugs):
+            # A verified no-op must not erase the original portfolio or any
+            # versioned evidence. Read existing bytes; never publish worlds=[].
+            prior_portfolio = output_root / "m6_portfolio_receipt.json"
+            if not prior_portfolio.is_file():
+                raise CheckpointRejected("F09A_NOOP_PORTFOLIO_MISSING")
+            saved = json.loads(prior_portfolio.read_text(encoding="utf-8"))
+            if [w["world_slug"] for w in saved.get("worlds") or ()] != slugs:
+                raise CheckpointRejected("F09A_NOOP_PORTFOLIO_INCOMPLETE")
+            return saved
 
     for host in hosts:
         slug = host_slug(str(host["host_id"]))
         if f09a_resume_after_slug and slug in completed_slugs:
+            # Rebuild the visible returned portfolio from checked real
+            # artifacts, not a phantom DONE label.
+            d = output_root / slug
+            rm = json.loads((d / "oracles.json").read_text(encoding="utf-8"))
+            rx = json.loads((d / "m6_oracles.json").read_text(encoding="utf-8"))
+            bundle = json.loads((d / "m6_report_bundle.json").read_text(encoding="utf-8"))
+            world_results.append({
+                "world_slug": slug, "host_id": host["host_id"],
+                "m6_bundle": bundle,
+                "rm_summary": rm["summary"],
+                "m6_summary": oracle_summary(rx),
+                "completed_source_versions": source_snapshots[slug],
+                "resumed_verified_prior": True,
+            })
             continue
         if f09a_resume_after_slug and completed_slugs and slug != f09a_resume_after_slug:
             # Serial batch: only the next queued world after resume marker.
