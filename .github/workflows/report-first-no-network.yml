@@ -241,7 +241,8 @@ jobs:
           # Run from a directory that contains no checkout, so only the wheel
           # can supply the fixture resource.
           cd "$RUNNER_TEMP"
-          "$RUNNER_TEMP/wheelenv/bin/seshat-m5-carpet" --output-dir "$RUNNER_TEMP/wheel-run" --no-subprocess-resume
+          # Installed wheel must exercise the new-process RM06 gate too.
+          "$RUNNER_TEMP/wheelenv/bin/seshat-m5-carpet" --output-dir "$RUNNER_TEMP/wheel-run"
           test -s "$RUNNER_TEMP/wheel-run/m5_portfolio_receipt.json"
           echo "PACKAGED_FIXTURE_RESOLVED_FROM_WHEEL=1"
       - name: Lint
