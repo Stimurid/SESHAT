@@ -353,3 +353,52 @@ def test_summary_counts_not_tested_separately(idle_engine):
     assert summary["not_tested"] > 0
     assert summary["pass"] + summary["fail"] + summary["not_tested"] == len(RM_IDS)
     assert set(summary["not_tested_ids"]).isdisjoint(summary["failed_ids"])
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "expected"),
+    [
+        ({}, {}, NOT_TESTED),
+        ({"real-sediment": "v1"}, {"real-sediment": "v1"}, PASS),
+        ({"real-sediment": "v1"}, {}, FAIL),
+        ({"real-sediment": "v1"}, {"real-sediment": "v2"}, FAIL),
+    ],
+)
+def test_rm17_requires_nonempty_preclose_records_and_exact_preservation(
+    idle_engine, before, after, expected,
+):
+    """RM17 must fail on real loss/mutation and cannot pass an empty room."""
+    engine, _ = idle_engine
+    rows = rows_by_id(
+        evaluate_rm_oracles(
+            OracleInputs(
+                engine=engine,
+                run_ids=[],
+                sediment_versions_before_close=before,
+                sediment_versions_after_close=after,
+            )
+        )
+    )
+    assert rows["RM17"]["observed"] == expected
+    if expected == PASS:
+        assert rows["RM17"]["evidence"]["retained"] == 1
+
+
+def test_m5_cli_refuses_unexecuted_rm_even_when_no_explicit_fail(
+    monkeypatch, tmp_path,
+):
+    """A green-looking 19 PASS / 1 NOT_TESTED portfolio is exit code 1."""
+    import seshat.fabric_waves.m5_room_carpet as carpet
+
+    monkeypatch.setattr(
+        carpet,
+        "run_two_worlds",
+        lambda *_args, **_kwargs: {
+            "rm_summaries": [
+                {"not_tested_ids": ["RM17"], "failed_ids": []}
+            ]
+        },
+    )
+    assert carpet.main(
+        ["--fixture", str(FIXTURE), "--output-dir", str(tmp_path)]
+    ) == 1

@@ -403,7 +403,17 @@ def _execute_stone(
     event = _stone_event(stone, uri_map, tick=tick)
     with admitted_threads(engine, admitted):
         record = engine.run(run_id=run_id, budget=world.budget, initial_stone=event)
+    # RM17 must measure a nonempty state immediately across an actual close.
+    # A snapshot before the first stone would make the no-loss check vacuous.
+    before_room_close = _sediment_versions(engine)
     manifest.close(activations=engine.ledger.activations, run_id=run_id)
+    after_room_close = _sediment_versions(engine)
+    if (
+        before_room_close
+        and "sediment_versions_before_close" not in world.oracle_inputs_extra
+    ):
+        world.oracle_inputs_extra["sediment_versions_before_close"] = before_room_close
+        world.oracle_inputs_extra["sediment_versions_after_close"] = after_room_close
     world.run_ids.append(run_id)
     world.processed_stone_ids.append(stone_id)
 
@@ -548,7 +558,6 @@ def run_world(
     carrier_ids = tuple(declared_source_versions(host))
     alpha_id, beta_id = carrier_ids[0], carrier_ids[1]
 
-    before_close = _sediment_versions(engine)
     alpha_before = beta_before = None
     alpha_after = beta_after = None
     delta_run_id: str | None = None
@@ -598,8 +607,6 @@ def run_world(
                 "same_fingerprint": repeat.fingerprint == outcome.fingerprint,
             }
 
-    after_close = _sediment_versions(engine)
-
     world.oracle_inputs_extra.update(
         {
             "alpha_before": alpha_before,
@@ -609,8 +616,6 @@ def run_world(
             "delta_run_id": delta_run_id,
             "source_before": source_before,
             "source_after": _source_observations(engine, carrier_ids),
-            "sediment_versions_before_close": before_close,
-            "sediment_versions_after_close": after_close,
             "alpha_carrier": alpha_id,
             "beta_carrier": beta_id,
         }
@@ -1678,8 +1683,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             for oid in summary["failed_ids"]
         }
     )
-    if failed:
-        print(f"{FAIL}: {', '.join(failed)}", file=sys.stderr)
+    if failed or not_tested:
+        if failed:
+            print(f"{FAIL}: {', '.join(failed)}", file=sys.stderr)
+        if not_tested:
+            print(f"{NOT_TESTED}: {', '.join(not_tested)}", file=sys.stderr)
         return 1
     return 0
 
