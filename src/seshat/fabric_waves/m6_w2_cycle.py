@@ -323,7 +323,22 @@ def run_m6_world(
     receipts: list[dict[str, Any]] = []
     if not skip_w2:
         for stone in w2_stones:
-            receipts.append(execute_w2_return(world, stone, ledger=ledger))
+            first = execute_w2_return(world, stone, ledger=ledger)
+            receipts.append(first)
+            # Deliberately exercise duplicate admission in this synthetic run:
+            # it must find the original return without making another carrier,
+            # evidence record or paid/external call.
+            before_count = len(world.engine.sediment.all_records())
+            before_admitted = len(ledger.evidence_returns)
+            replay = execute_w2_return(world, stone, ledger=ledger)
+            if (
+                replay.get("status") != "IDEMPOTENT_REPLAY"
+                or len(world.engine.sediment.all_records()) != before_count
+                or len(ledger.evidence_returns) != before_admitted
+            ):
+                raise ValueError("M6_W2_DUPLICATE_CHANGED_SEDIMENT_OR_LEDGER")
+            replay["verified_no_new_evidence"] = True
+            receipts.append(replay)
     world.oracle_inputs_extra["m6_w2_receipts"] = receipts
     world.oracle_inputs_extra["m6_external_ledger"] = json.loads(ledger.model_dump_json())
     return world
