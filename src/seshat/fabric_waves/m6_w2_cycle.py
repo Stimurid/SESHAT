@@ -348,7 +348,14 @@ def execute_w2_return(
         and r.payload.get("content_sha256") == pinned
     ]
     if len(fired) != 1 or len(records) != 1:
-        raise ValueError("M6_W2_F04_F05_NO_SOURCE_BOUND_ACTIVATION")
+        selected = [
+            (a.run_id, a.thread_id, a.outcome.value, a.error_code)
+            for a in engine.ledger.activations if a.run_id == run_id
+        ]
+        raise ValueError(
+            f"M6_W2_F04_F05_NO_SOURCE_BOUND_ACTIVATION: fired={len(fired)} "
+            f"records={len(records)} observed={selected!r}"
+        )
     record = records[0]
     # Scientific status is not elevated: the source and this MethodBody are
     # artificial; E5 here remains the separately admitted external *proposal*.
