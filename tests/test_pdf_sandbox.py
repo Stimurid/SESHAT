@@ -637,3 +637,86 @@ def test_bridge_rejects_drifted_child_f07_receipt_even_with_same_pdf_sha(monkeyp
     assert receipt.status == "BLOCKED"
     assert receipt.code == "F07_DENIED_OR_DRIFTED"
     assert receipt.public_view().admitted_quote_count == 0
+
+
+@pytest.mark.parametrize("drift", ["revoked", "changed_bytes"])
+def test_bridge_fresh_provider_read_rejects_revocation_or_drift_before_docker(
+    monkeypatch, drift,
+):
+    import seshat.pdf_isolated_bridge as bridge
+
+    access = _access()
+    original = access._content_provider.content
+
+    class ChangingProvider:
+        calls = 0
+
+        def open_content(self, _carrier_id):
+            self.calls += 1
+            if self.calls == 1:
+                return original
+            if drift == "revoked":
+                return original.model_copy(update={"authorized": False})
+            changed = original.content + b"drifted"
+            return original.model_copy(update={
+                "content": changed, "byte_length": len(changed),
+                "content_sha256": hashlib.sha256(changed).hexdigest(),
+            })
+
+    provider = ChangingProvider()
+    access._content_provider = provider
+    monkeypatch.setattr(sandbox, "_preflight", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        sandbox, "_run_container",
+        lambda *_a, **_k: pytest.fail("Docker ran after provider changed"),
+    )
+    result = _bridge_run(_bridge_candidate(), access=access)
+    assert result.status == "BLOCKED"
+    assert result.code == "SANDBOX_UNAVAILABLE"
+    assert provider.calls == 2
+    assert result.public_view().admitted_quote_count == 0
+
+
+def test_bridge_provider_revoked_between_first_and_second_child(monkeypatch):
+    import seshat.pdf_page_evidence as pages
+
+    access = _access()
+    original = access._content_provider.content
+
+    class MidBatchProvider:
+        calls = 0
+
+        def open_content(self, _carrier_id):
+            self.calls += 1
+            if self.calls <= 2:
+                return original
+            return original.model_copy(update={"authorized": False})
+
+    provider = MidBatchProvider()
+    access._content_provider = provider
+    monkeypatch.setattr(sandbox, "_preflight", lambda *_a, **_k: None)
+    launched = []
+
+    def synthetic_worker(_image, payload, **_kwargs):
+        request = json.loads(payload)
+        launched.append(request["page_number"])
+        proof = pages.check_pdf_page_excerpt(
+            _access(), "invented-sandbox-fixture",
+            page_number=request["page_number"],
+            expected_excerpt=request["expected_excerpt"],
+        )
+        return json.dumps(proof.model_dump(
+            mode="json",
+            exclude={
+                "source_access_full_receipt_sha256",
+                "sandbox_child_observation_provenance",
+            },
+        )).encode("utf-8")
+
+    monkeypatch.setattr(sandbox, "_run_container", synthetic_worker)
+    result = _bridge_run(_bridge_candidate(), access=access)
+    assert result.status == "BLOCKED"
+    assert result.code == "SANDBOX_UNAVAILABLE"
+    assert provider.calls == 3
+    assert launched == [1]
+    assert result.public_view().admitted_quote_count == 0
