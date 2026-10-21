@@ -262,7 +262,18 @@ def run_m6_portfolio(
     slugs = [host_slug(str(h["host_id"])) for h in hosts]
 
     checkpoints: dict[str, Any] = {}
+    # A foreign checkpoint must exist BEFORE the first world's RM07 probe.
+    # Prepare independently from each host's M5-only stones; never borrow
+    # the first world's later W2 return or self-attested external rights.
+    from seshat.fabric_waves.m5_room_carpet import _checkpoint_for
+
     checkpoint_objects: dict[str, Any] = {}
+    for candidate_host in hosts:
+        candidate_m5, _candidate_w2 = split_host_stones(candidate_host)
+        candidate_run = run_world(
+            candidate_m5, fixture=fixture, fixture_sha256=fixture_sha
+        )
+        checkpoint_objects[str(candidate_host["host_id"])] = _checkpoint_for(candidate_run)
     world_results: list[dict[str, Any]] = []
     completed_slugs: list[str] = []
     source_snapshots: dict[str, list[dict[str, str]]] = {}
