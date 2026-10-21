@@ -345,7 +345,21 @@ def run_m6_world(
     receipts: list[dict[str, Any]] = []
     if not skip_w2:
         for stone in w2_stones:
-            receipts.append(execute_w2_return(world, stone, ledger=ledger))
+            receipt = execute_w2_return(world, stone, ledger=ledger)
+            receipts.append(receipt)
+            # Deliberate replay probe: the same return cannot mint another
+            # carrier, admission or sediment record. This is a synthetic
+            # idempotence test, not a second external worker call.
+            before_acts = len(world.engine.ledger.activations)
+            before_records = len(world.engine.sediment.all_records())
+            replay = execute_w2_return(world, stone, ledger=ledger)
+            replay["fresh_activations"] = (
+                len(world.engine.ledger.activations) - before_acts
+            )
+            replay["fresh_sediment"] = (
+                len(world.engine.sediment.all_records()) - before_records
+            )
+            receipts.append(replay)
     world.oracle_inputs_extra["m6_w2_receipts"] = receipts
     world.oracle_inputs_extra["m6_external_ledger"] = json.loads(ledger.model_dump_json())
     return world
