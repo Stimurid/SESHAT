@@ -13,7 +13,7 @@ from pathlib import Path
 from collections.abc import Mapping
 from typing import Any, Sequence
 
-from seshat.fabric_waves.m5_checkpoint import CheckpointRejected, write_checkpoint
+from seshat.fabric_waves.m5_checkpoint import CheckpointRejected, load_checkpoint, write_checkpoint
 from seshat.fabric_waves.m5_oracles import evaluate_rm_oracles, oracle_summary
 from seshat.fabric_waves.m5_oracles import OracleInputs
 from seshat.fabric_waves.m5_room_carpet import (
@@ -28,6 +28,7 @@ from seshat.fabric_waves.m5_room_carpet import (
     _unauthorized_decision_probe,
     export_world,
     load_fixture,
+    run_world,
 )
 from seshat.fabric_waves.m6_w2_cycle import completed_source_versions, run_m6_world, split_host_stones
 from seshat.fabric_waves.m5_synthetic_hosts import host_slug
@@ -132,15 +133,15 @@ def _run_world_with_m6_exports(
             [
                 sys.executable,
                 "-m",
-                "seshat.fabric_waves.m5_room_carpet",
+                "seshat.fabric_waves.m6_research_engine",
+                "--resume-m5-subgraph-checkpoint",
+                str(cp_path),
                 "--fixture",
                 str(fixture_path),
                 "--fixture-sha256",
                 fixture_sha256,
                 "--host-id",
                 str(host["host_id"]),
-                "--resume-checkpoint",
-                str(cp_path),
                 "--output-dir",
                 str(child_dir),
             ],
@@ -148,7 +149,11 @@ def _run_world_with_m6_exports(
             text=True,
             check=False,
         )
-        resume_evidence = _compare_resume(completed, child_dir, control=world)
+        # Compare like with like: the child resumes the M5 source subgraph.
+        # W2 is a later synthetic external return, not in that checkpoint.
+        core_control = run_world(host_m5, fixture=fixture, fixture_sha256=fixture_sha256)
+        resume_evidence = _compare_resume(completed, child_dir, control=core_control)
+        resume_evidence["scope"] = "M5_SUBGRAPH_NEW_PROCESS_ONLY_NOT_F09A_W2_REPLAY"
 
     frontier = world.oracle_inputs_extra.get("m6_frontier_probe") or _frontier_probe(world)
     budget_probe = _budget_probe(world)
@@ -167,6 +172,8 @@ def _run_world_with_m6_exports(
     from seshat.fabric_waves.m5_room_carpet import _checkpoint_for
 
     checkpoint = _checkpoint_for(world)
+    human_refusal = _unauthorized_decision_probe(world)
+    world.oracle_inputs_extra["m6_human_refusal"] = human_refusal
     inputs = OracleInputs(
         engine=world.engine,
         run_ids=world.run_ids,
@@ -188,7 +195,7 @@ def _run_world_with_m6_exports(
         foreign_reference_rejection=_foreign_checkpoint_probe(world, foreign),
         excluded_source_rejection=_excluded_source_probe(world),
         rights_denied_probe=_rights_probe(world),
-        unauthorized_decision_rejection=_unauthorized_decision_probe(world),
+        unauthorized_decision_rejection=human_refusal,
         self_attestation_probe=_self_attestation_probe(world, checkpoint),
         budget_exhausted_run_id=budget_probe.get("run_id"),
         saturated_run_id=next((o.run_id for o in world.outcomes if o.kind == "QUERY" and o.run_id), None),
@@ -252,7 +259,16 @@ def run_m6_portfolio(
     slugs = [host_slug(str(h["host_id"])) for h in hosts]
 
     checkpoints: dict[str, Any] = {}
+    # Prepare an actual foreign-host checkpoint from every M5 synthetic core
+    # BEFORE evaluating either host. Otherwise world one cannot exercise RM07.
+    from seshat.fabric_waves.m5_room_carpet import _checkpoint_for
     checkpoint_objects: dict[str, Any] = {}
+    for foreign_host in hosts:
+        m5_foreign, _ = split_host_stones(foreign_host)
+        control = run_world(
+            m5_foreign, fixture=fixture, fixture_sha256=fixture_sha
+        )
+        checkpoint_objects[str(foreign_host["host_id"])] = _checkpoint_for(control)
     world_results: list[dict[str, Any]] = []
     completed_slugs: list[str] = []
     source_snapshots: dict[str, list[dict[str, str]]] = {}
@@ -343,6 +359,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--fixture-sha256", type=str, default=None)
     parser.add_argument("--output-dir", type=Path, default=Path("artifacts") / "m6_research")
     parser.add_argument("--no-subprocess-resume", action="store_true")
+    parser.add_argument("--resume-m5-subgraph-checkpoint", type=Path, default=None)
+    parser.add_argument("--host-id", type=str, default=None)
     parser.add_argument(
         "--f09a-resume-after",
         type=str,
@@ -358,6 +376,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     if fixture_path is None:
         print("No M6 fixture found", file=sys.stderr)
         return 2
+    if args.resume_m5_subgraph_checkpoint:
+        if not args.host_id:
+            print("--resume-m5-subgraph-checkpoint requires --host-id", file=sys.stderr)
+            return 2
+        fixture, fixture_sha = load_fixture(Path(fixture_path), approved_sha256=args.fixture_sha256 or ORIGINAL_FIXTURE_SHA256)
+        host = next((h for h in fixture.get("hosts") or () if str(h.get("host_id")) == args.host_id), None)
+        if host is None:
+            raise CheckpointRejected("M6_SUBGRAPH_UNKNOWN_HOST")
+        core_host, _ = split_host_stones(host)
+        cp = load_checkpoint(args.resume_m5_subgraph_checkpoint)
+        world = run_world(core_host, fixture=fixture, fixture_sha256=fixture_sha, resume_from=cp)
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        aporias = [a.activation_id for a in world.engine.ledger.activations if a.error_code == "BODY_APORIA"]
+        evidence = {
+            "schema": "seshat.m5_resume_evidence.v1",
+            "host_id": args.host_id,
+            "resumed_from_cursor": world.started_at_cursor,
+            "continued_stone_ids": [o.stone_id for o in world.outcomes],
+            "aporia_activations": aporias,
+            "ledger_head": world.engine.ledger.head_hash,
+            "sediment_payload_hashes": sorted([r.sediment_id, r.payload_hash] for r in world.engine.sediment.all_records()),
+            "scope": "M5_SUBGRAPH_ONLY_NO_W2_REPLAY",
+        }
+        (args.output_dir / "resume_evidence.json").write_text(json.dumps(evidence, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
+        return 0
     portfolio = run_m6_portfolio(
         Path(fixture_path),
         args.output_dir,

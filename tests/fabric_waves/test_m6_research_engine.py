@@ -123,3 +123,85 @@ def test_mutant_independent_w2_does_not_force_label_overlap_question(tmp_path):
     world = run_m6_world(host, fixture=fixture, fixture_sha256=sha)
     bundle = compose_report_bundle(world)
     assert bundle["revised_question"] == bundle["initial_question"]
+
+
+def test_m6_new_process_resume_is_a_real_m5_subgraph(tmp_path):
+    """A distinct Python process must resume the three M5 stones; W2 is excluded from this proof."""
+    result = run_m6_portfolio(
+        FIXTURE, tmp_path,
+        approved_sha256=ORIGINAL_FIXTURE_SHA256,
+        verify_subprocess_resume=True,
+    )
+    for item in result["worlds"]:
+        probe = item["resume_evidence"]
+        assert probe and probe["child_process_completed"] is True, probe
+        assert probe["matches_uninterrupted_control"] is True, probe
+        assert probe["scope"] == "M5_SUBGRAPH_NEW_PROCESS_ONLY_NOT_F09A_W2_REPLAY"
+        assert item["rm_summary"]["fail"] == 0
+        assert item["rm_summary"]["not_tested"] == 0
+
+
+def test_m6_w2_refuses_real_and_foreign_schemes_without_carrier_injection():
+    from seshat.fabric_waves.m6_w2_cycle import admit_synthetic_carrier
+    fixture, sha = load_fixture(FIXTURE, approved_sha256=ORIGINAL_FIXTURE_SHA256)
+    host = copy.deepcopy(fixture["hosts"][0])
+    world = run_m6_world(host, fixture=fixture, fixture_sha256=sha, skip_w2=True)
+    store = world.engine.carrier_store
+    assert store is not None
+    original = set(store._carriers)
+    for forbidden in (
+        "https://example.org/actual-research.pdf",
+        "synthetic://world-o/other-world",
+        "synthetic://world-u/",
+    ):
+        with pytest.raises(ValueError, match="M6_W2_REAL_OR_UNVERIFIED_CARRIER_FORBIDDEN"):
+            admit_synthetic_carrier(world, source_uri=forbidden, version="v1", text="invented")
+        assert set(store._carriers) == original
+    world.oracle_inputs_extra["m6_synthetic_test_context"] = False
+    with pytest.raises(ValueError, match="M6_W2_REAL_OR_UNVERIFIED_CARRIER_FORBIDDEN"):
+        admit_synthetic_carrier(world, source_uri="synthetic://world-u/test", version="v1", text="x")
+    assert set(store._carriers) == original
+
+
+def test_m6_w2_denies_missing_test_grant_and_does_not_trust_expectations():
+    fixture, sha = load_fixture(FIXTURE, approved_sha256=ORIGINAL_FIXTURE_SHA256)
+    host = copy.deepcopy(fixture["hosts"][0])
+    w2 = next(s for s in host["stones"] if s.get("kind") == "W2_RETURN")
+    w2["external_source"]["rights"] = "DENIED"
+    with pytest.raises(ValueError, match="M6_W2_NO_SYNTHETIC_TEST_GRANT"):
+        run_m6_world(host, fixture=fixture, fixture_sha256=sha)
+    w2["external_source"]["rights"] = "SYNTHETIC_OWNER_GRANT"
+    w2["expected_overlap_with_beta"] = False
+    world = run_m6_world(host, fixture=fixture, fixture_sha256=sha)
+    from seshat.fabric_waves.m6_w2_cycle import w2_observations
+    payload = w2_observations(world)[0].payload
+    assert payload["sample_overlap_with_beta"] is True  # evidenced only by W2 bytes
+    assert "expected_overlap_with_beta" not in payload
+    assert "SYNTHETIC_SELF_ASSERTED_RETURN" in w2_observations(world)[0].provenance
+    assert world.oracle_inputs_extra["m6_w2_receipts"][0]["source_authority"] == "TEST_FIXTURE_NOT_REAL_F07"
+
+
+def test_m6_phantom_synthetic_uri_fails_in_customer_report():
+    from seshat.fabric_waves.m6_oracles import evaluate_m6_oracles
+    fixture, sha = load_fixture(FIXTURE, approved_sha256=ORIGINAL_FIXTURE_SHA256)
+    world = run_m6_world(fixture["hosts"][0], fixture=fixture, fixture_sha256=sha)
+    bundle = compose_report_bundle(world)
+    counterfeit = copy.deepcopy(bundle)
+    counterfeit["reports"][0]["markdown"] += " \x60synthetic://world-u/forged-unregistered\x60"
+    rows = {r["oracle_id"]: r for r in evaluate_m6_oracles(world, counterfeit, operator_markdown="")}
+    assert rows["RX06"]["observed"] == "FAIL"
+
+
+def test_m6_human_refusal_requires_attempt_not_aporia_label():
+    from seshat.fabric_waves.m6_oracles import evaluate_m6_oracles
+    from seshat.fabric_waves.m5_room_carpet import _unauthorized_decision_probe
+    fixture, sha = load_fixture(FIXTURE, approved_sha256=ORIGINAL_FIXTURE_SHA256)
+    world = run_m6_world(fixture["hosts"][0], fixture=fixture, fixture_sha256=sha)
+    bundle = compose_report_bundle(world)
+    def rx05():
+        return next(r for r in evaluate_m6_oracles(world, bundle, operator_markdown="") if r["oracle_id"] == "RX05")
+    assert rx05()["observed"] == "NOT_TESTED"
+    world.oracle_inputs_extra["m6_human_refusal"] = _unauthorized_decision_probe(world)
+    assert rx05()["observed"] == "PASS"
+    world.oracle_inputs_extra["m6_human_refusal"] = {"attempted": True, "rejected": False, "accepted_view_size_after": 1}
+    assert rx05()["observed"] == "FAIL"
