@@ -24,6 +24,41 @@ jobs:
       - name: Build synthetic-only image
         shell: bash
         run: docker build --pull=false -f Dockerfile.report -t seshat-report:pr .
+      - name: Install host test dependencies (networked setup)
+        shell: bash
+        run: python -m pip install --no-cache-dir -e '.[dev]'
+      - name: OS-bounded PDF parser smoke on invented two-page source
+        shell: bash
+        run: |
+          set -euo pipefail
+          SESHAT_DOCKER_SMOKE_REQUIRED=1 SESHAT_SYNTHETIC_PDF_TEST_IMAGE=seshat-report:pr python -m pytest -q -p no:cacheprovider tests/test_pdf_sandbox.py -m docker
+      - name: Bounded Docker network, rootfs and deadline drills
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --read-only --user 65532:65532 --cap-drop ALL --security-opt no-new-privileges --memory 256m --memory-swap 256m --pids-limit 32 --cpus 1 seshat-report:pr python -c $'import errno, pathlib
+          route_lines = pathlib.Path("/proc/net/route").read_text().strip().splitlines()
+          assert len(route_lines) == 1, "unexpected container route"
+          import socket
+          try:
+              with socket.create_connection(("1.1.1.1", 80), timeout=0.5):
+                  raise AssertionError("network egress permitted")
+          except OSError:
+              pass
+          try:
+              pathlib.Path("/tmp/seshat-drill").write_text("x")
+          except OSError as exc:
+              assert exc.errno == errno.EROFS
+          else:
+              raise AssertionError("writable rootfs")'
+          name="seshat-pdf-timeout-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          set +e
+          timeout --signal=KILL 2s docker run --rm --name "$name" --network none --read-only --user 65532:65532 --cap-drop ALL --security-opt no-new-privileges --memory 64m --memory-swap 64m --pids-limit 32 --cpus 1 seshat-report:pr python -c 'import time; time.sleep(30)'
+          status=$?
+          set -e
+          docker rm --force "$name" >/dev/null 2>&1 || true
+          test "$status" -eq 124 -o "$status" -eq 137
+          test -z "$(docker ps -a --filter "name=^/${name}$" --format '{{.Names}}')"
       - name: Offline unprivileged R01 text-generation and durable export
         shell: bash
         run: |
@@ -73,7 +108,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run --rm --network none --read-only --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m seshat-report:pr python -m pytest -q -p no:cacheprovider tests/test_reports.py tests/test_batch.py tests/test_scientific_report.py tests/fabric_waves/test_report_bridge.py tests/fabric_waves/test_report_bridge_demo.py tests/test_pdf_page_evidence.py tests/test_source_access.py
+          docker run --rm --network none --read-only --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m seshat-report:pr python -m pytest -q -p no:cacheprovider tests/test_reports.py tests/test_batch.py tests/test_scientific_report.py tests/fabric_waves/test_report_bridge.py tests/fabric_waves/test_report_bridge_demo.py tests/test_pdf_page_evidence.py tests/test_pdf_sandbox.py tests/test_source_access.py
           docker run --rm --network none --read-only --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m seshat-report:pr python -m ruff check --no-cache .
       - name: Print scope boundary
         shell: bash
@@ -82,3 +117,10 @@ jobs:
           echo 'SCIENTIFIC_ACCEPTANCE=NOT_PERFORMED'
           echo 'HUB_ISSUER=NOT_TESTED'
           echo 'CUSTOMER_RELEASE=NOT_AUTHORIZED'
+      - name: Verify no residual PDF containers even after test failure
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker ps -a --filter 'name=^/seshat-pdf-' --format '{{.Names}}' | tee "$RUNNER_TEMP/pdf-residual-containers.txt"
+          test ! -s "$RUNNER_TEMP/pdf-residual-containers.txt"

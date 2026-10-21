@@ -30,6 +30,7 @@ packages = ["src/seshat"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["docker: requires an actual offline Linux Docker daemon and synthetic image"]
 
 [tool.ruff]
 target-version = "py311"
