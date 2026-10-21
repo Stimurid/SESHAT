@@ -112,6 +112,22 @@ class PublicModelQuoteSummary(_Strict):
     scientific_acceptance: Literal["NOT_ASSERTED"] = "NOT_ASSERTED"
     customer_release: Literal["NOT_AUTHORIZED"] = "NOT_AUTHORIZED"
 
+    @model_validator(mode="after")
+    def enforce_public_status_consistency(self) -> "PublicModelQuoteSummary":
+        if self.exact_quote_count > self.claim_count:
+            raise ValueError("PUBLIC_SUMMARY_INVALID_COUNTS")
+        if self.status == "EXACT_PDF_PAGE_EXCERPTS_VERIFIED":
+            if (
+                self.code != "ALL_EXCERPTS_EXACT"
+                or self.claim_count < 2
+                or self.exact_quote_count != self.claim_count
+                or self.run_scope != "SYNTHETIC_QA"
+            ):
+                raise ValueError("PUBLIC_SUMMARY_INVALID_POSITIVE_STATUS")
+        elif self.code == "ALL_EXCERPTS_EXACT":
+            raise ValueError("PUBLIC_SUMMARY_REJECTED_WITH_SUCCESS_CODE")
+        return self
+
 
 class ModelQuoteGateReceipt(_Strict):
     """OWNER-PRIVATE, UNFILTERED fingerprint-bearing receipt.
@@ -179,7 +195,11 @@ class ModelQuoteGateReceipt(_Strict):
             status=self.status,
             code=self.code,
             claim_count=len(self.claims),
-            exact_quote_count=sum(1 for item in self.claims if item.code == "EXACT_QUOTE"),
+            exact_quote_count=(
+                sum(1 for item in self.claims if item.code == "EXACT_QUOTE")
+                if self.status == "EXACT_PDF_PAGE_EXCERPTS_VERIFIED"
+                else 0
+            ),
             run_scope=self.run_scope,
         )
 

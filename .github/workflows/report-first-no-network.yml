@@ -152,6 +152,18 @@ jobs:
           print("RM_PASS=%d RM_FAIL=%d RM_NOT_TESTED=%d" % (s["pass"], s["fail"], s["not_tested"]))
           print("RM_NOT_TESTED_IDS=%s" % ",".join(s["not_tested_ids"]))
           PY
+      - name: M6 two-world research engine with R05-R07 triad
+        shell: bash
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/seshat-m6-research"
+          mkdir -p "$dest"
+          chmod 700 "$dest"
+          docker run --rm --network none --read-only --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m --mount "type=bind,source=$dest,target=/out" seshat-report:pr python -m seshat.fabric_waves.m6_research_engine --output-dir /out/run
+          test -s "$dest/run/m6_portfolio_receipt.json"
+          test -s "$dest/run/world-u-synthetic-university/m6_report_bundle.json"
+          grep -q 'NONCOMPARABLE' "$dest/run/world-u-synthetic-university/m6_report.md"
+          echo "M6_SYNTHETIC_PORTFOLIO=1"
       - name: M5 new-process resumed continuation from a checkpoint
         shell: bash
         run: |
