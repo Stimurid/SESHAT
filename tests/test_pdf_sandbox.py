@@ -617,3 +617,23 @@ def test_real_docker_isolated_bridge_synthetic_full_chain():
     failure = _bridge_run(bad, image=image)
     assert failure.status == "REJECTED"
     assert failure.code == "SANDBOX_NOT_VERIFIED"
+
+
+def test_bridge_rejects_drifted_child_f07_receipt_even_with_same_pdf_sha(monkeypatch):
+    import seshat.pdf_isolated_bridge as bridge
+
+    def child(access, carrier_id, *, page_number, expected_excerpt, **kwargs):
+        pdf, _, _, version, _ = access.read_full_with_metadata(carrier_id)
+        return sandbox.SandboxQuoteObservation(
+            carrier_id=carrier_id, source_version=version,
+            source_access_full_receipt_sha256="0" * 64,
+            pdf_sha256=hashlib.sha256(pdf).hexdigest(),
+            pdf_byte_length=len(pdf), page_number=page_number,
+            excerpt_sha256=hashlib.sha256(expected_excerpt.encode()).hexdigest(),
+        )
+
+    monkeypatch.setattr(bridge, "_check_synthetic_pdf_fixture", child)
+    receipt = _bridge_run(_bridge_candidate())
+    assert receipt.status == "BLOCKED"
+    assert receipt.code == "F07_DENIED_OR_DRIFTED"
+    assert receipt.public_view().admitted_quote_count == 0
