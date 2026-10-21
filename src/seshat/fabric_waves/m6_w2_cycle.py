@@ -7,8 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
 
@@ -55,6 +54,22 @@ def admit_synthetic_carrier(
 ) -> tuple[str, str, int]:
     """Host-inject a new synthetic external carrier and return (carrier_id, digest, byte_len)."""
 
+    # This is a fixture-only simulator, not a provider or F07 rights gateway.
+    # Never allow caller-supplied real carrier bytes into the internal store.
+    allowed_prefixes = {
+        "WORLD_U_SYNTHETIC_UNIVERSITY": "synthetic://world-u/",
+        "WORLD_O_SYNTHETIC_SERVICE": "synthetic://world-o/",
+    }
+    host_id = str(world.host.get("host_id") or "")
+    prefix = allowed_prefixes.get(host_id)
+    if (
+        world.oracle_inputs_extra.get("m6_synthetic_test_context") is not True
+        or prefix is None
+        or not source_uri.startswith(prefix)
+        or len(source_uri) <= len(prefix)
+        or not version
+    ):
+        raise ValueError("M6_W2_REAL_OR_UNVERIFIED_CARRIER_FORBIDDEN")
     store = world.engine.carrier_store
     if store is None:
         raise ValueError("M6_W2_NO_CARRIER_STORE")
@@ -177,6 +192,8 @@ def execute_w2_return(
     text = str(ext.get("content") or "")
     if not source_uri or not version or not text:
         raise ValueError("M6_W2_INCOMPLETE_SOURCE_SPEC")
+    if ext.get("rights") != "SYNTHETIC_OWNER_GRANT":
+        raise ValueError("M6_W2_NO_SYNTHETIC_TEST_GRANT")
 
     needs = observed_missing_source_needs(world.engine, world.run_ids)
     if require_prior_need and not needs:
@@ -215,8 +232,6 @@ def execute_w2_return(
     pinned = store.pin_content_digest(carrier_id, pinned_version=version)
 
     parsed = _parse_w2_fields(text)
-    if "expected_overlap_with_beta" in stone:
-        parsed["expected_overlap_with_beta"] = bool(stone["expected_overlap_with_beta"])
     proposal = {
         "schema": "m6.external_w2_observation.v1",
         "carrier_id": carrier_id,
@@ -252,7 +267,7 @@ def execute_w2_return(
         payload=proposal,
         payload_hash=digest,
         provenance=(
-            "HOST_VERIFIED_EXTERNAL_RETURN",
+            "SYNTHETIC_SELF_ASSERTED_RETURN",
             f"return:{return_id}",
             f"request:{request_id}",
             f"source:{carrier_id}@{version}",
@@ -271,7 +286,8 @@ def execute_w2_return(
         "stone_id": stone_id,
         "return_id": return_id,
         "request_id": request_id,
-        "status": "ADMITTED",
+        "status": "SYNTHETIC_SELF_ASSERTED_RETURN",
+        "source_authority": "TEST_FIXTURE_NOT_REAL_F07",
         "carrier_id": carrier_id,
         "source_version": version,
         "content_sha256": pinned,
@@ -293,6 +309,13 @@ def run_m6_world(
 ) -> WorldRun:
     host_m5, w2_stones = split_host_stones(host)
     world = run_world(host_m5, fixture=fixture, fixture_sha256=fixture_sha256, resume_from=resume_from)
+    world.oracle_inputs_extra["m6_synthetic_test_context"] = (
+        fixture.get("status") == "SYNTHETIC_EXPECTED_INPUTS_ONLY__NO_ACTUAL_RUNTIME"
+        and fixture.get("host_rights") == "NONE_REQUIRED_FOR_INVENTED_INPUTS__NO_REAL_WORLD_SOURCES"
+        and str(host.get("host_id") or "") in (
+            "WORLD_U_SYNTHETIC_UNIVERSITY", "WORLD_O_SYNTHETIC_SERVICE"
+        )
+    )
     from seshat.fabric_waves.m5_room_carpet import _frontier_probe
 
     world.oracle_inputs_extra["m6_frontier_probe"] = _frontier_probe(world)
