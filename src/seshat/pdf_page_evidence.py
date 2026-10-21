@@ -119,6 +119,11 @@ def check_pdf_page_excerpt(
     source-access policy/integrity checks deny the underlying read.
     """
 
+    if not _EXTRACTOR_VERSION:
+        raise PdfPageEvidenceError(
+            "EXTRACTOR_VERSION_UNAVAILABLE",
+            "PDF extractor version must be known to create reproducible evidence",
+        )
     if type(page_number) is not int or page_number < 1:
         raise PdfPageEvidenceError(
             "PAGE_NUMBER_INVALID", "page_number requires a positive integer"
@@ -248,6 +253,7 @@ def check_pdf_page_excerpt(
     return PdfPageEvidenceReceipt(
         carrier_id=carrier_id,
         source_version=version,
+        source_access_policy=source_access.policy.value,
         source_access_full_receipt_sha256=source_receipt_digest,
         pdf_sha256=pdf_sha256,
         pdf_byte_length=pdf_byte_length,

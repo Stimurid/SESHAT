@@ -579,3 +579,46 @@ def test_pdf_page_receipt_binds_source_version_policy_and_exact_full_read() -> N
         ).encode("utf-8")
     ).hexdigest()
     assert receipt.rights_independently_attested == "NO"
+
+
+# -- Post-review low-level source-contract hardening -------------------------
+
+
+def test_missing_extractor_version_fails_before_citing_any_pdf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pdf_page_evidence, "_EXTRACTOR_VERSION", "")
+    with pytest.raises(PdfPageEvidenceError) as caught:
+        check_pdf_page_excerpt(_access_for(PDF_A), "pdf1", page_number=1, expected_excerpt="fox")
+    assert caught.value.code == "EXTRACTOR_VERSION_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("policy", [RawAccessPolicy.FULL_REQUIRED, RawAccessPolicy.DRILLBACK])
+def test_non_utf8_text_carrier_is_typed_denial_not_raw_decode_error(
+    policy: RawAccessPolicy,
+) -> None:
+    malformed = b"UTF8-introducer-\xff-invalid"
+    digest = hashlib.sha256(malformed).hexdigest()
+    carrier = SourceCarrier(
+        carrier_id="invented-text1", source_identity="synthetic-test:invented-text1",
+        version="v1", media_type="text/plain",
+        content_sha256=digest, byte_length=len(malformed),
+    )
+    content = SourceContent(
+        carrier_id="invented-text1", source_version="v1", media_type="text/plain",
+        content=malformed, content_sha256=digest, byte_length=len(malformed),
+        complete=True, authorized=True,
+    )
+    store = FabricCarrierStore(
+        carriers={"invented-text1": carrier}, contents={"invented-text1": content},
+    )
+    drill = {"drillback_address": {
+        "carrier_id": "invented-text1", "source_version": "v1",
+        "address_type": "byte_range", "start": 0, "end": len(malformed),
+    }}
+    with pytest.raises(ValueError, match="SOURCE_TEXT_UTF8_INVALID"):
+        store.resolve_payload(
+            policy=policy, carrier_ids=("invented-text1",),
+            stone_payload=drill if policy is RawAccessPolicy.DRILLBACK else {},
+            operation_id="synthetic-negative",
+        )

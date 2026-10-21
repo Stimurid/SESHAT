@@ -189,9 +189,12 @@ class FabricCarrierStore:
             raise ValueError("SOURCE_MEDIA_TEXT_PROJECTION_UNSUPPORTED")
         if policy is RawAccessPolicy.FULL_REQUIRED:
             access.verify_all(carrier_ids)
-            text_parts = [
-                access.read_all(cid).decode("utf-8") for cid in carrier_ids
-            ]
+            try:
+                text_parts = [
+                    access.read_all(cid).decode("utf-8") for cid in carrier_ids
+                ]
+            except UnicodeDecodeError:
+                raise ValueError("SOURCE_TEXT_UTF8_INVALID") from None
             text = text_parts[0] if len(text_parts) == 1 else "\n".join(text_parts)
         else:
             # DRILLBACK: source-addressed slice when provided, else full trusted body.
@@ -200,7 +203,10 @@ class FabricCarrierStore:
                 from seshat.contracts import SourceAddress
 
                 addr = SourceAddress.model_validate(address)
-                text = access.read(addr).decode("utf-8")
+                try:
+                    text = access.read(addr).decode("utf-8")
+                except UnicodeDecodeError:
+                    raise ValueError("SOURCE_TEXT_UTF8_INVALID") from None
             else:
                 raise ValueError("SOURCE_ADDRESS_REQUIRED")
 
