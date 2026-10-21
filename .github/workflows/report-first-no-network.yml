@@ -185,17 +185,24 @@ jobs:
           assert ledger.get("evidence_returns"), "a late synthetic source-return record is required"
           print("M6_SYNTHETIC_W2_SOURCE_LEDGER_VERIFIED", digest[:12])
           PY
-          python - "$dest/run/world-u-synthetic-university/m6_oracles.json" <<'PY'
-          import json, sys
-          data = json.load(open(sys.argv[1], encoding="utf-8"))
-          rows = data if isinstance(data, list) else data.get("rows", data)
-          if isinstance(rows, dict):
-              rows = rows.get("rows", [])
-          fails = [r for r in rows if r.get("observed") == "FAIL"]
-          assert not fails, fails
-          ids = {r["oracle_id"] for r in rows}
-          assert "RX09" in ids and "RX10" in ids
-          print("M6_RX_PASS", len(rows))
+          python - "$dest/run" <<'PY'
+          import json, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          expected = {f"RX{i:02d}" for i in range(1, 12)}
+          exemptions = {
+              "world-u-synthetic-university": {"RX08"},
+              "world-o-synthetic-service": {"RX02", "RX03"},
+          }
+          assert all((root / slug / "m6_oracles.json").is_file() for slug in exemptions)
+          for slug, allowed in exemptions.items():
+              path = root / slug / "m6_oracles.json"
+              rows = json.loads(path.read_text(encoding="utf-8"))
+              assert len(rows) == 11 and {r["oracle_id"] for r in rows} == expected, path
+              not_tested = {r["oracle_id"] for r in rows if r["observed"] == "NOT_TESTED"}
+              assert not_tested == allowed, (slug, not_tested)
+              assert not any(r["observed"] == "FAIL" for r in rows), slug
+              assert all(r.get("evidence") for r in rows if r["observed"] == "PASS"), slug
+              print("M6_STRICT_RX_ACCEPTED", slug, "PASS", len(rows) - len(allowed))
           PY
           echo "M6_SYNTHETIC_PORTFOLIO=1"
       - name: M5 new-process resumed continuation from a checkpoint
