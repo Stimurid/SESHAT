@@ -1,5 +1,6 @@
 name: fabric-waves-isolated
 on:
+  workflow_dispatch:
   pull_request:
 permissions:
   contents: read
