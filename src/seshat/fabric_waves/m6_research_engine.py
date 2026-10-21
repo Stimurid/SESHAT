@@ -175,6 +175,8 @@ def _run_world_with_m6_exports(
     from seshat.fabric_waves.m5_room_carpet import _checkpoint_for
 
     checkpoint = _checkpoint_for(world)
+    unauthorized_probe = _unauthorized_decision_probe(world)
+    world.oracle_inputs_extra["m6_unauthorized_decision_probe"] = unauthorized_probe
     inputs = OracleInputs(
         engine=world.engine,
         run_ids=world.run_ids,
@@ -196,7 +198,7 @@ def _run_world_with_m6_exports(
         foreign_reference_rejection=_foreign_checkpoint_probe(world, foreign),
         excluded_source_rejection=_excluded_source_probe(world),
         rights_denied_probe=_rights_probe(world),
-        unauthorized_decision_rejection=_unauthorized_decision_probe(world),
+        unauthorized_decision_rejection=unauthorized_probe,
         self_attestation_probe=_self_attestation_probe(world, checkpoint),
         budget_exhausted_run_id=budget_probe.get("run_id"),
         saturated_run_id=next((o.run_id for o in world.outcomes if o.kind == "QUERY" and o.run_id), None),
