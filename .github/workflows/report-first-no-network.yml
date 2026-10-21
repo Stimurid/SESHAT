@@ -24,6 +24,14 @@ jobs:
       - name: Build synthetic-only image
         shell: bash
         run: docker build --pull=false -f Dockerfile.report -t seshat-report:pr .
+      - name: OS-bounded PDF parser smoke on invented two-page source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --no-cache-dir -e '.[dev]'
+          SESHAT_SYNTHETIC_PDF_TEST_IMAGE=seshat-report:pr python -m pytest -q -p no:cacheprovider tests/test_pdf_sandbox.py -m docker
+          docker ps -a --filter 'name=^/seshat-pdf-' --format '{{.Names}}' | tee "$RUNNER_TEMP/pdf-residual-containers.txt"
+          test ! -s "$RUNNER_TEMP/pdf-residual-containers.txt"
       - name: Offline unprivileged R01 text-generation and durable export
         shell: bash
         run: |
@@ -73,7 +81,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run --rm --network none --read-only --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m seshat-report:pr python -m pytest -q -p no:cacheprovider tests/test_reports.py tests/test_batch.py tests/test_scientific_report.py tests/fabric_waves/test_report_bridge.py tests/fabric_waves/test_report_bridge_demo.py tests/test_pdf_page_evidence.py tests/test_source_access.py
+          docker run --rm --network none --read-only --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m seshat-report:pr python -m pytest -q -p no:cacheprovider tests/test_reports.py tests/test_batch.py tests/test_scientific_report.py tests/fabric_waves/test_report_bridge.py tests/fabric_waves/test_report_bridge_demo.py tests/test_pdf_page_evidence.py tests/test_pdf_sandbox.py tests/test_source_access.py
           docker run --rm --network none --read-only --user "$(id -u):$(id -g)" --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=128m seshat-report:pr python -m ruff check --no-cache .
       - name: Print scope boundary
         shell: bash
