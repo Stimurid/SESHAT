@@ -18,6 +18,8 @@ import time
 import uuid
 from typing import Literal
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from seshat.contracts import RawAccessPolicy, SourceAccessStatus
 from seshat.pdf_page_evidence import (
     MAX_PAGE_COUNT, MAX_PAGE_TEXT_CHARS, PdfPageEvidenceReceipt,
@@ -32,6 +34,31 @@ MAX_EXCERPT = 4096
 _SYNTHETIC_CARRIER_ID = "invented-sandbox-fixture"
 _SLOTS = threading.BoundedSemaphore(2)
 _CLEANUP_UNCERTAIN = threading.Event()
+
+
+class SandboxQuoteObservation(BaseModel):
+    """OWNER-PRIVATE child report; not independently validated page evidence.
+
+    Exposes host-computed identifiers only: child page counts, text hashes
+    and offsets do NOT escape this sandbox contract. An unreviewed child can
+    lie about quotes; this cannot certify science or owner source rights.
+    """
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+    status: Literal["CHILD_REPORTED_MATCH_UNATTESTED"] = "CHILD_REPORTED_MATCH_UNATTESTED"
+    carrier_id: str = Field(min_length=1)
+    source_version: str = Field(min_length=1)
+    source_access_full_receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    pdf_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    pdf_byte_length: int = Field(ge=1)
+    page_number: int = Field(ge=1)
+    excerpt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    sandbox_child_observation_provenance: Literal["CHILD_ASSERTED_UNATTESTED"] = (
+        "CHILD_ASSERTED_UNATTESTED"
+    )
+    rights_independently_attested: Literal["NO"] = "NO"
+    human_acceptance: Literal["NOT_ASSERTED"] = "NOT_ASSERTED"
+    acceptance: Literal["PROPOSED"] = "PROPOSED"
 
 
 class PdfSandboxError(RuntimeError):
@@ -78,6 +105,7 @@ def _run_container(image: str, payload: bytes, *, timeout_seconds: float) -> byt
     name = f"seshat-pdf-{uuid.uuid4().hex}"
     argv = [
         "docker", "run", "--rm", "-i", "--pull", "never", "--name", name,
+        "--log-driver", "none",
         "--network", "none",
         "--read-only", "--user", "65532:65532", "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges", "--pids-limit", "32",
@@ -178,7 +206,7 @@ def check_pdf_page_excerpt_sandboxed(
     expected_excerpt: str,
     image: str,
     timeout_seconds: float = 15,
-) -> PdfPageEvidenceReceipt:
+) -> SandboxQuoteObservation:
     """Return owner-private hash receipt; fail closed if Docker isolation fails.
 
     Production requires an externally reviewed immutable repository digest.
@@ -193,7 +221,7 @@ def check_pdf_page_excerpt_sandboxed(
 def _check_synthetic_pdf_fixture(
     source_access: RuntimeSourceAccess, carrier_id: str, *, page_number: int,
     expected_excerpt: str, image: str, timeout_seconds: float = 15,
-) -> PdfPageEvidenceReceipt:
+) -> SandboxQuoteObservation:
     """Test fixture entrypoint only; not a boundary against adversarial Python callers."""
     if (carrier_id != _SYNTHETIC_CARRIER_ID
             or os.environ.get("SESHAT_SYNTHETIC_PDF_TEST_IMAGE") != image):
@@ -209,7 +237,7 @@ def _check_pdf_page_excerpt_sandboxed(
     source_access: RuntimeSourceAccess, carrier_id: str, *, page_number: int,
     expected_excerpt: str, image: str, timeout_seconds: float,
     synthetic_fixture: bool = False,
-) -> PdfPageEvidenceReceipt:
+) -> SandboxQuoteObservation:
     if (
         source_access.policy is not RawAccessPolicy.FULL_REQUIRED
         or not isinstance(carrier_id, str) or not 0 < len(carrier_id) <= 256
@@ -220,6 +248,11 @@ def _check_pdf_page_excerpt_sandboxed(
         or not 0 < timeout_seconds <= 60
     ):
         raise PdfSandboxError("UNREADABLE_SOURCE")
+    try:
+        carrier_id.encode("utf-8")
+        expected_excerpt.encode("utf-8")
+    except UnicodeError:
+        raise PdfSandboxError("UNREADABLE_SOURCE") from None
     if _CLEANUP_UNCERTAIN.is_set() or not _SLOTS.acquire(blocking=False):
         raise PdfSandboxError("UNSUPPORTED_SANDBOX")
     try:
@@ -236,7 +269,7 @@ def _check_with_slot(
     source_access: RuntimeSourceAccess, carrier_id: str, *, page_number: int,
     expected_excerpt: str, image: str, timeout_seconds: float,
     synthetic_fixture: bool,
-) -> PdfPageEvidenceReceipt:
+) -> SandboxQuoteObservation:
     _preflight(image, synthetic_fixture=synthetic_fixture)
     try:
         pdf, declared, actual, version, full = source_access.read_full_with_metadata(carrier_id)
@@ -254,15 +287,18 @@ def _check_with_slot(
         raise PdfSandboxError("UNREADABLE_SOURCE") from None
     if len(pdf) > MAX_SANDBOX_PDF_BYTES:
         raise PdfSandboxError("SANDBOX_INPUT_LIMIT")
-    full_digest = hashlib.sha256(json.dumps(
-        full.model_dump(mode="json", exclude_none=True), ensure_ascii=False,
-        sort_keys=True, separators=(",", ":"),
-    ).encode("utf-8")).hexdigest()
-    payload = json.dumps({
-        "pdf_b64": base64.b64encode(pdf).decode("ascii"),
-        "carrier_id": carrier_id, "source_version": version,
-        "page_number": page_number, "expected_excerpt": expected_excerpt,
-    }, separators=(",", ":")).encode("utf-8")
+    try:
+        full_digest = hashlib.sha256(json.dumps(
+            full.model_dump(mode="json", exclude_none=True), ensure_ascii=False,
+            sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        payload = json.dumps({
+            "pdf_b64": base64.b64encode(pdf).decode("ascii"),
+            "carrier_id": carrier_id, "source_version": version,
+            "page_number": page_number, "expected_excerpt": expected_excerpt,
+        }, separators=(",", ":")).encode("utf-8")
+    except (UnicodeError, ValueError, TypeError):
+        raise PdfSandboxError("UNREADABLE_SOURCE") from None
     raw = _run_container(image, payload, timeout_seconds=timeout_seconds)
     if len(raw) > MAX_OUTPUT:
         raise PdfSandboxError("PROCESS_CRASH")
@@ -293,7 +329,19 @@ def _check_with_slot(
             or receipt.offset + receipt.length > MAX_PAGE_TEXT_CHARS
         ):
             raise ValueError("receipt binding mismatch")
-        return receipt
+        # The host never republishes the child's arbitrary page count, text
+        # hash or offset: these are NOT independently checked and could carry
+        # covert data, or describe an invented excerpt in a bad child image.
+        # Expose only host-computed source/read/quoted-text identifiers.
+        return SandboxQuoteObservation(
+            carrier_id=carrier_id,
+            source_version=version,
+            source_access_full_receipt_sha256=full_digest,
+            pdf_sha256=digest,
+            pdf_byte_length=len(pdf),
+            page_number=page_number,
+            excerpt_sha256=hashlib.sha256(expected_excerpt.encode("utf-8")).hexdigest(),
+        )
     except PdfSandboxError:
         raise
     except Exception:  # noqa: BLE001 - child data and errors are untrusted

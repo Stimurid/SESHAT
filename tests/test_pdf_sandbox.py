@@ -261,11 +261,20 @@ def test_mocked_argv_timeout_cleanup_and_no_source_in_commands(monkeypatch) -> N
     with pytest.raises(sandbox.PdfSandboxError, match="TIMEOUT"):
         sandbox._run_container("synthetic:test", b"private-pdf-and-quote", timeout_seconds=0.01)
     launch, cleanup, inspection = commands
-    assert "--network" in launch and "none" in launch
-    assert launch[launch.index("--pull") + 1] == "never"
-    for flag in ("--read-only", "--pids-limit", "--memory", "--memory-swap",
-                 "--cpus", "--cap-drop", "--security-opt", "--tmpfs"):
-        assert flag in launch
+    # Exact production argv values are the OS resource *contract*.
+    # A changed flag value (root user, unlimited memory/PIDs, etc.) must fail.
+    values = {
+        "--pull": "never", "--network": "none",
+        "--user": "65532:65532", "--cap-drop": "ALL",
+        "--security-opt": "no-new-privileges",
+        "--pids-limit": "32", "--memory": "256m",
+        "--memory-swap": "256m", "--cpus": "1",
+        "--tmpfs": "/tmp:rw,nosuid,nodev,size=16m",
+        "--log-driver": "none",
+    }
+    assert "--read-only" in launch
+    for option, expected in values.items():
+        assert launch[launch.index(option) + 1] == expected
     assert "-t" not in launch and "--env" not in launch and "--mount" not in launch
     assert cleanup[:3] == ["docker", "rm", "--force"]
     assert cleanup[-1] == launch[launch.index("--name") + 1]
@@ -342,6 +351,8 @@ def test_actual_offline_docker_synthetic_two_pages() -> None:
     import os
     image = os.environ.get("SESHAT_SYNTHETIC_PDF_TEST_IMAGE")
     if not image:
+        if os.environ.get("SESHAT_DOCKER_SMOKE_REQUIRED") == "1":
+            pytest.fail("REQUIRED_DOCKER_SMOKE_IMAGE_MISSING")
         pytest.skip("Docker smoke image not configured")
     receipt = sandbox._check_synthetic_pdf_fixture(
         _access(), "invented-sandbox-fixture", page_number=2, expected_excerpt="Bravo",
@@ -351,8 +362,72 @@ def test_actual_offline_docker_synthetic_two_pages() -> None:
     assert receipt.rights_independently_attested == "NO"
     assert receipt.human_acceptance == "NOT_ASSERTED"
     for page, excerpt in ((1, "Bravo"), (3, "Alpha")):
-        with pytest.raises(sandbox.PdfSandboxError):
+        with pytest.raises(sandbox.PdfSandboxError, match="NOT_VERIFIED"):
             sandbox._check_synthetic_pdf_fixture(
                 _access(), "invented-sandbox-fixture", page_number=page,
                 expected_excerpt=excerpt, image=image,
             )
+
+
+
+def test_missing_required_docker_fixture_never_passes_green_via_skip(monkeypatch) -> None:
+    """CI must fail if its mandatory real-Docker smoke loses the image binding."""
+    monkeypatch.setenv("SESHAT_DOCKER_SMOKE_REQUIRED", "1")
+    monkeypatch.delenv("SESHAT_SYNTHETIC_PDF_TEST_IMAGE", raising=False)
+    with pytest.raises(pytest.fail.Exception, match="REQUIRED_DOCKER_SMOKE_IMAGE_MISSING"):
+        test_actual_offline_docker_synthetic_two_pages()
+
+
+@pytest.mark.parametrize("input_name", ["carrier", "excerpt"])
+def test_lone_surrogate_input_fails_closed_without_docker(input_name) -> None:
+    candidate_carrier = chr(0xD800) if input_name == "carrier" else "invented-sandbox-fixture"
+    candidate_excerpt = chr(0xD800) if input_name == "excerpt" else "Alpha"
+    with pytest.raises(sandbox.PdfSandboxError, match="UNREADABLE_SOURCE"):
+        sandbox.check_pdf_page_excerpt_sandboxed(
+            _access(), candidate_carrier, page_number=1,
+            expected_excerpt=candidate_excerpt,
+            image="source.example/seshat@sha256:" + "1" * 64,
+        )
+
+
+def test_sandbox_returns_host_bound_observation_without_child_side_channel(
+    monkeypatch,
+) -> None:
+    """An unreviewed child can fabricate page text, but must not export it."""
+    _mocked_preflight(monkeypatch)
+
+    def forged_child(_image, _payload, **_kwargs):
+        from seshat.pdf_page_evidence import check_pdf_page_excerpt
+
+        valid = check_pdf_page_excerpt(
+            _access(), "invented-sandbox-fixture",
+            page_number=2, expected_excerpt="Bravo",
+        ).model_dump(
+            mode="json",
+            exclude={"source_access_full_receipt_sha256",
+                     "sandbox_child_observation_provenance"},
+        )
+        # Arbitrary child-reported page metadata must NOT reach callers.
+        original_pdf = __import__("base64").b64decode(
+            json.loads(_payload)["pdf_b64"]
+        )
+        valid["pdf_sha256"] = hashlib.sha256(original_pdf).hexdigest()
+        valid["pdf_byte_length"] = len(original_pdf)
+        valid["page_count"] = 10000
+        valid["page_text_sha256"] = "f" * 64
+        valid["offset"] = 999977
+        return json.dumps(valid).encode()
+
+    monkeypatch.setattr(sandbox, "_run_container", forged_child)
+    result = sandbox._check_synthetic_pdf_fixture(
+        _access(), "invented-sandbox-fixture",
+        page_number=2, expected_excerpt="Bravo", image="synthetic:test",
+    )
+    assert result.status == "CHILD_REPORTED_MATCH_UNATTESTED"
+    assert result.sandbox_child_observation_provenance == "CHILD_ASSERTED_UNATTESTED"
+    assert result.rights_independently_attested == "NO"
+    dumped = result.model_dump_json()
+    assert "page_count" not in dumped and "page_text_sha256" not in dumped
+    assert "offset" not in dumped and "f" * 64 not in dumped
+    assert "999977" not in dumped
+    assert result.excerpt_sha256 == hashlib.sha256(b"Bravo").hexdigest()

@@ -31,7 +31,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          SESHAT_SYNTHETIC_PDF_TEST_IMAGE=seshat-report:pr python -m pytest -q -p no:cacheprovider tests/test_pdf_sandbox.py -m docker
+          SESHAT_DOCKER_SMOKE_REQUIRED=1 SESHAT_SYNTHETIC_PDF_TEST_IMAGE=seshat-report:pr python -m pytest -q -p no:cacheprovider tests/test_pdf_sandbox.py -m docker
       - name: Bounded Docker network, rootfs and deadline drills
         shell: bash
         run: |
