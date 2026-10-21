@@ -599,7 +599,6 @@ def test_bridge_missing_sandbox_fails_closed(monkeypatch):
 @pytest.mark.docker
 def test_real_docker_isolated_bridge_synthetic_full_chain():
     """Real Linux smoke: read F07, run child per claim, never mint verified."""
-    from seshat.pdf_isolated_bridge import verify_synthetic_claims_in_sandbox
     image = os.environ.get("SESHAT_SYNTHETIC_PDF_TEST_IMAGE")
     if not image:
         if os.environ.get("SESHAT_DOCKER_SMOKE_REQUIRED") == "1":
