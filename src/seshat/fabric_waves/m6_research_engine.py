@@ -6,6 +6,7 @@ SYNTHETIC ONLY. Does not merge PR #76/#77, deploy, or assert scientific acceptan
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -44,7 +45,12 @@ PACKAGE_FIXTURE_NAME = "m6_two_world_research_acceptance_20261021_v01.json"
 ORIGINAL_FIXTURE_SHA256 = (
     "fcebb73cb3f546a782af5e268e2795c2bd5de818ae222dafe346c74ffcfab479"
 )
-F09A_MANIFEST_VERSION = "F09A-M6-1"
+F09A_MANIFEST_VERSION = "F09A-M6-2"
+F09A_HASHED_ARTIFACTS: tuple[str, ...] = (
+    "m6_report_bundle.json",
+    "m6_report.md",
+    "m6_report.html",
+)
 M6_ARTIFACTS: tuple[str, ...] = (
     "m6_report_bundle.json",
     "m6_report.md",
@@ -78,6 +84,35 @@ def default_fixture_path() -> Path | None:
     return repo_copy if repo_copy.is_file() else None
 
 
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _world_artifact_hashes(world_dir: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for name in F09A_HASHED_ARTIFACTS:
+        artifact = world_dir / name
+        if artifact.is_file():
+            out[name] = _sha256_file(artifact)
+    return out
+
+
+def _verify_f09a_done_item(output_root: Path, item: Mapping[str, Any]) -> None:
+    if item.get("state") != "DONE":
+        return
+    slug = str(item.get("world_slug") or "")
+    world_dir = output_root / slug
+    if not world_dir.is_dir():
+        raise CheckpointRejected("F09A_PHANTOM_DONE_MISSING_DIR")
+    stored = item.get("artifact_hashes")
+    if not isinstance(stored, Mapping) or not stored:
+        raise CheckpointRejected("F09A_DONE_WITHOUT_ARTIFACT_HASHES")
+    actual = _world_artifact_hashes(world_dir)
+    for name, expected in stored.items():
+        if actual.get(name) != expected:
+            raise CheckpointRejected("F09A_ARTIFACT_HASH_MISMATCH")
+
+
 def _write_f09a_manifest(
     output_root: Path,
     *,
@@ -85,20 +120,27 @@ def _write_f09a_manifest(
     world_slugs: Sequence[str],
     completed: Sequence[str],
     world_source_snapshots: Mapping[str, Sequence[Mapping[str, str]]] | None = None,
+    world_artifact_hashes: Mapping[str, Mapping[str, str]] | None = None,
 ) -> dict[str, Any]:
     snapshots = world_source_snapshots or {}
+    hashes = world_artifact_hashes or {}
+    items: list[dict[str, Any]] = []
+    for slug in world_slugs:
+        item: dict[str, Any] = {
+            "world_slug": slug,
+            "state": "DONE" if slug in completed else "QUEUED",
+            "completed_source_versions": list(snapshots.get(slug) or ()),
+        }
+        if slug in completed:
+            artifact_hashes = dict(hashes.get(slug) or ())
+            if artifact_hashes:
+                item["artifact_hashes"] = artifact_hashes
+        items.append(item)
     manifest = {
         "manifest_version": F09A_MANIFEST_VERSION,
         "fixture_sha256": fixture_sha256,
         "concurrency": 1,
-        "items": [
-            {
-                "world_slug": slug,
-                "state": "DONE" if slug in completed else "QUEUED",
-                "completed_source_versions": list(snapshots.get(slug) or ()),
-            }
-            for slug in world_slugs
-        ],
+        "items": items,
         "synthetic_only": True,
     }
     (output_root / "f09a_batch_manifest.json").write_text(
@@ -272,12 +314,17 @@ def run_m6_portfolio(
     world_results: list[dict[str, Any]] = []
     completed_slugs: list[str] = []
     source_snapshots: dict[str, list[dict[str, str]]] = {}
+    artifact_hashes: dict[str, dict[str, str]] = {}
 
     if f09a_resume_after_slug:
         manifest_path = output_root / "f09a_batch_manifest.json"
         if not manifest_path.is_file():
             raise CheckpointRejected("F09A_RESUME_MANIFEST_MISSING")
         prior = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if prior.get("fixture_sha256") != fixture_sha:
+            raise CheckpointRejected("F09A_FIXTURE_SHA_MISMATCH")
+        for item in prior.get("items") or ():
+            _verify_f09a_done_item(output_root, item)
         completed_slugs = [
             item["world_slug"]
             for item in prior.get("items") or ()
@@ -308,6 +355,11 @@ def run_m6_portfolio(
         world_results.append(result)
         completed_slugs.append(slug)
         source_snapshots[slug] = list(result.get("completed_source_versions") or ())
+        artifact_hashes[slug] = _world_artifact_hashes(world_dir)
+
+    for slug in completed_slugs:
+        if slug not in artifact_hashes:
+            artifact_hashes[slug] = _world_artifact_hashes(output_root / slug)
 
     manifest = _write_f09a_manifest(
         output_root,
@@ -315,6 +367,7 @@ def run_m6_portfolio(
         world_slugs=slugs,
         completed=completed_slugs,
         world_source_snapshots=source_snapshots,
+        world_artifact_hashes=artifact_hashes,
     )
     receipt = {
         "schema": "seshat.m6_f09a_receipt.v1",

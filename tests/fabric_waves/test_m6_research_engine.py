@@ -2,9 +2,13 @@
 
 import copy
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+
+from seshat.fabric_waves.m5_checkpoint import CheckpointRejected
 
 from seshat.fabric_waves.m6_research_engine import (
     M6_ARTIFACTS,
@@ -98,6 +102,9 @@ def test_f09a_manifest_serial_complete(portfolio, tmp_path):
     assert manifest["concurrency"] == 1
     for item in manifest["items"]:
         assert item.get("completed_source_versions")
+        if item["state"] == "DONE":
+            assert item.get("artifact_hashes")
+            assert item["artifact_hashes"].get("m6_report_bundle.json")
 
 
 def test_mutant_w2_absent_leaves_r05_partial(tmp_path):
@@ -190,6 +197,75 @@ def test_m6_phantom_synthetic_uri_fails_in_customer_report():
     counterfeit["reports"][0]["markdown"] += " \x60synthetic://world-u/forged-unregistered\x60"
     rows = {r["oracle_id"]: r for r in evaluate_m6_oracles(world, counterfeit, operator_markdown="")}
     assert rows["RX06"]["observed"] == "FAIL"
+
+
+def test_f09a_resume_rejects_forged_artifact_hash(tmp_path):
+    first = tmp_path / "batch"
+    run_m6_portfolio(
+        FIXTURE,
+        first,
+        approved_sha256=ORIGINAL_FIXTURE_SHA256,
+        verify_subprocess_resume=False,
+    )
+    manifest_path = first / "f09a_batch_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["items"][0]["artifact_hashes"]["m6_report_bundle.json"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
+    with pytest.raises(CheckpointRejected, match="F09A_ARTIFACT_HASH_MISMATCH"):
+        run_m6_portfolio(
+            FIXTURE,
+            first,
+            approved_sha256=ORIGINAL_FIXTURE_SHA256,
+            verify_subprocess_resume=False,
+            f09a_resume_after_slug="world-u-synthetic-university",
+        )
+
+
+def test_f09a_new_process_resume_completes_second_world(tmp_path):
+    import shutil
+
+    u_slug = "world-u-synthetic-university"
+    o_slug = "world-o-synthetic-service"
+    full = tmp_path / "full"
+    run_m6_portfolio(
+        FIXTURE,
+        full,
+        approved_sha256=ORIGINAL_FIXTURE_SHA256,
+        verify_subprocess_resume=False,
+    )
+    resume_root = tmp_path / "resume"
+    resume_root.mkdir()
+    shutil.copytree(full / u_slug, resume_root / u_slug)
+    manifest = json.loads((full / "f09a_batch_manifest.json").read_text(encoding="utf-8"))
+    manifest["items"][1]["state"] = "QUEUED"
+    manifest["items"][1].pop("artifact_hashes", None)
+    (resume_root / "f09a_batch_manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2),
+        encoding="utf-8",
+    )
+    u_bundle_before = (resume_root / u_slug / "m6_report_bundle.json").read_bytes()
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "seshat.fabric_waves.m6_research_engine",
+            "--fixture",
+            str(FIXTURE),
+            "--output-dir",
+            str(resume_root),
+            "--f09a-resume-after",
+            u_slug,
+            "--no-subprocess-resume",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert (resume_root / o_slug / "m6_report_bundle.json").is_file()
+    assert (resume_root / u_slug / "m6_report_bundle.json").read_bytes() == u_bundle_before
+    final = json.loads((resume_root / "f09a_batch_manifest.json").read_text(encoding="utf-8"))
+    assert all(item["state"] == "DONE" for item in final["items"])
 
 
 def test_m6_human_refusal_requires_attempt_not_aporia_label():
