@@ -387,17 +387,9 @@ class WaveEngine:
                         )
                     )
                     break
-                self.ledger.append_wave(
-                    WaveRecord(
-                        wave_id=f"{run_id}:wave:{waves_emitted}",
-                        run_id=run_id,
-                        wave_index=waves_emitted,
-                        triggered_by=trigger_event.kind,
-                        triggering_event_id=trigger_event.event_id,
-                        sediment_versions_after=self.sediment.version_map(),
-                    )
-                )
-                continue
+                # Governance admission is not a substitute for running the
+                # propagation frontier: threads that wake on APORIA must still
+                # execute in this wave.
 
             if trigger_event.kind is StoneEventKind.HUMAN_DECISION:
                 self._apply_human_decision_stone(
@@ -1042,6 +1034,7 @@ class WaveEngine:
 
         if result.aporia is not None:
             # An APORIA explanation is untrusted provider output, not public text.
+            aporia_detail = result.aporia
             result = result.model_copy(update={"aporia": "BODY_APORIA"})
             self.sediment.deposit(
                 SedimentRecord(
@@ -1080,7 +1073,7 @@ class WaveEngine:
                 receipts_hash=_material_hash({"aporia": result.aporia}),
                 method_body_refs=(resolved_ref,),
                 error_code="BODY_APORIA",
-                error_detail=result.aporia,
+                error_detail=aporia_detail,
             )
 
         produced_ids: list[str] = []

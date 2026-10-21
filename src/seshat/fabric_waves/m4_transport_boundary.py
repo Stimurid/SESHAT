@@ -217,8 +217,10 @@ def preview_bounds(
     long_lines: list[int] = []
     offset = 0
     for index, line in enumerate(lines, 1):
-        if len(line) > LONG_LINE_BYTES and offset >= preview_end:
-            long_lines.append(index)
+        if len(line) > LONG_LINE_BYTES:
+            line_end = offset + len(line)
+            if offset >= preview_end or line_end <= preview_end:
+                long_lines.append(index)
         offset += len(line) + 1
     return {
         "stored_bytes": len(raw),
