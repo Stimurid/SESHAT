@@ -148,7 +148,10 @@ jobs:
               if row["observed"] == "PASS":
                   assert row["evidence"], row["oracle_id"]
           s = data["summary"]
-          assert s["pass"] + s["fail"] + s["not_tested"] == 20
+          assert len(rows) == 20
+          assert s["pass"] == 20
+          assert s["fail"] == 0
+          assert s["not_tested"] == 0
           print("RM_PASS=%d RM_FAIL=%d RM_NOT_TESTED=%d" % (s["pass"], s["fail"], s["not_tested"]))
           print("RM_NOT_TESTED_IDS=%s" % ",".join(s["not_tested_ids"]))
           PY

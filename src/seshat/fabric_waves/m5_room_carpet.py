@@ -15,7 +15,7 @@ import sqlite3
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -305,6 +305,22 @@ def _sediment_versions(engine: WaveEngine) -> dict[str, str]:
     return {r.sediment_id: r.version for r in engine.sediment.all_records()}
 
 
+def _record_room_close_sediment_witness(
+    world: WorldRun,
+    *,
+    stone_id: str,
+    before: Mapping[str, str],
+    after: Mapping[str, str],
+) -> None:
+    """Retain the latest room-close sediment pair with a nonempty before map (RM17)."""
+
+    if not before:
+        return
+    world.oracle_inputs_extra["sediment_versions_before_close"] = dict(before)
+    world.oracle_inputs_extra["sediment_versions_after_close"] = dict(after)
+    world.oracle_inputs_extra["sediment_close_witness_stone_id"] = stone_id
+
+
 # -- world execution ----------------------------------------------------------
 
 
@@ -403,7 +419,12 @@ def _execute_stone(
     event = _stone_event(stone, uri_map, tick=tick)
     with admitted_threads(engine, admitted):
         record = engine.run(run_id=run_id, budget=world.budget, initial_stone=event)
+    before_close = _sediment_versions(engine)
     manifest.close(activations=engine.ledger.activations, run_id=run_id)
+    after_close = _sediment_versions(engine)
+    _record_room_close_sediment_witness(
+        world, stone_id=stone_id, before=before_close, after=after_close
+    )
     world.run_ids.append(run_id)
     world.processed_stone_ids.append(stone_id)
 
@@ -548,7 +569,6 @@ def run_world(
     carrier_ids = tuple(declared_source_versions(host))
     alpha_id, beta_id = carrier_ids[0], carrier_ids[1]
 
-    before_close = _sediment_versions(engine)
     alpha_before = beta_before = None
     alpha_after = beta_after = None
     delta_run_id: str | None = None
@@ -598,8 +618,6 @@ def run_world(
                 "same_fingerprint": repeat.fingerprint == outcome.fingerprint,
             }
 
-    after_close = _sediment_versions(engine)
-
     world.oracle_inputs_extra.update(
         {
             "alpha_before": alpha_before,
@@ -609,8 +627,6 @@ def run_world(
             "delta_run_id": delta_run_id,
             "source_before": source_before,
             "source_after": _source_observations(engine, carrier_ids),
-            "sediment_versions_before_close": before_close,
-            "sediment_versions_after_close": after_close,
             "alpha_carrier": alpha_id,
             "beta_carrier": beta_id,
         }
@@ -671,7 +687,12 @@ def _frontier_probe(world: WorldRun) -> dict[str, Any]:
         try:
             with admitted_threads(world.engine, manifest.admitted_engine_threads):
                 world.engine.run(run_id=run_id, budget=world.budget, initial_stone=event)
+            before_close = _sediment_versions(world.engine)
             manifest.close(activations=world.engine.ledger.activations, run_id=run_id)
+            after_close = _sediment_versions(world.engine)
+            _record_room_close_sediment_witness(
+                world, stone_id="FRONTIER", before=before_close, after=after_close
+            )
             world.run_ids.append(run_id)
             fired = [
                 a
@@ -1243,6 +1264,7 @@ def export_world(
     output_dir: Path,
     oracle_rows: Sequence[Mapping[str, Any]],
     checkpoint: M5Checkpoint,
+    operator_report_markdown: str | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     engine = world.engine
@@ -1299,7 +1321,12 @@ def export_world(
         json.dumps(resonance_records, ensure_ascii=False, sort_keys=True, indent=2),
     )
     write("carpet.html", render_carpet_index(world))
-    write("report.md", render_operator_report(world, sections))
+    report_md = (
+        operator_report_markdown
+        if operator_report_markdown is not None
+        else render_operator_report(world, sections)
+    )
+    write("report.md", report_md)
     write(
         "telemetry.json",
         json.dumps(build_telemetry(world), ensure_ascii=False, sort_keys=True, indent=2, default=str),
@@ -1489,8 +1516,23 @@ def run_two_worlds(
         )
         oracle_rows = evaluate_rm_oracles(inputs)
         receipt = export_world(
-            world, output_dir=world_dir, oracle_rows=oracle_rows, checkpoint=checkpoint
+            world,
+            output_dir=world_dir,
+            oracle_rows=oracle_rows,
+            checkpoint=checkpoint,
+            operator_report_markdown=operator_report_md,
         )
+        exported_report = (world_dir / "report.md").read_text(encoding="utf-8")
+        if exported_report != operator_report_md:
+            inputs = replace(inputs, operator_report_markdown=exported_report)
+            oracle_rows = evaluate_rm_oracles(inputs)
+            receipt = export_world(
+                world,
+                output_dir=world_dir,
+                oracle_rows=oracle_rows,
+                checkpoint=checkpoint,
+                operator_report_markdown=exported_report,
+            )
         world_receipts.append(receipt)
 
     heads = [r["rm_summary"] for r in world_receipts]
@@ -1680,6 +1722,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if failed:
         print(f"{FAIL}: {', '.join(failed)}", file=sys.stderr)
+        return 1
+    if not_tested:
         return 1
     return 0
 
