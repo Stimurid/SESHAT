@@ -401,6 +401,6 @@ def test_w2_absence_leaves_no_late_wave_and_changed_source_only_changes_w2_line(
     assert old["source_sha256"] != new["source_sha256"]
     assert old["run_id"] == new["run_id"]  # same operation, different pinned source evidence
     from seshat.fabric_waves.m5_room_carpet import _branch_snapshot
-    assert _branch_snapshot(base.engine, branch="alpha", slug=base.slug).payload_hash == _branch_snapshot(
+    assert _branch_snapshot(base.engine, branch="alpha", slug=base.slug).records == _branch_snapshot(
         shifted.engine, branch="alpha", slug=shifted.slug
-    ).payload_hash
+    ).records
