@@ -425,6 +425,13 @@ def parse_page_map(pages_bytes: bytes) -> dict[int, tuple[int, int, str]]:
     hits = list(_PAGE_MARK.finditer(text))
     if not hits:
         return {1: (0, len(pages_bytes), text)}
+    declared_totals = {int(match.group(2)) for match in hits}
+    if len(declared_totals) != 1:
+        raise ValueError("I11_INCOMPLETE_PAGE_RANGE")
+    expected_total = next(iter(declared_totals))
+    numbers = {int(match.group(1)) for match in hits}
+    if numbers != set(range(1, expected_total + 1)):
+        raise ValueError("I11_INCOMPLETE_PAGE_RANGE")
     pages: dict[int, tuple[int, int, str]] = {}
     for index, match in enumerate(hits):
         number = int(match.group(1))
