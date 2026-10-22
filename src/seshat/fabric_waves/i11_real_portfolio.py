@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import unicodedata
 from pathlib import Path
 from typing import Any, Mapping
 
 from seshat.fabric_waves.i11_activity_network import (
     AUTHORIAL_I11_ID, AUTHORIAL_I11_SHA256, AUTHORIAL_I11_VERSION,
-    CCBY_PDF_SHA256, OBSERVED_I11_JOB_ID, ActivityNetworkState,
+    CCBY_PDF_SHA256, CCBY_PAGES_SHA256, OBSERVED_I11_JOB_ID, ActivityNetworkState,
+    parse_page_map,
 )
 from seshat.fabric_waves.i11_vertical import observe_existing_i11_package
 from seshat.public_pdf_method_bridge import make_public_pdf_method_views
@@ -31,6 +33,66 @@ def _hash_json(content: Any) -> str:
         content, ensure_ascii=False, sort_keys=True,
         separators=(",", ":"), allow_nan=False,
     ).encode("utf-8")).hexdigest()
+
+
+def _fold_page_for_provenance(text: str) -> str:
+    """Ignore PDF layout glyph/whitespace only, never reorder words."""
+    return "".join(
+        char for char in unicodedata.normalize("NFKC", text).casefold()
+        if char.isalnum()
+    )
+
+
+def _reconcile_original_i11_page_input(
+    original_model_input: bytes,
+    independently_extracted_method_input: bytes,
+    *,
+    carrier_id: str,
+    page_count: int,
+) -> dict[str, Any]:
+    """Prove pagewise text equivalence, while preserving DIFFERENT byte hashes.
+
+    The first bytes are what the earlier Opus job actually consumed; the
+    second is newly extracted from the same PDF via the M10 operator bridge.
+    A matching PDF digest alone cannot assert these text representations
+    contain the same pages or text.
+    """
+    old = parse_page_map(original_model_input)
+    if sorted(old) != list(range(1, page_count + 1)):
+        raise RealI11PortfolioError("I11_REAL_PORTFOLIO_ORIGINAL_PAGE_SET_DRIFT")
+    try:
+        fresh = independently_extracted_method_input.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RealI11PortfolioError("I11_REAL_PORTFOLIO_NEW_VIEW_UNREADABLE") from exc
+    for index in range(1, page_count + 1):
+        marker = (
+            f"=== ORIGINAL PDF PAGE {index} / {page_count} "
+            f"SOURCE {carrier_id} ==="
+        )
+        next_marker = (
+            f"=== ORIGINAL PDF PAGE {index + 1} / {page_count} "
+            f"SOURCE {carrier_id} ==="
+        )
+        if fresh.count(marker) != 1:
+            raise RealI11PortfolioError("I11_REAL_PORTFOLIO_NEW_PAGE_MAP_DRIFT")
+        segment = fresh.split(marker, 1)[1]
+        if index < page_count:
+            if segment.count(next_marker) != 1:
+                raise RealI11PortfolioError("I11_REAL_PORTFOLIO_NEW_PAGE_MAP_DRIFT")
+            segment = segment.split(next_marker, 1)[0]
+        expected = _fold_page_for_provenance(old[index][2])
+        actual = _fold_page_for_provenance(segment)
+        if not expected or expected != actual:
+            raise RealI11PortfolioError("I11_REAL_PORTFOLIO_SOURCE_TEXT_DIVERGED")
+    return {
+        "actual_i11_input_pages_sha256": hashlib.sha256(original_model_input).hexdigest(),
+        "independent_new_pdf_page_view_sha256": hashlib.sha256(
+            independently_extracted_method_input
+        ).hexdigest(),
+        "pages_normalized_equivalent": page_count,
+        "byte_identical_not_assumed": True,
+        "new_pdf_view_was_actual_original_model_input": False,
+    }
 
 
 def make_observed_i11_real_source_portfolio(
@@ -93,6 +155,17 @@ def make_observed_i11_real_source_portfolio(
     members = [x for x in derived if x.original_pdf_sha256 == CCBY_PDF_SHA256]
     if len(members) != 1 or len(derived) != 2:
         raise RealI11PortfolioError("I11_REAL_PORTFOLIO_PRIMARY_SOURCE_NOT_IN_CORPUS")
+    original_input_bytes = observed.get("pages_bytes")
+    if not isinstance(original_input_bytes, bytes) or (
+        hashlib.sha256(original_input_bytes).hexdigest() != CCBY_PAGES_SHA256
+    ):
+        raise RealI11PortfolioError("I11_REAL_PORTFOLIO_ORIGINAL_INPUT_NOT_PINNED")
+    original_text_provenance = _reconcile_original_i11_page_input(
+        original_input_bytes,
+        members[0].source_utf8,
+        carrier_id=members[0].original_source_id,
+        page_count=members[0].pdf_page_count,
+    )
     if state.model_job_receipt_or_null not in (None, OBSERVED_I11_JOB_ID):
         raise RealI11PortfolioError("I11_REAL_PORTFOLIO_MODEL_JOB_MISMATCH")
 
@@ -107,7 +180,16 @@ def make_observed_i11_real_source_portfolio(
             "original_pdf_page_count": paper.page_count,
             "f07_full_receipt_sha256": paper.f07_full_receipt_sha256,
             "f08_page_evidence_count": len(paper.f08_page_evidence),
-            "derived_page_view_sha256": method_view.source_pin.sha256,
+            "independently_derived_pdf_page_view_sha256": method_view.source_pin.sha256,
+            "original_i11_model_input_pages_sha256": (
+                original_text_provenance["actual_i11_input_pages_sha256"]
+                if analysed else "NOT_RUN"
+            ),
+            "original_i11_input_reconciled_pages": (
+                original_text_provenance["pages_normalized_equivalent"]
+                if analysed else 0
+            ),
+            "new_pdf_view_used_by_original_model": False,
             "authorial_method": AUTHORIAL_I11_ID if analysed else "NOT_RUN",
             "actual_terminal_job": OBSERVED_I11_JOB_ID if analysed else "NOT_RUN",
             "analysis_state": "AUTHORIAL_I11_OBSERVED_UNATTESTED" if analysed
@@ -132,6 +214,7 @@ def make_observed_i11_real_source_portfolio(
             "fictional_controls_counted_as_real": False,
             "source_grounded_interstudy_comparison": "NOT_PERFORMED",
         },
+        "original_i11_model_input_provenance": original_text_provenance,
         "first_model_run": {
             "job_id": OBSERVED_I11_JOB_ID,
             "method_body_id": AUTHORIAL_I11_ID,
