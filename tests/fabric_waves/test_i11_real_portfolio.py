@@ -6,6 +6,7 @@ These tests monkeypatch canonical checks solely against invented PDF fixtures.
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
 
 import pytest
 
@@ -23,6 +24,34 @@ def _args(monkeypatch, *, observed=True):
     packet = admit_public_published_corpus(requests, source_bytes=sources)
     first_pdf_sha = packet.articles[0].pdf_sha256
     monkeypatch.setattr(portfolio, "CCBY_PDF_SHA256", first_pdf_sha)
+    from seshat.public_pdf_method_bridge import make_public_pdf_method_views
+    derivative = make_public_pdf_method_views(
+        packet, requests, source_bytes=sources,
+        owner_excluded_source_ids=frozenset(),
+        owner_excluded_source_sha256=frozenset(),
+    )[0]
+    fresh = derivative.source_utf8.decode("utf-8")
+    original_chunks = []
+    for page_number in range(1, derivative.pdf_page_count + 1):
+        marker = (
+            f"=== ORIGINAL PDF PAGE {page_number} / {derivative.pdf_page_count} "
+            f"SOURCE {derivative.original_source_id} ==="
+        )
+        next_marker = (
+            f"=== ORIGINAL PDF PAGE {page_number + 1} / {derivative.pdf_page_count} "
+            f"SOURCE {derivative.original_source_id} ==="
+        )
+        content = fresh.split(marker, 1)[1]
+        if page_number < derivative.pdf_page_count:
+            content = content.split(next_marker, 1)[0]
+        original_chunks.append(
+            f"=== PRINTED PDF PAGE {page_number} / "
+            f"{derivative.pdf_page_count} ===\n{content.strip()}\n"
+        )
+    original_model_text = "\n".join(original_chunks).encode("utf-8")
+    monkeypatch.setattr(
+        portfolio, "CCBY_PAGES_SHA256", hashlib.sha256(original_model_text).hexdigest()
+    )
     state = interpret_labeled_world(
         world="world_a",
         source_bytes=world_bytes("world_a"),
@@ -39,6 +68,7 @@ def _args(monkeypatch, *, observed=True):
         "method_sha256": portfolio.AUTHORIAL_I11_SHA256,
         "stdout_sha256": "0" * 64,
         "source_pdf_sha256": first_pdf_sha,
+        "pages_bytes": original_model_text,
     }
     if not observed:
         original_observe["status"] = "BLOCKED_REAL_MODEL_BINDING"
@@ -75,6 +105,10 @@ def test_two_real_named_source_slots_but_second_analysis_is_not_invented(monkeyp
     assert sum(row["actual_terminal_job"] == "NOT_RUN" for row in result["selected_works"]) == 1
     assert result["r03"]["status"] == "BLOCKED_PENDING_SECOND_REAL_AUTHORIAL_METHOD_RUN"
     assert result["r03"]["comparison_claims"] == []
+    assert result["original_i11_model_input_provenance"]["pages_normalized_equivalent"] == 2
+    assert result["original_i11_model_input_provenance"]["byte_identical_not_assumed"]
+    assert result["selected_works"][0]["new_pdf_view_used_by_original_model"] is False
+    assert result["selected_works"][1]["original_i11_model_input_pages_sha256"] == "NOT_RUN"
     assert result["r03"]["fictional_controls_counted_as_real"] is False
     assert result["customer_release"] == "BLOCKED"
     assert result["scientific_acceptance"] == "NOT_PERFORMED"
@@ -137,4 +171,40 @@ def test_no_primary_observed_pdf_in_corpus_does_not_yield_fake_science(monkeypat
     params = _args(monkeypatch)
     monkeypatch.setattr(portfolio, "CCBY_PDF_SHA256", "a" * 64)
     with pytest.raises(portfolio.RealI11PortfolioError, match="TERMINAL_PIN_DRIFT"):
+        portfolio.make_observed_i11_real_source_portfolio(**params)
+
+def test_real_owner_authorization_is_checked_before_any_public_pdf_join(monkeypatch):
+    from seshat.fabric_waves.i11_vertical import observe_existing_i11_package
+    params = _args(monkeypatch)
+    # The production function, NOT the fixture mock, must reject this
+    # non-authorizing policy without opening any private source or PDF.
+    params["exclusion_policy"]["schema"] = "seshat.owner_source_exclusion.default_empty"
+    params["exclusion_policy"]["authority"] = None
+    params["exclusion_policy"]["status"] = "DEFAULT_EMPTY"
+    monkeypatch.setattr(portfolio, "observe_existing_i11_package", observe_existing_i11_package)
+    def forbidden_public_join(*args, **kwargs):
+        pytest.fail("Derived public source must not be read before owner policy authorization")
+    monkeypatch.setattr(portfolio, "make_public_pdf_method_views", forbidden_public_join)
+    with pytest.raises(portfolio.RealI11PortfolioError, match="RUN_NOT_ADMITTED"):
+        portfolio.make_observed_i11_real_source_portfolio(**params)
+
+
+def test_old_model_pages_must_match_rederived_pdf_page_contents(monkeypatch):
+    params = _args(monkeypatch)
+    original = params["source_bytes"]["pub-a"]
+    assert original.startswith(b"%PDF")
+    observed = portfolio.observe_existing_i11_package(
+        params["package_dir"], exclusion_policy=params["exclusion_policy"],
+        f07_permission=params["f07_permission"],
+        source_id=params["source_id"], source_name=params["source_name"],
+        f07_full_read_granted=params["f07_full_read_granted"],
+    )
+    old = observed["pages_bytes"]
+    assert b"Researchers" in old
+    altered = old.replace(b"Researchers", b"ResearchXrs", 1)
+    observed["pages_bytes"] = altered
+    monkeypatch.setattr(
+        portfolio, "CCBY_PAGES_SHA256", hashlib.sha256(altered).hexdigest()
+    )
+    with pytest.raises(portfolio.RealI11PortfolioError, match="SOURCE_TEXT_DIVERGED"):
         portfolio.make_observed_i11_real_source_portfolio(**params)
