@@ -18,6 +18,9 @@ from seshat.fabric_waves.operator_methodbody import (
     replay_and_verify_operator_run,
 )
 from seshat.fabric_waves.operator_sqlite_ledger import SQLiteOperatorRunLedger
+from seshat.fabric_waves.operator_private_reports import (
+    compose_private_operator_r01r02, verify_private_operator_r01r02,
+)
 
 FIXTURES = {
     "materials": (
@@ -61,6 +64,7 @@ def main(argv=None):
     parser.add_argument("--fixture", choices=tuple(FIXTURES), required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--verify-only", action="store_true")
+    parser.add_argument("--private-report", action="store_true", help="produce/readback owner-private R01/R02 preview")
     opts = parser.parse_args(argv)
     opts.out.mkdir(parents=True, exist_ok=True)
     ledger = SQLiteOperatorRunLedger(opts.out / "runs.sqlite")
@@ -91,6 +95,30 @@ def main(argv=None):
                   "output_state": str(receipt.output_sediment.acceptance_state),
                   "provenance": receipt.provenance,
                   "claim_count": len(receipt.output_sediment.payload["claims"])}
+    if opts.private_report:
+        preview = compose_private_operator_r01r02(
+            receipt, source_bytes=src_bytes, method_invocation_bytes=method_bytes,
+        )
+        preview_path = opts.out / "private_r01r02.json"
+        if preview_path.exists():
+            stored = json.loads(preview_path.read_text(encoding="utf-8"))
+            verify_private_operator_r01r02(
+                stored, receipt, source_bytes=src_bytes, method_invocation_bytes=method_bytes,
+            )
+            result["preview_status"] = "VERIFIED_EXISTING_PRIVATE"
+        elif opts.verify_only:
+            raise ValueError("OPERATOR_R01R02_PRIVATE_RECEIPT_MISSING")
+        else:
+            # Exclusive creation prevents silently overwriting forged receipt
+            # bytes on a repeated local run. This is not a public artifact.
+            with preview_path.open("x", encoding="utf-8") as sink:
+                sink.write(json.dumps(preview, ensure_ascii=False, sort_keys=True, indent=2))
+                sink.flush()
+                import os
+                os.fsync(sink.fileno())
+            result["preview_status"] = "CREATED_PRIVATE"
+        result["preview_sha256"] = preview["projection_sha256"]
+        result["preview_path"] = str(preview_path)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0
 
