@@ -6,6 +6,9 @@ special privilege, or scientifically accepted method is involved.
 from __future__ import annotations
 
 import copy
+import json
+import subprocess
+import sys
 from hashlib import sha256
 
 import pytest
@@ -166,3 +169,40 @@ def test_bridge_rejects_fake_f07_manifest_or_swapped_source_identity():
         compose_private_operator_r01r02(
             swapped, source_bytes=src, method_invocation_bytes=method,
         )
+
+
+@pytest.mark.parametrize("fixture", ["materials", "organization"])
+def test_full_private_cli_fresh_process_and_reject_tampered_prior_preview(tmp_path, fixture):
+    out = tmp_path / fixture
+    def invoke(*, verify=False):
+        cmd = [
+            sys.executable, "-m", "seshat.fabric_waves.operator_local_demo",
+            "--fixture", fixture, "--out", str(out), "--private-report",
+        ]
+        if verify:
+            cmd.append("--verify-only")
+        return subprocess.run(cmd, capture_output=True, text=True, check=False)
+    first = invoke()
+    assert first.returncode == 0, first.stderr
+    receipt = json.loads(first.stdout)
+    assert receipt["preview_status"] == "CREATED_PRIVATE"
+    preview_file = out / "private_r01r02.json"
+    assert preview_file.is_file()
+    original_bytes = preview_file.read_bytes()
+    assert json.loads(original_bytes)["customer_release"] == "BLOCKED"
+    second = invoke(verify=True)
+    assert second.returncode == 0, second.stderr
+    assert json.loads(second.stdout)["preview_status"] == "VERIFIED_EXISTING_PRIVATE"
+    assert preview_file.read_bytes() == original_bytes
+    # A forged approval in the owner-private preview must be detected even if
+    # the SQLite ledger and the original method invocation remain unchanged.
+    changed = json.loads(original_bytes)
+    changed["customer_release"] = "AUTHORIZED"
+    preview_file.write_text(json.dumps(changed), encoding="utf-8")
+    rejected = invoke(verify=True)
+    assert rejected.returncode != 0
+    assert "OPERATOR_R01R02_PROJECTION_REPLAY_MISMATCH" in rejected.stderr
+    rejected_again = invoke()
+    assert rejected_again.returncode != 0
+    # A normal invocation must NOT silently overwrite a forged prior artifact.
+    assert json.loads(preview_file.read_text())["customer_release"] == "AUTHORIZED"
