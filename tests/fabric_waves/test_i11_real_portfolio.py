@@ -37,6 +37,7 @@ def _args(monkeypatch, *, observed=True):
         "typed_state": state,
         "job_id": portfolio.OBSERVED_I11_JOB_ID,
         "method_sha256": portfolio.AUTHORIAL_I11_SHA256,
+        "stdout_sha256": "0" * 64,
         "source_pdf_sha256": first_pdf_sha,
     }
     if not observed:
@@ -44,10 +45,18 @@ def _args(monkeypatch, *, observed=True):
     monkeypatch.setattr(portfolio, "observe_existing_i11_package", lambda *a, **k: original_observe)
     params = dict(
         package_dir=Path("invented-never-read"),
-        exclusion_policy={"excluded": {
-            "source_drive_ids": [], "source_names": [],
-            "aliases": [], "source_sha256": [],
-        }},
+        exclusion_policy={
+            "schema": "seshat.owner_source_exclusion.v1",
+            "authority": "OWNER_EXPLICIT",
+            "status": "PERMANENT_ACTIVE_EXCLUSION",
+            "operator_supplied": True,
+            "excluded": {
+                "source_drive_ids": ["invented-excluded-drive"],
+                "source_names": ["invented-excluded-name"],
+                "aliases": ["invented-excluded-alias"],
+                "source_sha256": [],
+            },
+        },
         f07_permission={"not_a_real_permission": True},
         f07_full_read_granted=False,
         source_id="invented-pdf", source_name="invented-world",
@@ -69,6 +78,13 @@ def test_two_real_named_source_slots_but_second_analysis_is_not_invented(monkeyp
     assert result["r03"]["fictional_controls_counted_as_real"] is False
     assert result["customer_release"] == "BLOCKED"
     assert result["scientific_acceptance"] == "NOT_PERFORMED"
+    analysed = next(row for row in result["selected_works"] if row["actual_terminal_job"] != "NOT_RUN")
+    pending = next(row for row in result["selected_works"] if row["actual_terminal_job"] == "NOT_RUN")
+    assert analysed["derived_page_view_role"].startswith("POST_EXTRACTION")
+    assert analysed["derived_view_is_model_input"] is False
+    assert analysed["original_model_input_page_text_sha256"]
+    assert pending["original_model_input_page_text_sha256"] == "NOT_FED_TO_MODEL"
+    assert result["second_model_run"]["status"] == "BLOCKED_SECOND_MODELRUN"
     assert result == portfolio.make_observed_i11_real_source_portfolio(**params)
 
 

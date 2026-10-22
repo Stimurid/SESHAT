@@ -1015,7 +1015,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="SESHAT I11 vertical: source+method to private reports")
     parser.add_argument(
         "--mode",
-        choices=("fictional", "admit-candidate", "observe-existing"),
+        choices=("fictional", "admit-candidate", "observe-existing", "stacked-product"),
         required=True,
     )
     parser.add_argument("--out", type=Path, required=True)
@@ -1027,6 +1027,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-file", type=Path)
     parser.add_argument("--f07-full-read", action="store_true")
     parser.add_argument("--package-dir", type=Path)
+    parser.add_argument("--f07-permission-b", type=Path)
+    parser.add_argument("--second-source-id", default="")
+    parser.add_argument("--second-source-name", default="")
+    parser.add_argument("--second-source-file", type=Path)
+    parser.add_argument("--second-pages-file", type=Path)
+    parser.add_argument("--job-registry", type=Path)
     parser.add_argument("--submit-new-paid-job", action="store_true")
     opts = parser.parse_args(argv)
     opts.out.mkdir(parents=True, exist_ok=True)
@@ -1071,6 +1077,52 @@ def main(argv: list[str] | None = None) -> int:
         )
         if not (opts.out / "admission.json").exists():
             _write_exclusive(opts.out / "admission.json", result)
+    elif opts.mode == "stacked-product":
+        from seshat.fabric_waves.i11_real_portfolio import run_stacked_product
+        from seshat.fabric_waves.i11_second_run import MODEL_TRANSFER_GRANT
+
+        if opts.submit_new_paid_job:
+            raise ValueError("I11_DUPLICATE_LAUNCH")
+        permission_b = load_f07_permission(opts.f07_permission_b)
+        registry = None
+        if opts.job_registry is not None:
+            registry = json.loads(opts.job_registry.read_text(encoding="utf-8"))
+        second_source_bytes = None
+        second_pages_bytes = None
+        may_open_second = (
+            is_real_authorizing_policy(policy)
+            and permission_b is not None
+            and permission_b.get("model_transfer") == MODEL_TRANSFER_GRANT
+        )
+        if may_open_second and opts.second_source_file is not None:
+            if _identity_excluded(opts.second_source_id, opts.second_source_name, policy):
+                raise ValueError("I11_SOURCE_EXCLUDED")
+            second_source_bytes = opts.second_source_file.read_bytes()
+        if may_open_second and opts.second_pages_file is not None:
+            second_pages_bytes = opts.second_pages_file.read_bytes()
+        result = run_stacked_product(
+            opts.out,
+            exclusion_policy=policy,
+            f07_permission=permission,
+            package_dir=opts.package_dir,
+            f07_permission_b=permission_b,
+            owner_excluded_source_ids=frozenset(
+                str(item) for item in policy.get("excluded", {}).get("source_drive_ids", ())
+            ),
+            owner_excluded_source_sha256=frozenset(
+                str(item) for item in policy.get("excluded", {}).get("source_sha256", ())
+                if isinstance(item, str) and len(item) == 64
+            ),
+            second_source_id=opts.second_source_id,
+            second_source_name=opts.second_source_name,
+            second_source_bytes=second_source_bytes,
+            second_pages_bytes=second_pages_bytes,
+            job_registry=registry if isinstance(registry, dict) else None,
+            verify_only=opts.verify_only,
+            source_id=opts.source_id,
+            source_name=opts.source_name,
+            f07_full_read_granted=opts.f07_full_read,
+        )
     else:
         if opts.submit_new_paid_job:
             raise ValueError("I11_DUPLICATE_LAUNCH")
