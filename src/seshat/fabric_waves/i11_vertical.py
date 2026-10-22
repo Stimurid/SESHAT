@@ -882,7 +882,6 @@ def run_observed_vertical(
     else:
         _write_exclusive(preview_path, preview)
     control_bytes = world_bytes("world_b")
-    control_method = fictional_method_bytes()
     control_receipt, _, _ = run_fictional_world(
         "world_b",
         ledger,
