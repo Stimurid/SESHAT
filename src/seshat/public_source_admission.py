@@ -215,3 +215,30 @@ def admit_public_published_corpus(
             f08_page_evidence=receipts,
         ))
     return PublicCorpusIntake(articles=tuple(results))
+
+def replay_and_verify_public_corpus(
+    packet: PublicCorpusIntake,
+    requests: tuple[PublicArticleRequest, ...],
+    *,
+    source_bytes: Mapping[str, bytes],
+) -> PublicCorpusIntake:
+    """Fresh-process, fail-closed readback of an owner-private F07/F08 batch.
+
+    A serialized packet alone is insufficient evidence. Pydantic model_copy
+    does not validate its update fields. Rebuild each F07 original-byte read,
+    CC BY license-page witness, and F08 page quote from pinned sources,
+    then compare the complete structured result. This is local operator
+    consistency, not independently authenticated rights or human approval.
+    """
+    if type(packet) is not PublicCorpusIntake:
+        raise PublicSourceAdmissionError("PUBLIC_REPLAY_TYPED_PACKET_REQUIRED")
+    try:
+        validated = PublicCorpusIntake.model_validate(packet.model_dump(mode="python"))
+    except Exception as exc:
+        raise PublicSourceAdmissionError("PUBLIC_REPLAY_PACKET_SCHEMA_INVALID") from exc
+    if packet != validated:
+        raise PublicSourceAdmissionError("PUBLIC_REPLAY_PACKET_INCONSISTENT")
+    original = admit_public_published_corpus(requests, source_bytes=source_bytes)
+    if validated != original:
+        raise PublicSourceAdmissionError("PUBLIC_REPLAY_RECEIPT_DRIFT")
+    return original

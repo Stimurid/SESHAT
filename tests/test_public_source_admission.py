@@ -171,3 +171,53 @@ def test_no_independent_rights_or_human_approval_even_from_mutated_payload():
     item["rights_independently_attested"] = "YES"
     with pytest.raises(Exception):
         AdmittedPublicArticle.model_validate(item)
+
+def test_private_readback_revalidates_full_original_f07_and_f08():
+    from seshat.public_source_admission import replay_and_verify_public_corpus
+    reqs, sources = sample()
+    expected = admit_public_published_corpus(reqs, source_bytes=sources)
+    replayed = replay_and_verify_public_corpus(expected, reqs, source_bytes=sources)
+    assert replayed == expected
+    assert replayed.customer_release == "BLOCKED"
+    assert all(a.rights_independently_attested == "NO" for a in replayed.articles)
+
+
+def test_private_readback_refuses_pydantic_model_copy_forged_human_acceptance():
+    from seshat.public_source_admission import replay_and_verify_public_corpus
+    reqs, sources = sample()
+    packet = admit_public_published_corpus(reqs, source_bytes=sources)
+    forged = packet.model_copy(update={"customer_release": "ACCEPTED"})
+    with pytest.raises(PublicSourceAdmissionError, match="PACKET_SCHEMA_INVALID"):
+        replay_and_verify_public_corpus(forged, reqs, source_bytes=sources)
+    item = packet.articles[0].model_copy(update={"rights_independently_attested": "YES"})
+    forged = packet.model_copy(update={"articles": (item, packet.articles[1])})
+    with pytest.raises(PublicSourceAdmissionError, match="PACKET_SCHEMA_INVALID"):
+        replay_and_verify_public_corpus(forged, reqs, source_bytes=sources)
+
+
+def test_private_readback_refuses_structurally_valid_false_page_receipt():
+    from seshat.public_source_admission import replay_and_verify_public_corpus
+    reqs, sources = sample()
+    packet = admit_public_published_corpus(reqs, source_bytes=sources)
+    old = packet.articles[0]
+    fake_quote = old.f08_page_evidence[0].model_copy(update={"excerpt_sha256": "0" * 64})
+    forged_article = old.model_copy(update={"f08_page_evidence": (fake_quote,)})
+    forged = packet.model_copy(update={"articles": (forged_article, packet.articles[1])})
+    with pytest.raises(PublicSourceAdmissionError, match="RECEIPT_DRIFT"):
+        replay_and_verify_public_corpus(forged, reqs, source_bytes=sources)
+
+
+def test_private_readback_refuses_drifted_source_and_manifest():
+    from seshat.public_source_admission import replay_and_verify_public_corpus
+    reqs, sources = sample()
+    packet = admit_public_published_corpus(reqs, source_bytes=sources)
+    with pytest.raises(PublicSourceAdmissionError, match="SOURCE_BYTES_DRIFT"):
+        replay_and_verify_public_corpus(
+            packet, reqs, source_bytes={**sources, "pub-b": sources["pub-b"][:-1]},
+        )
+    reqs2 = (
+        replace(reqs[0], pin=replace(reqs[0].pin, operator_license_review_id="different-review")),
+        reqs[1],
+    )
+    with pytest.raises(PublicSourceAdmissionError, match="RECEIPT_DRIFT"):
+        replay_and_verify_public_corpus(packet, reqs2, source_bytes=sources)
