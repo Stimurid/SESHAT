@@ -97,13 +97,15 @@ def main(argv=None):
                   "claim_count": len(receipt.output_sediment.payload["claims"])}
     if opts.private_report:
         preview = compose_private_operator_r01r02(
-            receipt, source_bytes=src_bytes, method_invocation_bytes=method_bytes,
+            receipt, ledger=ledger, source_bytes=src_bytes,
+            method_invocation_bytes=method_bytes,
         )
         preview_path = opts.out / "private_r01r02.json"
         if preview_path.exists():
             stored = json.loads(preview_path.read_text(encoding="utf-8"))
             verify_private_operator_r01r02(
-                stored, receipt, source_bytes=src_bytes, method_invocation_bytes=method_bytes,
+                stored, receipt, ledger=ledger, source_bytes=src_bytes,
+                method_invocation_bytes=method_bytes,
             )
             result["preview_status"] = "VERIFIED_EXISTING_PRIVATE"
         elif opts.verify_only:

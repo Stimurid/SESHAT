@@ -49,6 +49,18 @@ def test_renaming_source_cannot_bypass_excluded_content_hash():
         _run(source_id="renamed-invented-source", digests=frozenset({digest}))
 
 
+def test_invented_alias_in_private_policy_is_denied_even_if_spelling_changes():
+    """Aliases are operator-supplied invented handles, never owner private names."""
+    invented_alias = "placeholder-alias-north-quarry"
+    with pytest.raises(ValueError, match="SOURCE_EXCLUDED_BY_OWNER_POLICY"):
+        _run(source_id=invented_alias, ids=frozenset({invented_alias}))
+    with pytest.raises(ValueError, match="SOURCE_EXCLUDED_BY_OWNER_POLICY"):
+        _run(
+            source_id="Placeholder-Alias-North-Quarry",
+            ids=frozenset({invented_alias}),
+        )
+
+
 def test_policy_digest_and_no_source_or_model_attestation():
     item = _run()
     assert item.owner_selection_policy_digest

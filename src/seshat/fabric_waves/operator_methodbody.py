@@ -270,10 +270,13 @@ def invoke_operator_method_body(
         raise ValueError("OPERATOR_SOURCE_RIGHTS_MISSING")
     if requested_view != source.authorized_view:
         raise ValueError("OPERATOR_SOURCE_RIGHTS_VIEW_MISMATCH")
-    if (
-        source.source_id in _OWNER_EXCLUDED_SOURCE_IDS
-        or source.source_id in owner_excluded_source_ids
-    ):
+    # Operator-supplied aliases travel in the same private ID set. Match
+    # casefold so a renamed spelling of an excluded handle cannot sneak in.
+    denied_names = {
+        value.casefold()
+        for value in set(_OWNER_EXCLUDED_SOURCE_IDS) | set(owner_excluded_source_ids)
+    }
+    if source.source_id.casefold() in denied_names:
         raise ValueError("OPERATOR_SOURCE_EXCLUDED_BY_OWNER_POLICY")
 
     actual_source_sha256 = hashlib.sha256(source_bytes).hexdigest()

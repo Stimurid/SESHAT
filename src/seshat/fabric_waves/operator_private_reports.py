@@ -73,13 +73,16 @@ def compose_private_operator_r01r02(
     if receipt.output_digest != expected_output:
         raise ValueError("OPERATOR_R01R02_OUTPUT_RECEIPT_CHANGED")
     manifest = receipt.source_access_manifest
+    sediment_manifest = sed.source_access_manifest
+    if manifest is None or sediment_manifest is None:
+        raise ValueError("OPERATOR_R01R02_F07_INCOMPLETE")
+    if sediment_manifest != manifest:
+        raise ValueError("OPERATOR_R01R02_F07_INCOMPLETE")
     if (
         manifest.policy != RawAccessPolicy.FULL_REQUIRED
         or not manifest.all_declared_sources_verified
         or len(manifest.receipts) != 1
     ):
-        raise ValueError("OPERATOR_R01R02_F07_INCOMPLETE")
-    if sed.source_access_manifest != manifest:
         raise ValueError("OPERATOR_R01R02_F07_INCOMPLETE")
     read = manifest.receipts[0]
     if (
