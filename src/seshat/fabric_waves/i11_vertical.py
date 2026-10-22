@@ -46,6 +46,19 @@ from seshat.fabric_waves.i11_activity_network import (
     validate_activity_network,
     world_bytes,
 )
+from seshat.fabric_waves.i11_model_evidence import (
+    assert_state_derived_from_stdout,
+    extract_bounded_json_from_stdout,
+)
+from seshat.fabric_waves.i11_readable_reports import compose_readable_r01r02
+from seshat.fabric_waves.i11_real_admission import (
+    PREDECLARED_DIGESTS,
+    guard_real_source_pre_read,
+    identity_is_predeclared,
+    permission_pins_predeclared_package,
+    read_real_source_after_pre_read_guard,
+    source_path_is_predeclared,
+)
 from seshat.fabric_waves.operator_methodbody import (
     OperatorBodyResult,
     OperatorInvocation,
@@ -246,6 +259,10 @@ def admit_source(
             "reason": "F07_OPERATION_MISMATCH",
             "f07_full_read": False,
         }
+    if not identity_is_predeclared(source_id, source_name):
+        raise ValueError("I11_SOURCE_NOT_PREDECLARED")
+    if not permission_pins_predeclared_package(f07_permission):
+        raise ValueError("I11_SOURCE_NOT_PREDECLARED")
     if not source_bytes:
         return {
             "status": "BLOCKED_SOURCE_RIGHTS",
@@ -254,6 +271,8 @@ def admit_source(
             "f07_full_read": False,
         }
     digest = _sha(source_bytes)
+    if digest not in PREDECLARED_DIGESTS:
+        raise ValueError("I11_VERSION_DRIFT")
     allowed = {
         str(f07_permission["source_sha256"]).casefold(),
         str(f07_permission.get("pages_sha256") or "").casefold(),
@@ -265,6 +284,7 @@ def admit_source(
         "source_id": source_id,
         "source_sha256": digest,
         "rights": "operator-declared-unattested",
+        "publication_license": "CC_BY_NOT_F07_ATTESTATION",
         "f07_full_read": False,
         "cli_flag_is_not_grant": True,
         "f07_permission_id": f07_permission["permission_id"],
@@ -273,6 +293,7 @@ def admit_source(
             "excluded": exclusion_policy.get("excluded"),
         })),
         "provenance": "SELF_OBSERVED_UNATTESTED",
+        "independent_attestation": "NONE",
     }
 
 
@@ -359,25 +380,26 @@ def observe_existing_i11_package(
     pointer_path = package_dir / "model_run_pointer.json"
     if not pointer_path.is_file():
         return {"status": "BLOCKED_REAL_MODEL_BINDING", "reason": "POINTER_MISSING"}
-    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
-    if not isinstance(pointer, dict) or not pointer.get("run_id"):
-        raise ValueError("I11_FORGED_JOB")
     candidate_id = source_id or str(f07_permission.get("source_id") or "")
     candidate_name = source_name
-    if _identity_excluded(candidate_id, candidate_name, exclusion_policy):
-        raise ValueError("I11_SOURCE_EXCLUDED")
-    if _identity_excluded(str(pointer.get("run_id") or ""), "", exclusion_policy):
-        raise ValueError("I11_SOURCE_EXCLUDED")
-    hub = _require_hub_receipt(package_dir / "hub_receipt_original.json")
-    method_path = package_dir.parent / "I11_ACTIVITY_NETWORK_v1.0_FROZEN.txt"
-    stdout_path = package_dir / "model_stdout_original.txt"
     pdf_path = package_dir.parent / "open_source.pdf"
     pages_path = package_dir.parent / "source_repo" / "m7_source" / "open_source_pages.txt"
-    state_path = package_dir / "activity_network_state.json"
-    if not method_path.is_file() or not stdout_path.is_file() or not state_path.is_file():
-        return {"status": "BLOCKED_REAL_MODEL_BINDING", "reason": "MODEL_BYTES_MISSING"}
-    method_bytes = method_path.read_bytes()
-    stdout_bytes = stdout_path.read_bytes()
+    guard_real_source_pre_read(
+        source_id=candidate_id or "plos-one-e0293107-ccby",
+        source_name=candidate_name or pdf_path.name,
+        source_path=pdf_path,
+        exclusion_policy=exclusion_policy,
+        f07_permission=f07_permission,
+        identity_excluded=_identity_excluded,
+    )
+    guard_real_source_pre_read(
+        source_id=f"{candidate_id or 'plos-one-e0293107-ccby'}-pages",
+        source_name=candidate_name or pages_path.name,
+        source_path=pages_path,
+        exclusion_policy=exclusion_policy,
+        f07_permission=f07_permission,
+        identity_excluded=_identity_excluded,
+    )
     if not pdf_path.is_file() or not pages_path.is_file():
         return {
             "status": "BLOCKED_SOURCE_RIGHTS",
@@ -387,12 +409,17 @@ def observe_existing_i11_package(
     pages_bytes = pages_path.read_bytes()
     if _sha(pdf_bytes) != CCBY_PDF_SHA256 or _sha(pages_bytes) != CCBY_PAGES_SHA256:
         raise ValueError("I11_VERSION_DRIFT")
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    if not isinstance(pointer, dict) or not pointer.get("run_id"):
+        raise ValueError("I11_FORGED_JOB")
+    if _identity_excluded(str(pointer.get("run_id") or ""), "", exclusion_policy):
+        raise ValueError("I11_SOURCE_EXCLUDED")
     if str(pointer.get("stdout_sha") or "").casefold() != OBSERVED_I11_STDOUT_SHA256:
         raise ValueError("I11_VERSION_DRIFT")
     if str(pointer.get("source_sha") or "").casefold() != CCBY_PDF_SHA256:
         raise ValueError("I11_VERSION_DRIFT")
     admission = admit_source(
-        source_id=candidate_id or "observed-ccby-pdf",
+        source_id=candidate_id or "plos-one-e0293107-ccby",
         source_name=candidate_name,
         source_bytes=pdf_bytes,
         exclusion_policy=exclusion_policy,
@@ -403,7 +430,7 @@ def observe_existing_i11_package(
     if admission["status"] != "ADMITTED_OPERATOR_DECLARED_UNATTESTED":
         return {**admission, "status": admission.get("status", "BLOCKED_SOURCE_RIGHTS")}
     pages_admission = admit_source(
-        source_id=f"{candidate_id or 'observed-ccby-pdf'}-pages",
+        source_id=f"{candidate_id or 'plos-one-e0293107-ccby'}-pages",
         source_name=candidate_name,
         source_bytes=pages_bytes,
         exclusion_policy=exclusion_policy,
@@ -413,6 +440,15 @@ def observe_existing_i11_package(
     )
     if pages_admission["status"] != "ADMITTED_OPERATOR_DECLARED_UNATTESTED":
         return pages_admission
+    method_path = package_dir.parent / "I11_ACTIVITY_NETWORK_v1.0_FROZEN.txt"
+    stdout_path = package_dir / "model_stdout_original.txt"
+    state_path = package_dir / "activity_network_state.json"
+    receipt_path = package_dir / "hub_receipt_original.json"
+    if not method_path.is_file() or not stdout_path.is_file() or not state_path.is_file():
+        return {"status": "BLOCKED_REAL_MODEL_BINDING", "reason": "MODEL_BYTES_MISSING"}
+    hub = _require_hub_receipt(receipt_path)
+    method_bytes = method_path.read_bytes()
+    stdout_bytes = stdout_path.read_bytes()
     observed = admit_model_run(
         job_id=str(pointer.get("run_id")),
         stdout_bytes=stdout_bytes,
@@ -423,18 +459,22 @@ def observe_existing_i11_package(
         return observed
     if hub["job_id"] != observed["job_id"]:
         raise ValueError("I11_FORGED_JOB")
-    payload = json.loads(state_path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError("I11_TRUNCATED_MODEL_OUTPUT")
+    stdout_payload = extract_bounded_json_from_stdout(stdout_bytes)
+    file_payload = json.loads(state_path.read_text(encoding="utf-8"))
+    if not isinstance(file_payload, dict):
+        raise ValueError("AUTHENTIC_MODEL_OUTPUT_NOT_DERIVED")
     derivative = None
     derivative_path = package_dir / "activity_network_state_reviewed_evidence_only.json"
     if derivative_path.is_file():
         raw_derivative = json.loads(derivative_path.read_text(encoding="utf-8"))
         if isinstance(raw_derivative, dict):
             derivative = raw_derivative
+    derivation = assert_state_derived_from_stdout(
+        stdout_payload, file_payload, typographic_derivative=derivative
+    )
     page_map = parse_page_map(pages_bytes)
     state = activity_state_from_model_payload(
-        payload,
+        stdout_payload,
         source_bytes=pages_bytes,
         expected_source_sha256=CCBY_PAGES_SHA256,
         job_id=observed["job_id"],
@@ -445,9 +485,10 @@ def observe_existing_i11_package(
         "source_pdf_sha256": CCBY_PDF_SHA256,
         "source_pages_sha256": CCBY_PAGES_SHA256,
         "source_kind": "CC_BY_PUBLISHED_PAPER",
+        "publication_license": "CC_BY_NOT_F07_ATTESTATION",
         "method_id": AUTHORIAL_I11_ID,
         "method_version": AUTHORIAL_I11_VERSION,
-        "hub_receipt_sha256": _sha((package_dir / "hub_receipt_original.json").read_bytes()),
+        "hub_receipt_sha256": _sha(receipt_path.read_bytes()),
         "typed_state": state,
         "typed_actor_count": len(state.actors),
         "typed_event_count": len(state.action_events),
@@ -455,6 +496,7 @@ def observe_existing_i11_package(
         "pages_bytes": pages_bytes,
         "method_bytes": method_bytes,
         "admission": admission,
+        "derivation": derivation,
     })
     return observed
 
@@ -881,6 +923,27 @@ def run_observed_vertical(
         raise ValueError("OPERATOR_R01R02_PRIVATE_RECEIPT_MISSING")
     else:
         _write_exclusive(preview_path, preview)
+    readable = compose_readable_r01r02(
+        state,
+        job_id=observed["job_id"],
+        stdout_sha256=observed["stdout_sha256"],
+        source_sha256=CCBY_PAGES_SHA256,
+        hub_receipt_sha256=observed["hub_receipt_sha256"],
+    )
+    readable_json = out / "private_r01r02_observed_readable.json"
+    readable_md = out / "private_r01r02_observed_readable.md"
+    if readable_json.exists():
+        stored_readable = json.loads(readable_json.read_text(encoding="utf-8"))
+        if _canonical(stored_readable) != _canonical(readable):
+            raise ValueError("I11_STALE_REPORT")
+    elif verify_only:
+        raise ValueError("OPERATOR_R01R02_PRIVATE_RECEIPT_MISSING")
+    elif not verify_only:
+        _write_exclusive(readable_json, readable)
+        with readable_md.open("x", encoding="utf-8") as sink:
+            sink.write(str(readable["markdown"]))
+            sink.flush()
+            os.fsync(sink.fileno())
     control_bytes = world_bytes("world_b")
     control_receipt, _, _ = run_fictional_world(
         "world_b",
@@ -926,8 +989,10 @@ def run_observed_vertical(
         "typed_event_count": observed["typed_event_count"],
         "typed_relation_count": observed["typed_relation_count"],
         "r01r02_sha256": preview["projection_sha256"],
+        "r01r02_readable_sha256": readable["projection_sha256"],
         "r03_sha256": r03["projection_sha256"],
         "control": "TEST_ONLY_FICTIONAL",
+        "derivation": observed.get("derivation"),
         "provenance": "SELF_OBSERVED_UNATTESTED",
         "scientific_acceptance": "NOT_ASSERTED",
         "customer_release": "BLOCKED",
@@ -950,7 +1015,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="SESHAT I11 vertical: source+method to private reports")
     parser.add_argument(
         "--mode",
-        choices=("fictional", "admit-candidate", "observe-existing"),
+        choices=("fictional", "admit-candidate", "observe-existing", "stacked-product"),
         required=True,
     )
     parser.add_argument("--out", type=Path, required=True)
@@ -962,6 +1027,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-file", type=Path)
     parser.add_argument("--f07-full-read", action="store_true")
     parser.add_argument("--package-dir", type=Path)
+    parser.add_argument("--f07-permission-b", type=Path)
+    parser.add_argument("--second-source-id", default="")
+    parser.add_argument("--second-source-name", default="")
+    parser.add_argument("--second-source-file", type=Path)
+    parser.add_argument("--second-pages-file", type=Path)
+    parser.add_argument("--job-registry", type=Path)
     parser.add_argument("--submit-new-paid-job", action="store_true")
     opts = parser.parse_args(argv)
     opts.out.mkdir(parents=True, exist_ok=True)
@@ -983,8 +1054,19 @@ def main(argv: list[str] | None = None) -> int:
         candidate = opts.source_id or (permission or {}).get("source_id") or ""
         if _identity_excluded(str(candidate), opts.source_name, policy):
             raise ValueError("I11_SOURCE_EXCLUDED")
-        may_open = is_real_authorizing_policy(policy) and permission is not None
-        source_bytes = opts.source_file.read_bytes() if opts.source_file and may_open else None
+        source_bytes = None
+        if opts.source_file is not None:
+            if not source_path_is_predeclared(opts.source_file):
+                raise ValueError("I11_SOURCE_NOT_PREDECLARED")
+            if is_real_authorizing_policy(policy) and permission is not None:
+                source_bytes = read_real_source_after_pre_read_guard(
+                    path=opts.source_file,
+                    source_id=str(candidate),
+                    source_name=opts.source_name or opts.source_file.name,
+                    exclusion_policy=policy,
+                    f07_permission=permission,
+                    identity_excluded=_identity_excluded,
+                )
         result = admit_source(
             source_id=opts.source_id,
             source_name=opts.source_name,
@@ -995,6 +1077,52 @@ def main(argv: list[str] | None = None) -> int:
         )
         if not (opts.out / "admission.json").exists():
             _write_exclusive(opts.out / "admission.json", result)
+    elif opts.mode == "stacked-product":
+        from seshat.fabric_waves.i11_real_portfolio import run_stacked_product
+        from seshat.fabric_waves.i11_second_run import MODEL_TRANSFER_GRANT
+
+        if opts.submit_new_paid_job:
+            raise ValueError("I11_DUPLICATE_LAUNCH")
+        permission_b = load_f07_permission(opts.f07_permission_b)
+        registry = None
+        if opts.job_registry is not None:
+            registry = json.loads(opts.job_registry.read_text(encoding="utf-8"))
+        second_source_bytes = None
+        second_pages_bytes = None
+        may_open_second = (
+            is_real_authorizing_policy(policy)
+            and permission_b is not None
+            and permission_b.get("model_transfer") == MODEL_TRANSFER_GRANT
+        )
+        if may_open_second and opts.second_source_file is not None:
+            if _identity_excluded(opts.second_source_id, opts.second_source_name, policy):
+                raise ValueError("I11_SOURCE_EXCLUDED")
+            second_source_bytes = opts.second_source_file.read_bytes()
+        if may_open_second and opts.second_pages_file is not None:
+            second_pages_bytes = opts.second_pages_file.read_bytes()
+        result = run_stacked_product(
+            opts.out,
+            exclusion_policy=policy,
+            f07_permission=permission,
+            package_dir=opts.package_dir,
+            f07_permission_b=permission_b,
+            owner_excluded_source_ids=frozenset(
+                str(item) for item in policy.get("excluded", {}).get("source_drive_ids", ())
+            ),
+            owner_excluded_source_sha256=frozenset(
+                str(item) for item in policy.get("excluded", {}).get("source_sha256", ())
+                if isinstance(item, str) and len(item) == 64
+            ),
+            second_source_id=opts.second_source_id,
+            second_source_name=opts.second_source_name,
+            second_source_bytes=second_source_bytes,
+            second_pages_bytes=second_pages_bytes,
+            job_registry=registry if isinstance(registry, dict) else None,
+            verify_only=opts.verify_only,
+            source_id=opts.source_id,
+            source_name=opts.source_name,
+            f07_full_read_granted=opts.f07_full_read,
+        )
     else:
         if opts.submit_new_paid_job:
             raise ValueError("I11_DUPLICATE_LAUNCH")

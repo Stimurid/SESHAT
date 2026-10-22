@@ -350,18 +350,16 @@ def test_prebyte_exclusion_does_not_need_source_bytes():
         )
 
 
-def test_operator_policy_and_permission_admit_real_declared_bytes():
+def test_operator_policy_and_permission_cannot_admit_undeclared_bytes():
     source = b"public-invented-bytes"
-    result = admit_source(
-        source_id="invented-candidate",
-        source_bytes=source,
-        exclusion_policy=_authorizing_policy(),
-        f07_full_read_granted=False,
-        f07_permission=_permission(source),
-    )
-    assert result["status"] == "ADMITTED_OPERATOR_DECLARED_UNATTESTED"
-    assert result["f07_full_read"] is False
-    assert result["source_sha256"] == sha256(source).hexdigest()
+    with pytest.raises(ValueError, match="I11_SOURCE_NOT_PREDECLARED"):
+        admit_source(
+            source_id="invented-candidate",
+            source_bytes=source,
+            exclusion_policy=_authorizing_policy(),
+            f07_full_read_granted=False,
+            f07_permission=_permission(source),
+        )
 
 
 def test_load_exclusion_policy_rejects_empty_schema(tmp_path: Path):
@@ -383,14 +381,14 @@ def test_observe_without_policy_is_blocked_real_binding(tmp_path: Path):
     assert result["reason"] == "POLICY_OR_F07_PERMISSION_MISSING"
 
 
-def test_pointer_without_hub_receipt_is_forged_job(tmp_path: Path):
+def test_pointer_without_predeclared_source_is_not_admitted(tmp_path: Path):
     package = tmp_path / "pkg"
     package.mkdir()
     (package / "model_run_pointer.json").write_text(
         json.dumps({"run_id": OBSERVED_I11_JOB_ID, "stdout_sha": "a" * 64, "source_sha": "b" * 64}),
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="I11_FORGED_JOB"):
+    with pytest.raises(ValueError, match="I11_SOURCE_NOT_PREDECLARED"):
         observe_existing_i11_package(
             package,
             exclusion_policy=_authorizing_policy(),
