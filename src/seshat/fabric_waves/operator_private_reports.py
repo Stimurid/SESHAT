@@ -1,8 +1,9 @@
 """Private R01/R02 preview from an actually executed local MethodBody.
 
-This is an operator-only *projection* of an existing, recorded invocation,
+This is an operator-only *projection* of a locally journalled invocation,
 not a new model call, source-rights certificate or scientific review.
-This module never publishes or prints original source/method bytes.
+This module never publishes or prints original source/method bytes. A local
+journal is checked, but its contents are not independently authenticated.
 """
 from __future__ import annotations
 
@@ -12,7 +13,8 @@ from typing import Any
 
 from seshat.contracts import AcceptanceState, RawAccessPolicy, SourceAccessStatus
 from seshat.fabric_waves.contracts import EpistemicLevel
-from seshat.fabric_waves.operator_methodbody import OperatorRunReceipt
+from seshat.fabric_waves.operator_methodbody import OperatorRunLedger, OperatorRunReceipt
+from seshat.fabric_waves.operator_sqlite_ledger import SQLiteOperatorRunLedger
 from seshat.fabric_waves.sediment import payload_hash
 
 
@@ -29,6 +31,7 @@ def _canonical(obj: Any) -> bytes:
 def compose_private_operator_r01r02(
     receipt: OperatorRunReceipt,
     *,
+    ledger: OperatorRunLedger | SQLiteOperatorRunLedger,
     source_bytes: bytes,
     method_invocation_bytes: bytes,
 ) -> dict[str, Any]:
@@ -75,6 +78,8 @@ def compose_private_operator_r01r02(
         or not manifest.all_declared_sources_verified
         or len(manifest.receipts) != 1
     ):
+        raise ValueError("OPERATOR_R01R02_F07_INCOMPLETE")
+    if sed.source_access_manifest != manifest:
         raise ValueError("OPERATOR_R01R02_F07_INCOMPLETE")
     read = manifest.receipts[0]
     if (
@@ -128,6 +133,19 @@ def compose_private_operator_r01r02(
         })
     if "notes" not in sed.payload or not isinstance(sed.payload["notes"], list):
         raise ValueError("OPERATOR_R01R02_BAD_RESULT_PAYLOAD")
+
+    # A constructed Pydantic receipt is not evidence of an executed method.
+    # Require the prior completed operator ledger record, and recheck the
+    # caller-provided receipt against that original. This remains a LOCAL
+    # operator journal, *not* a trusted issuer or independent attestation.
+    if not isinstance(ledger, (OperatorRunLedger, SQLiteOperatorRunLedger)):
+        raise ValueError("OPERATOR_R01R02_VALID_LEDGER_REQUIRED")
+    try:
+        recorded = ledger.get(receipt.run_id)
+    except ValueError as exc:
+        raise ValueError("OPERATOR_R01R02_UNRECORDED_RUN") from exc
+    if recorded != receipt:
+        raise ValueError("OPERATOR_R01R02_LEDGER_RECEIPT_MISMATCH")
 
     r01 = {
         "report_id": "R01",
@@ -184,12 +202,14 @@ def verify_private_operator_r01r02(
     projection: dict[str, Any],
     receipt: OperatorRunReceipt,
     *,
+    ledger: OperatorRunLedger | SQLiteOperatorRunLedger,
     source_bytes: bytes,
     method_invocation_bytes: bytes,
 ) -> None:
     """Fresh-process readback; never a scientific or third-party attestation."""
     actual = compose_private_operator_r01r02(
-        receipt, source_bytes=source_bytes, method_invocation_bytes=method_invocation_bytes
+        receipt, ledger=ledger, source_bytes=source_bytes,
+        method_invocation_bytes=method_invocation_bytes
     )
     if _canonical(projection) != _canonical(actual):
         raise ValueError("OPERATOR_R01R02_PROJECTION_REPLAY_MISMATCH")
