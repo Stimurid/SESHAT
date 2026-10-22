@@ -41,6 +41,7 @@ from seshat.fabric_waves.i11_vertical import (
 from seshat.fabric_waves.i11_activity_network import _claim_from_event
 from seshat.fabric_waves.operator_methodbody import (
     OperatorBodyResult,
+    OperatorInvocation,
     OperatorMethodBodyPin,
     OperatorRunLedger,
     OperatorSourcePin,
