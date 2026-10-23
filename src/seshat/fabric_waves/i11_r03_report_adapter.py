@@ -107,7 +107,7 @@ class I11R03V2Projection(FrozenModel):
 
     @model_validator(mode="after")
     def status_shape_and_digest(self):
-        payload = self.model_dump(mode="json", exclude={"projection_sha256"})
+        payload = self.model_dump(mode="json", exclude={"projection_sha256"}, exclude_unset=True)
         if _digest(payload) != self.projection_sha256:
             raise ValueError("I11_R03_PROJECTION_DIGEST_MISMATCH")
         if self.status == "UNVERIFIED_INPUTS":
