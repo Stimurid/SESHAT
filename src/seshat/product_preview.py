@@ -13,10 +13,19 @@ import hashlib
 import html
 import json
 import re
+import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
+
+from seshat.authorial_oracle import (
+    AuthorialStudyOracle,
+    analysis_view,
+    load_study_analyses,
+    oracle_pins,
+)
+from seshat.m17_source_carpet import run_source_bound_carpet
 
 SCHEMA = "seshat.product-preview.v1"
 REPORT_PURPOSES = {
@@ -313,6 +322,7 @@ def _source_refs(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
 def build_reports(
     manifest: Mapping[str, Any], sources: list[dict[str, Any]],
     selections: Mapping[str, Mapping[str, Any]], method_outputs: list[dict[str, Any]],
+    analyses: Sequence[AuthorialStudyOracle] = (),
 ) -> dict[str, dict[str, Any]]:
     by_id = {s["source_id"]: s for s in sources}
     default_selector = str(manifest.get("default_selector") or next(iter(selections)))
@@ -429,6 +439,29 @@ def build_reports(
             if not external:
                 base["limitations"].append("NO_EXTERNAL_SRC_D")
             base["limitations"].append("NO_INTERNAL_SRC_C_FOR_CAPACITY_CLAIMS")
+        if report_id in {"R01", "R02"} and analyses:
+            views = [
+                view for analysis in analyses
+                if analysis.study_id in studies
+                for view in [analysis_view(
+                    analysis, [item["source_id"] for item in chosen], report_id
+                )]
+                if view is not None
+            ]
+            if views:
+                base["study_analyses"] = [view["evidence_state"] for view in views]
+                base["scientific_narratives"] = [
+                    {
+                        "study_id": view["evidence_state"]["study_id"],
+                        "origin": view["narrative_origin"],
+                        "text": view["narrative"],
+                        "view_fingerprint": view["view_fingerprint"],
+                    }
+                    for view in views
+                ]
+                base["method_run_performed"] = False
+                if any(view["evidence_state"]["local_state"] == "PARTIAL" for view in views):
+                    base["limitations"].append("STUDY_ANALYSIS_SELECTOR_SCOPED_PARTIAL")
         base["status"] = "PARTIAL" if base["limitations"] else "WORKS_UNREVIEWED"
         reports[report_id] = base
     return reports
@@ -456,14 +489,22 @@ def build_operation_route(
                 ),
                 "method_output_sha256": supplied.get("sha256") if supplied else None,
             })
+    source_bound = carpet.get("source_bound") or {}
+    source_witnesses = source_bound.get("activation_witnesses", [])
+    bound = bool(source_bound.get("at_least_two_distinct_activations"))
     return {
         "route": "source→typed operations→events→wave→activation→sediment→report",
         "typed_operations": operations,
-        "cross_thread_activation_witnesses": carpet.get("activation_witnesses", []),
+        "cross_thread_activation_witnesses": source_witnesses or carpet.get(
+            "activation_witnesses", []
+        ),
         "selective_source_delta_replay": carpet.get("selective_source_delta_replay"),
         "engine_status": carpet.get("status", "PARTIAL_NOT_RUN"),
-        "selected_sources_causally_bound_to_engine_activations": False,
-        "binding_status": "PARTIAL_SYNTHETIC_ENGINE_DEMONSTRATION",
+        "selected_sources_causally_bound_to_engine_activations": bound,
+        "binding_status": (
+            "WORKS_SOURCE_BOUND" if bound
+            else "PARTIAL_SYNTHETIC_ENGINE_DEMONSTRATION"
+        ),
         "no_manually_fabricated_engine_events": True,
     }
 
@@ -572,6 +613,55 @@ def _markdown(report: Mapping[str, Any]) -> str:
             f"- `{ref['source_id']}` study `{ref['study_id']}`, version `{ref['version']}`, "
             f"SHA-256 `{ref['byte_sha256'] or 'UNAVAILABLE'}`, path `{ref['drillback']}`"
         )
+    narratives = report.get("scientific_narratives") or ()
+    if narratives:
+        lines.extend([
+            "", "## Scientific narrative", "",
+            "Epistemic legend: **SOURCE_REPORTED** fixes what a source says; "
+            "**E2_RECONSTRUCTION_CANDIDATE** is an AIYE/authorial analytical candidate; "
+            "**PROPOSED** is not admitted; **scientifically admitted: NOT PERFORMED**.", "",
+        ])
+        states = {item["study_id"]: item for item in report.get("study_analyses", ())}
+        for narrative in narratives:
+            state = states[narrative["study_id"]]
+            lines.extend([
+                f"### Study `{narrative['study_id']}`", "",
+                str(narrative["text"]), "",
+                f"Local evidence state: **{state['local_state']}**. "
+                f"MethodRun: **{state['method_execution_status']}**. "
+                f"Scientific acceptance: **{state['scientific_acceptance']}**.", "",
+                "#### Source-fixed strong claims", "",
+            ])
+            for claim in state["claims"]:
+                address = claim["page_address"]
+                number = (
+                    f"; {claim['numerator']}/{claim['denominator']}"
+                    if claim.get("numerator") is not None else ""
+                )
+                lines.append(
+                    f"- `{claim['claim_id']}` — {claim['proposition']} "
+                    f"[`{claim['source_id']}`, PDF page index `{address['pdf_page_index']}`, "
+                    f"{claim['modality']}{number}; review `{claim['review_state']}`]"
+                )
+            lines.extend(["", "#### Preserved APORIA", ""])
+            if state["contradictions"]:
+                for conflict in state["contradictions"]:
+                    lines.append(
+                        f"- **{conflict['contradiction_id']}** ({conflict['contradiction_type']}): "
+                        f"{conflict['interpretation']} Status: `{conflict['status']}`; "
+                        f"claims: {', '.join(conflict['claim_ids'])}."
+                    )
+            else:
+                lines.append("- None available in the selected source regime; this is local UNKNOWN, not absence.")
+            lines.extend(["", "#### Local unknowns", ""])
+            lines.extend(f"- {value}" for value in state["unknowns"])
+        lines.extend(["", "## Limits", ""])
+        lines.extend(f"- {item}" for item in report["limitations"])
+        if not report["limitations"]:
+            lines.append("- Scientific review and publication acceptance remain open.")
+        lines.extend(["", "Scientific acceptance: **NOT PERFORMED**.",
+                      "Customer release: **BLOCKED**.", ""])
+        return "\n".join(lines)
     lines.extend(["", "## Findings", "", "```json",
                   json.dumps({k: v for k, v in report.items() if k not in {
                       "source_references", "scientific_acceptance", "customer_release"
@@ -604,7 +694,7 @@ def write_product(
     selections: Mapping[str, Mapping[str, Any]], reports: dict[str, dict[str, Any]],
     route: Mapping[str, Any], carpet: Mapping[str, Any],
     archive_census: Mapping[str, Any] | None,
-    host_batches: Mapping[str, Any], *, resume: bool,
+    host_batches: Mapping[str, Any], analyses: Sequence[AuthorialStudyOracle], *, resume: bool,
 ) -> dict[str, Any]:
     output.mkdir(parents=True, exist_ok=True)
     reports_dir = output / "reports"
@@ -642,6 +732,7 @@ def write_product(
             executed.append(report_id)
         items[report_id] = {
             "state": state, "input_fingerprint": fingerprint,
+            "report_version": fingerprint,
             "relative_paths": [f"reports/{report_id}.{ext}" for ext in ("json", "md", "html")],
             "model_calls": 0,
         }
@@ -651,22 +742,37 @@ def write_product(
         source_id for source_id, digest in current_sources.items()
         if source_id in prior_sources and prior_sources[source_id] != digest
     )
+    current_analysis_pins = oracle_pins(analyses)
+    prior_analysis_pins = old.get("study_analysis_pins") or {}
+    revised_analysis_ids = sorted(
+        study_id for study_id, digest in current_analysis_pins.items()
+        if study_id in prior_analysis_pins and prior_analysis_pins[study_id] != digest
+    )
     ledger = {
         "schema": "seshat.product-preview.f09a.v1", "product_id": manifest["product_id"],
         "source_pins": current_sources, "items": items, "executed_items": executed,
         "replayed_items": replayed, "revised_source_ids": revised_sources,
-        "selectively_invalidated_items": executed if revised_sources else [],
+        "revised_analysis_ids": revised_analysis_ids,
+        "selectively_invalidated_items": (
+            executed if revised_sources or revised_analysis_ids else []
+        ),
         "duplicate_model_calls": 0,
         "archive_census": archive_census,
         "archive_census_is_not_analysed_count": True,
+        "study_analysis_pins": current_analysis_pins,
+        "source_binding_status": (
+            carpet.get("source_bound", {}).get("status")
+            if analyses else "NOT_REQUESTED"
+        ),
     }
     ledger_path.write_text(json.dumps(ledger, ensure_ascii=False, sort_keys=True, indent=2),
                            encoding="utf-8")
     matrix = {
-        # Existing M5/M6 witnesses are genuine engine records, but this slice
-        # does not pretend the owner-selected files caused those synthetic
-        # fixture activations. A real source-bound Carpet adapter remains M13.
-        "M13": "PARTIAL",
+        "M13": (
+            "WORKS" if carpet.get("source_bound", {}).get(
+                "at_least_two_distinct_activations"
+            ) else "PARTIAL"
+        ),
         "M14": "WORKS",
         "M15": "WORKS" if len(reports) == 9 else "MISSING",
         "M16": "WORKS" if len(items) == 9 and {
@@ -688,7 +794,8 @@ def write_product(
         "route": route, "carpet": carpet, "f09a_ledger": "f09a_preview_ledger.json",
         "f09a_host_batches": host_batches,
         "scientific_acceptance": "NOT_PERFORMED", "customer_release": "BLOCKED",
-        "product_in_use": "not_observed",
+        "study_analysis_pins": oracle_pins(analyses),
+        "product_in_use": "verified_local_execution",
     }
     (output / "product.json").write_text(
         json.dumps({"receipt": receipt, "reports": reports}, ensure_ascii=False,
@@ -701,21 +808,37 @@ def write_product(
     return receipt
 
 
-def run_preview(manifest_path: Path, output: Path, *, resume: bool = False) -> dict[str, Any]:
+def run_preview(
+    manifest_path: Path,
+    output: Path,
+    *,
+    resume: bool = False,
+    study_analysis_paths: Sequence[Path] = (),
+) -> dict[str, Any]:
     manifest_path = manifest_path.resolve()
     manifest = _read_json(manifest_path)
     validate_manifest(manifest)
     sources = ingest_sources(manifest, manifest_path.parent)
     selections = build_selections(manifest, sources)
     methods = load_method_outputs(manifest, manifest_path.parent)
+    analyses = load_study_analyses(
+        manifest, manifest_path.parent, sources, override_paths=study_analysis_paths
+    )
     archive_census = load_archive_census(manifest, manifest_path.parent)
-    reports = build_reports(manifest, sources, selections, methods)
+    reports = build_reports(manifest, sources, selections, methods, analyses)
     carpet = run_carpet(output, manifest, manifest_path.parent)
+    carpet["source_bound"] = run_source_bound_carpet(
+        output, sources, analyses, reports, resume=resume
+    ) if analyses else {
+        "status": "NOT_REQUESTED_NO_STUDY_ANALYSIS",
+        "activation_witnesses": [],
+        "at_least_two_distinct_activations": False,
+    }
     host_batches = run_f09a_host_batches(output)
     route = build_operation_route(sources, methods, carpet)
     return write_product(
         output, manifest, sources, selections, reports, route, carpet,
-        archive_census, host_batches, resume=resume
+        archive_census, host_batches, analyses, resume=resume
     )
 
 
@@ -724,13 +847,22 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--study-analysis", action="append", type=Path, default=[],
+        help="owner-controlled AuthorialStudyOracle JSON (repeatable)",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     try:
-        receipt = run_preview(args.manifest, args.output, resume=args.resume)
+        receipt = run_preview(
+            args.manifest, args.output, resume=args.resume,
+            study_analysis_paths=args.study_analysis,
+        )
     except (ProductPreviewError, OSError, ValueError) as exc:
         print(f"PRODUCT_PREVIEW_ERROR: {exc}")
         return 2

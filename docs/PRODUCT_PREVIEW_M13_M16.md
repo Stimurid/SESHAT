@@ -21,6 +21,16 @@ python -m seshat.product_preview `
   --resume
 ```
 
+Attach an owner-private, source-bound authorial analysis without copying it into
+the public repository:
+
+```powershell
+python -m seshat.product_preview `
+  --manifest C:\owner-private\manifest.json `
+  --study-analysis C:\owner-private\authorial-oracle.json `
+  --output C:\owner-private\run
+```
+
 The console script `seshat-product-preview` accepts the same arguments.
 
 ## Manifest contract
@@ -43,6 +53,12 @@ The console script `seshat-product-preview` accepts the same arguments.
   `records` list). The preview hashes it and counts actual records. A declared
   `archive_census_count` without a manifest is rejected, so 186 can never be
   promoted from an operator-entered number into “186 analysed studies”.
+- `study_analyses` is optional and contains `{study_id, path, sha256}`
+  references. The same private reference may instead be supplied by repeatable
+  `--study-analysis` CLI options. The importer requires one ResearchObject
+  separate from source carriers, exact SHA/version binding, fourteen ordered
+  E2 candidates, page-addressed E1 claims and typed contradictions. It refuses
+  a fake ModelRun or self-accepted science state.
 
 ## Outputs
 
@@ -50,6 +66,9 @@ The console script `seshat-product-preview` accepts the same arguments.
 - `reports/R01..R09.{json,md,html}`: nine distinct report purposes.
 - `carpet/`: actual M5/M6 `WaveEngine` artifacts, including events, waves,
   activations, sediment, two host contexts, and delta/selective-replay oracles.
+- `carpet/m17_source_bound/`: selected-source `WaveEngine` events and actual
+  thread activations plus sanitized claim/APORIA sediment. It persists source
+  IDs/hashes and payload hashes, never extracted private source text.
 - `f09a_preview_ledger.json`: per-item paths, fingerprints, source revisions,
   replayed/invalidated item lists, and zero duplicate model calls.
 - `f09a_hosts/sechenovka-like` and `f09a_hosts/meteorology`: the existing real
@@ -73,3 +92,10 @@ owner files are not yet causally bound into those activations. The receipt says
 `PARTIAL_SYNTHETIC_ENGINE_DEMONSTRATION`; it does not splice the two traces into
 a fake source-bound route. The product still provides the full typed operation
 plan and immutable historical-method pins needed for that next adapter.
+
+When a valid study analysis is supplied, M17 replaces that limitation for the
+selected study with a source-bound route: a study-evidence thread and, where
+contradictions exist, a distinct APORIA thread execute against loaded carrier
+content. Identical source+oracle pins replay without a model call or report
+version change. A contradiction change invalidates only report views whose
+selector contains its source claims; A-only cannot inherit a D-only claim.
