@@ -1,0 +1,3 @@
+Study Alpha investigates coordination between clinical teams and digital referral systems.
+Object: the referral workflow. Method: source-addressed activity-network reconstruction.
+Evidence records describe handoffs, waiting states, and infrastructure dependencies.

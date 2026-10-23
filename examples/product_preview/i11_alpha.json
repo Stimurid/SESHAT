@@ -1,0 +1,7 @@
+{
+  "schema": "synthetic.i11.fixture.v1",
+  "study_id": "study-alpha",
+  "actors": ["clinical-team", "referral-system"],
+  "events": ["referral-created", "review-recorded"],
+  "status": "SYNTHETIC_PUBLIC_FIXTURE_NOT_AUTHORIAL_MODELRUN"
+}

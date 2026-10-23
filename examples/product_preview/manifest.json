@@ -1,0 +1,88 @@
+{
+  "product_id": "m13-m16-synthetic-public-preview",
+  "synthetic_fixture": true,
+  "default_selector": "a-plus-d",
+  "report_selectors": {
+    "R01": "a-only",
+    "R02": "a-plus-d",
+    "R03": "all-chosen",
+    "R04": "all-chosen",
+    "R05": "article-only",
+    "R06": "all-chosen",
+    "R07": "all-chosen",
+    "R08": "a-plus-d",
+    "R09": "all-chosen"
+  },
+  "sources": [
+    {
+      "source_id": "carrier-alpha-a",
+      "study_id": "study-alpha",
+      "source_kind": "A",
+      "version": "v1",
+      "path": "source_a.txt",
+      "title": "Synthetic clinical coordination abstract",
+      "year": 2025,
+      "tags": ["clinical", "coordination"],
+      "objects": ["referral workflow"],
+      "methods": ["activity-network reconstruction"],
+      "infrastructure": ["digital referral system"]
+    },
+    {
+      "source_id": "carrier-alpha-d",
+      "study_id": "study-alpha",
+      "source_kind": "D",
+      "version": "v1",
+      "path": "source_d.txt",
+      "title": "Synthetic implementation supplement",
+      "year": 2025,
+      "tags": ["clinical", "infrastructure"],
+      "objects": ["implementation constraints"],
+      "methods": ["constraint inventory"],
+      "infrastructure": ["hospital information system", "review room"]
+    },
+    {
+      "source_id": "carrier-beta-article",
+      "study_id": "study-beta",
+      "source_kind": "ARTICLE",
+      "version": "v1",
+      "path": "article.txt",
+      "title": "Synthetic meteorology article",
+      "year": 2024,
+      "tags": ["meteorology", "calibration"],
+      "objects": ["calibration drift"],
+      "methods": ["reference comparison"],
+      "infrastructure": ["reference sensor", "station archive"]
+    }
+  ],
+  "selectors": [
+    {"selector_id": "a-only", "mode": "A_ONLY"},
+    {"selector_id": "d-only", "mode": "D_ONLY"},
+    {"selector_id": "a-plus-d", "mode": "A_PLUS_D"},
+    {"selector_id": "article-only", "mode": "ARTICLE_ONLY"},
+    {
+      "selector_id": "all-chosen",
+      "mode": "ARBITRARY",
+      "filters": {"source_ids": ["carrier-alpha-a", "carrier-alpha-d", "carrier-beta-article"]}
+    }
+  ],
+  "method_outputs": [
+    {
+      "study_id": "study-alpha",
+      "method_id": "I11",
+      "version": "synthetic-fixture-v1",
+      "path": "i11_alpha.json"
+    }
+  ],
+  "external_evidence": [
+    {
+      "entity": "methods",
+      "status": "SYNTHETIC_FIXTURE_ONLY",
+      "line_modes": ["mainstream-unknown", "frontier-unknown"]
+    },
+    {
+      "entity": "instruments_and_infrastructure",
+      "status": "SYNTHETIC_FIXTURE_ONLY",
+      "line_modes": ["disputed-unknown"]
+    }
+  ]
+}

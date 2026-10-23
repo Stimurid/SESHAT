@@ -1,0 +1,3 @@
+Study Alpha supplementary document records implementation constraints.
+Infrastructure: hospital information system and multidisciplinary review room.
+The document does not establish deployment success or institutional capacity.

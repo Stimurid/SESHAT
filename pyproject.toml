@@ -21,6 +21,7 @@ seshat-m5-carpet = "seshat.fabric_waves.m5_room_carpet:main"
 seshat-m6-research = "seshat.fabric_waves.m6_research_engine:main"
 seshat-fabric-external = "seshat.fabric_waves.external_carrier.host_cli:main"
 seshat-i11-vertical = "seshat.fabric_waves.i11_vertical:main"
+seshat-product-preview = "seshat.product_preview:main"
 
 [project.optional-dependencies]
 dev = [
