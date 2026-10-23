@@ -66,6 +66,19 @@ Before production code:
 
 See `docs/IMPLEMENTATION_CHARTER.md`.
 
+## M13–M16 product preview
+
+The integrated no-server preview reads owner-selected local PDF/TXT files,
+supports A-only/D-only/A+D/article/arbitrary corpus subsets, runs the existing
+two-host Carpet evidence route, emits distinct R01–R09 Markdown/JSON/HTML, and
+keeps a durable zero-duplicate-call replay ledger:
+
+```powershell
+python -m seshat.product_preview --manifest examples/product_preview/manifest.json --output artifacts/product-preview
+```
+
+See `docs/PRODUCT_PREVIEW_M13_M16.md` for the manifest and honest status rules.
+
 ## Corpus selections (F07 candidate)
 
 `seshat.corpus` provides versioned, metadata-only `CorpusSelectionSpec` and

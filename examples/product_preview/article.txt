@@ -1,0 +1,3 @@
+Study Beta is a synthetic public article fixture about meteorological station calibration.
+Object: calibration drift. Method: repeated reference comparison and uncertainty logging.
+Infrastructure: reference sensor, station archive, and reproducible processing script.
