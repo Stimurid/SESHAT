@@ -121,22 +121,80 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
             raise ProductPreviewError("UNKNOWN_SELECTOR_MODE")
 
 
+_PAGE_BANNER_RE = re.compile(r"===\s*PAGE\s+\d+\s*===", re.IGNORECASE)
+
+
+def _pdf_body_has_text(text: str) -> bool:
+    """True when extracted PDF text has body content, not only page banners."""
+
+    return bool(_PAGE_BANNER_RE.sub(" ", text).strip())
+
+
+def _format_pdf_pages(page_texts: Iterable[str]) -> tuple[str, int]:
+    pages = [
+        f"\n=== PAGE {number} ===\n{text}"
+        for number, text in enumerate(page_texts, 1)
+    ]
+    return "".join(pages), len(pages)
+
+
+def _extract_pdf_pypdf(path: Path) -> tuple[str, int]:
+    from pypdf import PdfReader
+
+    reader = PdfReader(path)
+    return _format_pdf_pages(page.extract_text() or "" for page in reader.pages)
+
+
+def _import_optional_pymupdf() -> Any:
+    try:
+        import pymupdf
+        return pymupdf
+    except ImportError:
+        try:
+            import fitz as pymupdf
+            return pymupdf
+        except ImportError as exc:
+            raise ProductPreviewError("PDF_FALLBACK_UNAVAILABLE") from exc
+
+
+def _extract_pdf_pymupdf(path: Path) -> tuple[str, int]:
+    pymupdf = _import_optional_pymupdf()
+    doc = pymupdf.open(path)
+    try:
+        return _format_pdf_pages(page.get_text() or "" for page in doc)
+    finally:
+        close = getattr(doc, "close", None)
+        if close is not None:
+            close()
+
+
 def _extract_source(path: Path) -> tuple[str, int | None, str]:
     suffix = path.suffix.casefold()
     if suffix in {".txt", ".md"}:
         return path.read_text(encoding="utf-8-sig"), None, "TEXT_EXTRACTED"
     if suffix == ".pdf":
+        pypdf_error: Exception | None = None
+        pypdf_text: str | None = None
+        pypdf_pages: int | None = None
         try:
-            from pypdf import PdfReader
+            pypdf_text, pypdf_pages = _extract_pdf_pypdf(path)
         except ImportError as exc:  # pragma: no cover - dependency is pinned by project
             raise ProductPreviewError("PDF_READER_UNAVAILABLE") from exc
-        reader = PdfReader(path)
-        pages = []
-        for number, page in enumerate(reader.pages, 1):
-            pages.append(f"\n=== PAGE {number} ===\n{page.extract_text() or ''}")
-        text = "".join(pages)
-        status = "TEXT_EXTRACTED" if text.strip() else "PARTIAL_NO_EXTRACTED_TEXT"
-        return text, len(reader.pages), status
+        except Exception as exc:
+            pypdf_error = exc
+        if pypdf_text is not None and _pdf_body_has_text(pypdf_text):
+            return pypdf_text, pypdf_pages, "TEXT_EXTRACTED"
+        try:
+            text, pages = _extract_pdf_pymupdf(path)
+        except Exception:
+            if pypdf_error is not None:
+                raise pypdf_error
+            if pypdf_text is not None:
+                return pypdf_text, pypdf_pages, "PARTIAL_NO_EXTRACTED_TEXT"
+            raise
+        if _pdf_body_has_text(text):
+            return text, pages, "TEXT_EXTRACTED"
+        return text, pages, "PARTIAL_NO_EXTRACTED_TEXT"
     raise ProductPreviewError(f"UNSUPPORTED_SOURCE_FORMAT: {suffix or '<none>'}")
 
 
@@ -177,11 +235,11 @@ def ingest_sources(manifest: Mapping[str, Any], base: Path) -> list[dict[str, An
             path = base / path
         try:
             raw = path.read_bytes()
+            record["byte_sha256"] = hashlib.sha256(raw).hexdigest()
+            record["byte_length"] = len(raw)
             text, pages, extraction = _extract_source(path)
             record.update(
                 status="WORKS" if extraction == "TEXT_EXTRACTED" else "PARTIAL",
-                byte_sha256=hashlib.sha256(raw).hexdigest(),
-                byte_length=len(raw),
                 page_count=pages,
                 text_extraction=extraction,
                 text=text,
@@ -191,6 +249,7 @@ def ingest_sources(manifest: Mapping[str, Any], base: Path) -> list[dict[str, An
         except Exception as exc:
             # pypdf raises several format-specific exceptions.  Intake remains
             # inspectable and partial; it never invents text or silently drops.
+            # Byte identity is kept whenever the original file was readable.
             record["text_extraction"] = "FAILED"
             record["limitations"].append(f"FILE_UNREADABLE: {type(exc).__name__}: {exc}")
         records.append(record)
@@ -298,7 +357,6 @@ def load_archive_census(manifest: Mapping[str, Any], base: Path) -> dict[str, An
     }
 
 
-_PAGE_BANNER_RE = re.compile(r"===\s*PAGE\s+\d+\s*===", re.IGNORECASE)
 _SOURCE_TEXT_NOISE_STOPWORDS = {
     "this", "that", "with", "from", "were", "have", "into", "using", "study",
     # PDF-extraction and bibliographic boilerplate: never scientific concepts.
