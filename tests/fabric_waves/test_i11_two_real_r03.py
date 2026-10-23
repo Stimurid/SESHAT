@@ -116,7 +116,7 @@ def test_plain_hash_only_builder_is_explicitly_unverified(monkeypatch):
 def test_verified_bytes_receipts_ledgers_and_excerpts_produce_review_pending(monkeypatch):
     result = _admit_and_build(_case(monkeypatch))
     assert result["actual_real_model_runs"] == 2
-    assert result["status"] == "VERIFIED_SOURCE_ADMISSION_REVIEW_PENDING"
+    assert result["status"] == "BYTE_CONSISTENT_UNATTESTED_REVIEW_PENDING"
     assert result["scientific_acceptance"] == "NOT_PERFORMED"
     assert result["owner_acceptance"] == "NOT_PERFORMED"
     assert result["customer_release"] == "BLOCKED"

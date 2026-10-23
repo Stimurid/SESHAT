@@ -54,21 +54,21 @@ def admitted_projection():
         })
     content = {
         "schema": "seshat.i11.two_real_run_r03.v2", "report_id": "R03",
-        "status": "VERIFIED_SOURCE_ADMISSION_REVIEW_PENDING", "actual_real_model_runs": 2,
+        "status": "BYTE_CONSISTENT_UNATTESTED_REVIEW_PENDING", "actual_real_model_runs": 2,
         "jobs": ["jx-a", "jx-b"], "method_sha256": adapter_module.AUTHORIAL_I11_SHA256,
         "comparison_claims": [{
             "kind": "MATERIAL_DIFFERENCE", "statement": "Synthetic bounded difference.",
             "evidence": evidence, "status": "SOURCE_ADDRESSED_REVIEW_PENDING",
             "limits": "Candidate only.",
         }],
-        "admission_status": "VERIFIED_REAL_TWO_RUN_SOURCE_ADMISSION",
+        "admission_status": "IN_PROCESS_BYTE_COHERENCE_ONLY",
         "admission_digest": "2" * 64,
         "run_manifest_digests": ["3" * 64, "4" * 64],
         "event_ledger_digests": ["c" * 64, "d" * 64],
         "terminal_receipt_digests": ["e" * 64, "f" * 64],
-        "original_sources_only": True,
-        "source_evidence_status": "BYTE_AND_PAGE_EXCERPT_VERIFIED_WITH_REVIEW_PENDING",
-        "sampling_rule": "TWO_OWNER_SELECTED_ORIGINAL_I11_RUNS_NOT_A_POPULATION_SAMPLE",
+        "original_sources_only": None,
+        "source_evidence_status": "CALLER_BYTES_PAGE_EXCERPTS_SELF_CHECKED_REVIEW_PENDING",
+        "sampling_rule": "TWO_CALLER_SUPPLIED_I11_RUNS_NOT_A_POPULATION_SAMPLE",
         "coverage_status": "BOUNDED_TWO_WORK_COMPARISON",
         "implementation_missingness": {"source_a": "UNKNOWN", "source_b": "UNKNOWN"},
         "product_wiring": "NOT_PRODUCT_WIRED", "independent_science_review": "PENDING",
@@ -161,8 +161,8 @@ def test_unverified_fake_two_runs_block_without_substantive_claims(tmp_path):
 
 def test_fake_verified_shape_without_byte_admission_fields_is_rejected(tmp_path):
     fake = unverified_projection()
-    fake.update(status="VERIFIED_SOURCE_ADMISSION_REVIEW_PENDING", actual_real_model_runs=2,
-                admission_status="VERIFIED_REAL_TWO_RUN_SOURCE_ADMISSION")
+    fake.update(status="BYTE_CONSISTENT_UNATTESTED_REVIEW_PENDING", actual_real_model_runs=2,
+                admission_status="IN_PROCESS_BYTE_COHERENCE_ONLY")
     fake["projection_sha256"] = digest({k: v for k, v in fake.items()
                                         if k != "projection_sha256"})
     with pytest.raises(I11R03ReportAdapterError, match="ADMITTED_SHAPE_INCOMPLETE"):
@@ -322,3 +322,47 @@ def test_duplicate_comparison_projection_rejected(tmp_path, monkeypatch):
         project_i11_r03_into_f08(
             once, source, admission=admission, independent_review=review_for(source)
         )
+
+
+@pytest.mark.parametrize("field", (
+    "work_id", "job_id", "source_pdf_sha256", "model_page_text_sha256",
+))
+def test_admitted_source_identity_pins_cannot_be_rebound(
+    tmp_path, monkeypatch, field,
+):
+    source, admission = gated_builder_projection(monkeypatch)
+    tampered = json.loads(json.dumps(source))
+    evidence = tampered["comparison_claims"][0]["evidence"][0]
+    if field == "job_id":
+        value = "jx-forged-identity"
+        tampered["jobs"][0] = value
+    elif field in ("source_pdf_sha256", "model_page_text_sha256"):
+        value = "9" * 64
+    else:
+        value = "invented-source-id"
+    evidence[field] = value
+    tampered["projection_sha256"] = digest({
+        key: value for key, value in tampered.items()
+        if key != "projection_sha256"
+    })
+    with pytest.raises(I11R03ReportAdapterError, match="SOURCE_IDENTITY_PIN_MISMATCH"):
+        project_i11_r03_into_f08(
+            base_report(tmp_path), tampered, admission=admission,
+            independent_review=review_for(tampered),
+        )
+
+
+def test_admitted_source_status_never_claims_original_authority(tmp_path, monkeypatch):
+    source, admission = gated_builder_projection(monkeypatch)
+    assert source["status"] == "BYTE_CONSISTENT_UNATTESTED_REVIEW_PENDING"
+    assert source["admission_status"] == "IN_PROCESS_BYTE_COHERENCE_ONLY"
+    assert source["original_sources_only"] is None
+    assert source["provenance"] == "SELF_OBSERVED_UNATTESTED"
+    report = project_i11_r03_into_f08(
+        base_report(tmp_path), source, admission=admission,
+        independent_review=review_for(source),
+    )
+    html = artifacts(report)["report.html"].decode("utf-8")
+    assert "review=PASS" not in html
+    assert "CALLER_SUBMITTED_UNATTESTED_NOT_SCIENTIFIC_ACCEPTANCE" in html
+    assert report.status == "PARTIAL_METADATA"
