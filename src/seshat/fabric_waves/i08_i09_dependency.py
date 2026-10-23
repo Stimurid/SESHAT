@@ -170,7 +170,11 @@ def build_evidence_ledger(
             "reproduction_scope": scope,
             "status": "SOURCE_ADDRESSED_UNREVIEWED",
             "reviewer_overlays": [],
-            "provenance": "OPERATOR_AUTHORED_WITH_SOURCE_EVENT_POINTERS",
+            "provenance": (
+                "OPERATOR_AUTHORED_WITH_SOURCE_EVENT_POINTERS"
+                if source_provenance.startswith("V2_")
+                else "OPERATOR_AUTHORED_WITH_UNVERIFIED_LEGACY_V1_POINTERS"
+            ),
         }
     for claim in derived_claims:
         name = _required(claim.get("claim_id"), "DERIVED_CLAIM_ID")

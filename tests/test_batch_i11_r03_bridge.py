@@ -356,3 +356,57 @@ def test_custom_protocol_provider_item_mismatch_is_rejected(tmp_path, monkeypatc
 
     with pytest.raises(F09AI11R03BridgeError, match="BRIDGE_ITEM_MISMATCH"):
         _run(tmp_path / "batch", manifest, runtime, WrongProvider())
+
+
+
+def test_stale_item_then_failing_sibling_still_updates_receipt(tmp_path, monkeypatch):
+    runtime, manifest = _runtime_manifest(tmp_path, "stale-plus-error", two_items=True)
+    root = tmp_path / "batch"
+    bundle = _gated_bundle(monkeypatch)
+    _run(root, manifest, runtime, InProcessI11R03Provider((bundle,)))
+    sibling = root / "items" / "r03-two" / "report.html"
+    sibling.write_bytes(b"torn-sibling")
+
+    def fail_sibling(item_id):
+        if item_id == "r03-two":
+            raise RuntimeError("synthetic-error-after-write")
+
+    with pytest.raises(RuntimeError, match="synthetic-error-after-write"):
+        resume_batch(
+            root, manifest, runtime,
+            caller_id="demo", rights_scope="synthetic-public",
+            after_artifact_write_before_checkpoint=fail_sibling,
+        )
+    current = status_batch(root).items
+    assert [item.state for item in current] == ["STALE", "FAILED_RETRYABLE"]
+    receipt = json.loads((root / "batch_receipt.json").read_bytes())
+    index = json.loads((root / "index.json").read_bytes())
+    assert receipt["code_pass"] is False
+    assert [item["state"] for item in receipt["items"]] == [
+        item.state for item in current
+    ]
+    assert [item["state"] for item in index["items"]] == [
+        item.state for item in current
+    ]
+
+
+def test_custom_provider_duplicate_source_cross_item_rejected(tmp_path, monkeypatch):
+    runtime, manifest = _runtime_manifest(tmp_path, "custom-collision", two_items=True)
+    first = _gated_bundle(monkeypatch, item_id="r03-one")
+    second = I11R03BatchBundle(
+        "r03-two", first.projection, first.admission, first.independent_review, True
+    )
+    class CustomProvider:
+        def validate_bindings(self, items):
+            return None
+
+        def resolve(self, *, item_id, report_id):
+            return first if item_id == "r03-one" else second
+
+    root = tmp_path / "batch"
+    with pytest.raises(F09AI11R03BridgeError, match="CROSS_ITEM_COLLISION"):
+        _run(root, manifest, runtime, CustomProvider())
+    receipt = json.loads((root / "batch_receipt.json").read_bytes())
+    assert receipt["items"][0]["state"] == "PARTIAL_METADATA"
+    assert receipt["items"][1]["state"] == "QUEUED"
+    assert receipt["code_pass"] is False

@@ -503,184 +503,204 @@ def run_batch(
     manifest_path = root / MANIFEST_FILENAME
     work_performed = False
     stale_bundle_items: list[str] = []
+    seen_projection_pins: set[str] = set()
 
-    with _ledger(root) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        existing = conn.execute("SELECT * FROM batch").fetchone()
-        if existing is None:
-            if resume:
-                raise ValueError("BATCH_RESUME_MISSING")
-            conn.execute(
-                "INSERT INTO batch (batch_id, manifest_fingerprint, manifest_json, cancelled) "
-                "VALUES (?, ?, ?, 0)",
-                (manifest.batch_id, fingerprint, manifest.model_dump_json()),
-            )
-            for spec in manifest.items:
+    try:
+        with _ledger(root) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute("SELECT * FROM batch").fetchone()
+            if existing is None:
+                if resume:
+                    raise ValueError("BATCH_RESUME_MISSING")
                 conn.execute(
-                    "INSERT INTO items (item_id, report_id, state, reason_code, "
-                    "input_fingerprint, attempts) VALUES (?, ?, 'QUEUED', 'PENDING', '', 0)",
-                    (spec.item_id, spec.request.report_id),
+                    "INSERT INTO batch (batch_id, manifest_fingerprint, manifest_json, cancelled) "
+                    "VALUES (?, ?, ?, 0)",
+                    (manifest.batch_id, fingerprint, manifest.model_dump_json()),
                 )
-        else:
-            if existing["batch_id"] != manifest.batch_id:
-                raise ValueError("BATCH_ID_MISMATCH")
-            if existing["manifest_fingerprint"] != fingerprint:
-                raise BatchManifestConflict("BATCH_MANIFEST_CONFLICT")
-        conn.execute("COMMIT")
-
-        if not manifest_path.is_file():
-            _atomic_write_file(manifest_path, manifest_bytes)
-        elif manifest_path.read_bytes() != manifest_bytes:
-            raise ValueError("BATCH_MANIFEST_TAMPERED")
-
-        cancelled = bool(conn.execute("SELECT cancelled FROM batch").fetchone()["cancelled"])
-
-        for spec in manifest.items:
-            if cancelled:
-                row = _load_item_row(conn, spec.item_id)
-                if row and row["state"] == "QUEUED":
+                for spec in manifest.items:
                     conn.execute(
-                        "UPDATE items SET state='CANCELLED', reason_code='BATCH_CANCELLED' "
-                        "WHERE item_id=?", (spec.item_id,))
-                continue
-
-            item_path = _item_dir(root, spec.item_id)
-            assert_safe_path(item_path, trusted_root=root)
-            rel_path = f"{ITEMS_DIR}/{spec.item_id}"
-            bundle: I11R03BatchBundle | None = None
-            if i11_r03_provider is not None:
-                bundle = i11_r03_provider.resolve(
-                    item_id=spec.item_id, report_id=spec.request.report_id
-                )
-                # Never trust a third-party Protocol provider to bind the item.
-                if bundle is not None and bundle.item_id != spec.item_id:
-                    raise F09AI11R03BridgeError("I11_R03_BRIDGE_ITEM_MISMATCH")
-            extension_kind = BRIDGE_VERSION if bundle is not None else None
-            extension_fingerprint = bundle.fingerprint if bundle is not None else None
-            current_fp = item_input_fingerprint(
-                manifest,
-                spec,
-                i11_r03_bridge_fingerprint=extension_fingerprint,
-            )
-            row = _load_item_row(conn, spec.item_id)
-            prior = _item_status_from_row(row, spec)
-            extension_row = _load_extension_row(conn, spec.item_id)
-
-            extension_changed = (
-                extension_row is not None
-                and (
-                    extension_kind is None
-                    or extension_row["extension_kind"] != extension_kind
-                    or extension_row["extension_fingerprint"] != extension_fingerprint
-                )
-            ) or (
-                extension_row is None
-                and extension_kind is not None
-                and prior.state not in {"QUEUED", "STALE"}
-            )
-            if extension_changed:
-                # Two-step consent/review drift: mark and publish STALE before
-                # reporting failure. On a later invocation the new binding may
-                # rebuild, without reusing the previous candidate or receipt.
-                conn.execute("BEGIN IMMEDIATE")
-                conn.execute(
-                    "UPDATE items SET state='STALE', reason_code='REPORT_EXTENSION_CHANGED', "
-                    "projection_digest=NULL, report_json_sha256=NULL, "
-                    "report_html_sha256=NULL, receipt_json_sha256=NULL, "
-                    "relative_path=NULL WHERE item_id=?",
-                    (spec.item_id,),
-                )
-                if extension_row is not None:
-                    conn.execute(
-                        "DELETE FROM item_extensions WHERE item_id=?", (spec.item_id,)
+                        "INSERT INTO items (item_id, report_id, state, reason_code, "
+                        "input_fingerprint, attempts) VALUES (?, ?, 'QUEUED', 'PENDING', '', 0)",
+                        (spec.item_id, spec.request.report_id),
                     )
+            else:
+                if existing["batch_id"] != manifest.batch_id:
+                    raise ValueError("BATCH_ID_MISMATCH")
+                if existing["manifest_fingerprint"] != fingerprint:
+                    raise BatchManifestConflict("BATCH_MANIFEST_CONFLICT")
+            conn.execute("COMMIT")
+
+            if not manifest_path.is_file():
+                _atomic_write_file(manifest_path, manifest_bytes)
+            elif manifest_path.read_bytes() != manifest_bytes:
+                raise ValueError("BATCH_MANIFEST_TAMPERED")
+
+            cancelled = bool(conn.execute("SELECT cancelled FROM batch").fetchone()["cancelled"])
+
+            for spec in manifest.items:
+                if cancelled:
+                    row = _load_item_row(conn, spec.item_id)
+                    if row and row["state"] == "QUEUED":
+                        conn.execute(
+                            "UPDATE items SET state='CANCELLED', reason_code='BATCH_CANCELLED' "
+                            "WHERE item_id=?", (spec.item_id,))
+                    continue
+
+                item_path = _item_dir(root, spec.item_id)
+                assert_safe_path(item_path, trusted_root=root)
+                rel_path = f"{ITEMS_DIR}/{spec.item_id}"
+                bundle: I11R03BatchBundle | None = None
+                if i11_r03_provider is not None:
+                    bundle = i11_r03_provider.resolve(
+                        item_id=spec.item_id, report_id=spec.request.report_id
+                    )
+                    # Never trust a third-party Protocol provider to bind the item.
+                    if bundle is not None:
+                        if bundle.item_id != spec.item_id:
+                            raise F09AI11R03BridgeError("I11_R03_BRIDGE_ITEM_MISMATCH")
+                        pin = bundle.projection.projection_sha256
+                        if pin in seen_projection_pins:
+                            raise F09AI11R03BridgeError("I11_R03_BRIDGE_CROSS_ITEM_COLLISION")
+                        seen_projection_pins.add(pin)
+                extension_kind = BRIDGE_VERSION if bundle is not None else None
+                extension_fingerprint = bundle.fingerprint if bundle is not None else None
+                current_fp = item_input_fingerprint(
+                    manifest,
+                    spec,
+                    i11_r03_bridge_fingerprint=extension_fingerprint,
+                )
+                row = _load_item_row(conn, spec.item_id)
+                prior = _item_status_from_row(row, spec)
+                extension_row = _load_extension_row(conn, spec.item_id)
+
+                extension_changed = (
+                    extension_row is not None
+                    and (
+                        extension_kind is None
+                        or extension_row["extension_kind"] != extension_kind
+                        or extension_row["extension_fingerprint"] != extension_fingerprint
+                    )
+                ) or (
+                    extension_row is None
+                    and extension_kind is not None
+                    and prior.state not in {"QUEUED", "STALE", "CANCELLED"}
+                )
+                if extension_changed:
+                    # Two-step consent/review drift: mark and publish STALE before
+                    # reporting failure. On a later invocation the new binding may
+                    # rebuild, without reusing the previous candidate or receipt.
+                    conn.execute("BEGIN IMMEDIATE")
+                    conn.execute(
+                        "UPDATE items SET state='STALE', reason_code='REPORT_EXTENSION_CHANGED', "
+                        "projection_digest=NULL, report_json_sha256=NULL, "
+                        "report_html_sha256=NULL, receipt_json_sha256=NULL, "
+                        "relative_path=NULL WHERE item_id=?",
+                        (spec.item_id,),
+                    )
+                    if extension_row is not None:
+                        conn.execute(
+                            "DELETE FROM item_extensions WHERE item_id=?", (spec.item_id,)
+                        )
+                    conn.execute("COMMIT")
+                    work_performed = True
+                    stale_bundle_items.append(spec.item_id)
+                    # A stale item does not prevent later independent items from
+                    # completing and checkpointing during this invocation.
+                    continue
+
+                def compose_item() -> ReportProjection:
+                    base = compose(spec.request)
+                    return bundle.project(base) if bundle is not None else base
+
+                if prior.state in {"DONE_METADATA", "DONE_SCIENTIFIC_UNREVIEWED", "PARTIAL_METADATA", "BLOCKED_METHOD", "BLOCKED_EXTERNAL"}:
+                    if row["input_fingerprint"] != current_fp:
+                        conn.execute(
+                            "UPDATE items SET state='STALE', reason_code='INPUT_FINGERPRINT_CHANGED', "
+                            "projection_digest=NULL, report_json_sha256=NULL, report_html_sha256=NULL, "
+                            "receipt_json_sha256=NULL, relative_path=NULL WHERE item_id=?",
+                            (spec.item_id,))
+                        prior = prior.model_copy(update={"state": "STALE"})
+                        work_performed = True
+                    elif row["projection_digest"] and _verify_files(
+                            item_path, row["report_json_sha256"],
+                            row["report_html_sha256"], row["receipt_json_sha256"]):
+                        projection = ReportProjection.model_validate_json(
+                            (item_path / "report.json").read_bytes())
+                        live = compose_item()
+                        if live.digest == row["projection_digest"] == projection.digest:
+                            continue
+                        work_performed = True
+                    # fall through to regenerate
+
+                if prior.state == "CANCELLED":
+                    continue
+
+                conn.execute("BEGIN IMMEDIATE")
+                if extension_kind is not None and extension_fingerprint is not None:
+                    _store_extension(
+                        conn,
+                        item_id=spec.item_id,
+                        extension_kind=extension_kind,
+                        extension_fingerprint=extension_fingerprint,
+                    )
+                conn.execute(
+                    "UPDATE items SET state='RUNNING', reason_code='IN_PROGRESS', "
+                    "input_fingerprint=?, attempts=attempts+1 WHERE item_id=?",
+                    (current_fp, spec.item_id),
+                )
                 conn.execute("COMMIT")
                 work_performed = True
-                stale_bundle_items.append(spec.item_id)
-                # A stale item does not prevent later independent items from
-                # completing and checkpointing during this invocation.
-                continue
 
-            def compose_item() -> ReportProjection:
-                base = compose(spec.request)
-                return bundle.project(base) if bundle is not None else base
+                try:
+                    projection = compose_item()
+                    files = artifacts(projection)
+                    raw = files["report.json"]
+                    html = files["report.html"]
+                    receipt_raw = files["receipt.json"]
+                    receipt = ReportReceipt.model_validate_json(receipt_raw)
+                    state = _ledger_status(projection)
+                    reason = _reason_for(projection, state)
 
-            if prior.state in {"DONE_METADATA", "DONE_SCIENTIFIC_UNREVIEWED", "PARTIAL_METADATA", "BLOCKED_METHOD", "BLOCKED_EXTERNAL"}:
-                if row["input_fingerprint"] != current_fp:
+                    _atomic_write_artifacts(item_path, files, trusted_root=root)
+                    if after_artifact_write_before_checkpoint is not None:
+                        after_artifact_write_before_checkpoint(spec.item_id)
+
+                    json_sha = _sha256_bytes(raw)
+                    html_sha = _sha256_bytes(html)
+                    receipt_sha = _sha256_bytes(receipt_raw)
+                    if receipt.report_json_sha256 != json_sha or receipt.report_html_sha256 != html_sha:
+                        raise ValueError("RECEIPT_HASH_MISMATCH")
+
+                    conn.execute("BEGIN IMMEDIATE")
                     conn.execute(
-                        "UPDATE items SET state='STALE', reason_code='INPUT_FINGERPRINT_CHANGED', "
-                        "projection_digest=NULL, report_json_sha256=NULL, report_html_sha256=NULL, "
-                        "receipt_json_sha256=NULL, relative_path=NULL WHERE item_id=?",
-                        (spec.item_id,))
-                    prior = prior.model_copy(update={"state": "STALE"})
-                    work_performed = True
-                elif row["projection_digest"] and _verify_files(
-                        item_path, row["report_json_sha256"],
-                        row["report_html_sha256"], row["receipt_json_sha256"]):
-                    projection = ReportProjection.model_validate_json(
-                        (item_path / "report.json").read_bytes())
-                    live = compose_item()
-                    if live.digest == row["projection_digest"] == projection.digest:
-                        continue
-                    work_performed = True
-                # fall through to regenerate
+                        "UPDATE items SET state=?, reason_code=?, projection_digest=?, "
+                        "report_json_sha256=?, report_html_sha256=?, receipt_json_sha256=?, "
+                        "relative_path=? WHERE item_id=?",
+                        (state, reason, projection.digest, json_sha, html_sha, receipt_sha,
+                         rel_path, spec.item_id),
+                    )
+                    conn.execute("COMMIT")
+                except Exception as exc:
+                    conn.execute("BEGIN IMMEDIATE")
+                    conn.execute(
+                        "UPDATE items SET state='FAILED_RETRYABLE', reason_code=? WHERE item_id=?",
+                        (type(exc).__name__, spec.item_id),
+                    )
+                    conn.execute("COMMIT")
+                    raise
 
-            if prior.state == "CANCELLED":
-                continue
-
-            conn.execute("BEGIN IMMEDIATE")
-            if extension_kind is not None and extension_fingerprint is not None:
-                _store_extension(
-                    conn,
-                    item_id=spec.item_id,
-                    extension_kind=extension_kind,
-                    extension_fingerprint=extension_fingerprint,
-                )
-            conn.execute(
-                "UPDATE items SET state='RUNNING', reason_code='IN_PROGRESS', "
-                "input_fingerprint=?, attempts=attempts+1 WHERE item_id=?",
-                (current_fp, spec.item_id),
-            )
-            conn.execute("COMMIT")
-            work_performed = True
-
+    except Exception:
+        # A failing sibling or provider must not leave the durable receipt
+        # claiming the previous successful state of already changed items.
+        if work_performed:
             try:
-                projection = compose_item()
-                files = artifacts(projection)
-                raw = files["report.json"]
-                html = files["report.html"]
-                receipt_raw = files["receipt.json"]
-                receipt = ReportReceipt.model_validate_json(receipt_raw)
-                state = _ledger_status(projection)
-                reason = _reason_for(projection, state)
-
-                _atomic_write_artifacts(item_path, files, trusted_root=root)
-                if after_artifact_write_before_checkpoint is not None:
-                    after_artifact_write_before_checkpoint(spec.item_id)
-
-                json_sha = _sha256_bytes(raw)
-                html_sha = _sha256_bytes(html)
-                receipt_sha = _sha256_bytes(receipt_raw)
-                if receipt.report_json_sha256 != json_sha or receipt.report_html_sha256 != html_sha:
-                    raise ValueError("RECEIPT_HASH_MISMATCH")
-
-                conn.execute("BEGIN IMMEDIATE")
-                conn.execute(
-                    "UPDATE items SET state=?, reason_code=?, projection_digest=?, "
-                    "report_json_sha256=?, report_html_sha256=?, receipt_json_sha256=?, "
-                    "relative_path=? WHERE item_id=?",
-                    (state, reason, projection.digest, json_sha, html_sha, receipt_sha,
-                     rel_path, spec.item_id),
+                _export_receipt(
+                    root, manifest, fingerprint, work_performed=True
                 )
-                conn.execute("COMMIT")
-            except Exception as exc:
-                conn.execute("BEGIN IMMEDIATE")
-                conn.execute(
-                    "UPDATE items SET state='FAILED_RETRYABLE', reason_code=? WHERE item_id=?",
-                    (type(exc).__name__, spec.item_id),
-                )
-                conn.execute("COMMIT")
-                raise
+            except Exception:
+                # Preserve the original exception, even if receipt repair fails.
+                pass
+        raise
 
     receipt = _export_receipt(
         root, manifest, fingerprint, work_performed=work_performed
