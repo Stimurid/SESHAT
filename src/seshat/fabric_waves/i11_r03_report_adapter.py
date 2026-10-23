@@ -15,6 +15,8 @@ from typing import Any, Literal
 from pydantic import Field, model_validator
 
 from seshat.corpus import FrozenModel, _digest
+from seshat.fabric_waves.i11_activity_network import AUTHORIAL_I11_SHA256
+from seshat.fabric_waves.i11_two_real_r03 import VerifiedTwoRunAdmission, _GATE_ISSUER
 from seshat.reports import (
     Claim,
     EvidenceRef,
@@ -137,6 +139,17 @@ class I11R03V2Projection(FrozenModel):
             or self.coverage_status != "BOUNDED_TWO_WORK_COMPARISON"
         ):
             raise ValueError("I11_R03_ADMITTED_SHAPE_INCOMPLETE")
+        if self.status == "VERIFIED_SOURCE_ADMISSION_REVIEW_PENDING":
+            if self.method_sha256 != AUTHORIAL_I11_SHA256:
+                raise ValueError("I11_R03_FROZEN_METHOD_MISMATCH")
+            for claim in self.comparison_claims:
+                for index, item in enumerate(claim.evidence):
+                    if (
+                        item.job_id != self.jobs[index]
+                        or item.event_ledger_sha256 != self.event_ledger_digests[index]
+                        or item.terminal_receipt_sha256 != self.terminal_receipt_digests[index]
+                    ):
+                        raise ValueError("I11_R03_EVIDENCE_TOP_LEVEL_PIN_MISMATCH")
         for values in (
             self.run_manifest_digests,
             self.event_ledger_digests,
@@ -191,6 +204,8 @@ def _validate_base(report: ReportProjection) -> None:
         raise I11R03ReportAdapterError("I11_R03_BASE_PROJECTION_DIGEST_MISMATCH")
     if report.scientific_acceptance != "NOT_ASSERTED":
         raise I11R03ReportAdapterError("I11_R03_FALSE_SCIENTIFIC_ACCEPTANCE")
+    if report.scientific_asset is not None:
+        raise I11R03ReportAdapterError("I11_R03_BASE_SCIENTIFIC_ASSET_CONFLICT")
 
 
 def _blocked_projection(report: ReportProjection, reason: str) -> ReportProjection:
@@ -215,11 +230,17 @@ def project_i11_r03_into_f08(
     base_report: ReportProjection,
     i11_projection: I11R03V2Projection | dict[str, Any],
     *,
+    admission: VerifiedTwoRunAdmission | None = None,
     independent_review: IndependentScienceReview | dict[str, Any] | None = None,
 ) -> ReportProjection:
-    """Append a bounded I11 comparison section without replacing F08 metadata."""
-    base_report = ReportProjection.model_validate(base_report.model_dump(mode="json"))
+    """Trusted-host adapter; in-process gate token is integrity, not a security credential."""
+    try:
+        base_report = ReportProjection.model_validate(base_report.model_dump(mode="json"))
+    except ValueError as exc:
+        raise I11R03ReportAdapterError(_safe_validation_error(exc)) from exc
     _validate_base(base_report)
+    if any(s.title.startswith("I11 source comparison /") for s in base_report.sections):
+        raise I11R03ReportAdapterError("I11_R03_ALREADY_PROJECTED")
     try:
         source = I11R03V2Projection.model_validate(i11_projection)
         review = (
@@ -234,10 +255,29 @@ def project_i11_r03_into_f08(
         return _blocked_projection(base_report, "UNVERIFIED_INPUTS: byte admission is absent")
     if review is not None and review.disposition == "FAIL":
         return _blocked_projection(base_report, "INDEPENDENT_SCIENCE_REVIEW_FAIL")
+    if (
+        not isinstance(admission, VerifiedTwoRunAdmission)
+        or admission._issuer is not _GATE_ISSUER
+    ):
+        return _blocked_projection(base_report, "I11_R03_GATE_ADMISSION_REQUIRED")
+    if (
+        admission.admission_digest != source.admission_digest
+        or admission.run_digests != source.run_manifest_digests
+        or admission.event_ledger_digests != source.event_ledger_digests
+        or admission.receipt_digests != source.terminal_receipt_digests
+    ):
+        raise I11R03ReportAdapterError("I11_R03_ADMISSION_BINDING_MISMATCH")
+    if review is None:
+        return _blocked_projection(base_report, "INDEPENDENT_SCIENCE_REVIEW_REQUIRED")
 
     complete = all(
         claim.status == "SOURCE_ADDRESSED_REVIEW_PENDING"
-        and all(item.evidence_verification == "VERIFIED_EXACT" for item in claim.evidence)
+        and all(
+            item.evidence_verification == "VERIFIED_EXACT"
+            and item.page in admission.page_maps[index]
+            and item.excerpt in admission.page_maps[index][item.page]
+            for index, item in enumerate(claim.evidence)
+        )
         for claim in source.comparison_claims
     )
     if not complete:
@@ -270,9 +310,19 @@ def project_i11_r03_into_f08(
             state="BLOCKED",
             evidence=tuple(sorted(tokens)),
         ))
+        claims.append(Claim(
+            label=f"candidate {index} limitations", value=candidate.limits,
+            state="BLOCKED", evidence=tuple(sorted(tokens)),
+        ))
+    claims.extend((
+        Claim(label="comparison sampling rule", value=source.sampling_rule,
+              state="BLOCKED", evidence=()),
+        Claim(label="comparison coverage", value=source.coverage_status,
+              state="BLOCKED", evidence=()),
+    ))
     section = ReportSection(title="I11 source comparison / CANDIDATE", claims=tuple(claims))
     projected = base_report.model_copy(update={
-        "status": "SOURCE_GROUNDED_UNREVIEWED",
+        "status": "PARTIAL_METADATA",
         "sections": (*base_report.sections, section),
         "evidence": (
             *base_report.evidence,

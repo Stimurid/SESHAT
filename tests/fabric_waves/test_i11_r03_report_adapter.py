@@ -6,6 +6,9 @@ import json
 import pytest
 from pydantic import ValidationError
 
+import seshat.fabric_waves.i11_r03_report_adapter as adapter_module
+import seshat.fabric_waves.i11_two_real_r03 as source_module
+from test_i11_two_real_r03 import _case
 from seshat.corpus_host import HostRuntime
 from seshat.fabric_waves.i11_r03_report_adapter import (
     I11R03ReportAdapterError,
@@ -42,7 +45,7 @@ def admitted_projection():
     content = {
         "schema": "seshat.i11.two_real_run_r03.v2", "report_id": "R03",
         "status": "VERIFIED_SOURCE_ADMISSION_REVIEW_PENDING", "actual_real_model_runs": 2,
-        "jobs": ["jx-a", "jx-b"], "method_sha256": "1" * 64,
+        "jobs": ["jx-a", "jx-b"], "method_sha256": adapter_module.AUTHORIAL_I11_SHA256,
         "comparison_claims": [{
             "kind": "MATERIAL_DIFFERENCE", "statement": "Synthetic bounded difference.",
             "evidence": evidence, "status": "SOURCE_ADDRESSED_REVIEW_PENDING",
@@ -51,8 +54,8 @@ def admitted_projection():
         "admission_status": "VERIFIED_REAL_TWO_RUN_SOURCE_ADMISSION",
         "admission_digest": "2" * 64,
         "run_manifest_digests": ["3" * 64, "4" * 64],
-        "event_ledger_digests": ["5" * 64, "6" * 64],
-        "terminal_receipt_digests": ["7" * 64, "8" * 64],
+        "event_ledger_digests": ["c" * 64, "d" * 64],
+        "terminal_receipt_digests": ["e" * 64, "f" * 64],
         "original_sources_only": True,
         "source_evidence_status": "BYTE_AND_PAGE_EXCERPT_VERIFIED_WITH_REVIEW_PENDING",
         "sampling_rule": "TWO_OWNER_SELECTED_ORIGINAL_I11_RUNS_NOT_A_POPULATION_SAMPLE",
@@ -63,6 +66,27 @@ def admitted_projection():
         "customer_release": "BLOCKED", "provenance": "SELF_OBSERVED_UNATTESTED",
     }
     return {**content, "projection_sha256": digest(content)}
+
+
+def gated_builder_projection(monkeypatch):
+    """Use the actual verified-byte builder, never caller-shaped checksum fixture."""
+    items = _case(monkeypatch)
+    monkeypatch.setattr(
+        adapter_module, "AUTHORIAL_I11_SHA256", items[0]["method_sha256"]
+    )
+    admission = source_module.verify_two_run_source_admission(*items[:6])
+    projection = source_module.build_two_real_i11_r03(
+        items[0], items[1], items[4], items[5], items[6], admission=admission
+    )
+    return projection, admission
+
+
+def review_for(projection, disposition="PASS"):
+    return IndependentScienceReview(
+        projection_sha256=projection["projection_sha256"],
+        disposition=disposition,
+        review_id="synthetic-independent-test-review",
+    )
 
 
 def unverified_projection():
@@ -87,22 +111,28 @@ def base_report(tmp_path):
     )(demo_request("R03"))
 
 
-def test_real_f08_r03_composes_candidate_html_and_stable_private_readback(tmp_path):
+def test_real_f08_r03_composes_candidate_html_and_stable_private_readback(tmp_path, monkeypatch):
     base = base_report(tmp_path)
+    source, admission = gated_builder_projection(monkeypatch)
     before = base.model_dump(mode="json")
-    projected = project_i11_r03_into_f08(base, admitted_projection())
-    assert projected.status == "SOURCE_GROUNDED_UNREVIEWED"
+    projected = project_i11_r03_into_f08(
+        base, source, admission=admission, independent_review=review_for(source)
+    )
+    assert projected.status == "PARTIAL_METADATA"
     assert projected.scientific_acceptance == "NOT_ASSERTED"
+    assert projected.source_state == "METADATA_ONLY"
     assert projected.selections == base.selections
     assert projected.sections[:len(base.sections)] == base.sections
     assert projected.evidence[:len(base.evidence)] == base.evidence
     assert base.model_dump(mode="json") == before
     candidate = projected.sections[-1].claims[0]
     assert candidate.state == "BLOCKED"
-    assert "Synthetic bounded difference" in str(candidate.value)
+    assert "Distinct author-reported operations" in str(candidate.value)
+    assert "comparison sampling rule" in [c.label for c in projected.sections[-1].claims]
+    assert "candidate 1 limitations" in [c.label for c in projected.sections[-1].claims]
     files = artifacts(projected)
     assert b"I11 source comparison / CANDIDATE" in files["report.html"]
-    assert b"first synthetic excerpt" not in b"".join(files.values())
+    assert b"alpha exact asserted phrase" not in b"".join(files.values())
     output = tmp_path / "private-report"
     first = write_and_verify_private_report(output, projected)
     second = write_and_verify_private_report(output, projected)
@@ -129,17 +159,18 @@ def test_fake_verified_shape_without_byte_admission_fields_is_rejected(tmp_path)
         project_i11_r03_into_f08(base_report(tmp_path), fake)
 
 
-def test_digest_authority_v1_and_review_spoofs_fail_closed(tmp_path):
+def test_digest_authority_v1_and_review_spoofs_fail_closed(tmp_path, monkeypatch):
     base = base_report(tmp_path)
+    source, admission = gated_builder_projection(monkeypatch)
     for mutate, expected in (
         (lambda p: p.update(projection_sha256="0" * 64), "PROJECTION_DIGEST_MISMATCH"),
         (lambda p: p.update(scientific_acceptance="ACCEPTED"), "scientific_acceptance"),
         (lambda p: p.update(schema="seshat.i11.two_real_run_r03.v1"), "schema"),
     ):
-        value = admitted_projection()
+        value = dict(source)
         mutate(value)
         with pytest.raises(I11R03ReportAdapterError, match=expected):
-            project_i11_r03_into_f08(base, value)
+            project_i11_r03_into_f08(base, value, admission=admission)
 
 
 def test_old_nine_claim_v1_review_fail_sample_is_not_imported(tmp_path):
@@ -153,42 +184,48 @@ def test_old_nine_claim_v1_review_fail_sample_is_not_imported(tmp_path):
         project_i11_r03_into_f08(base_report(tmp_path), old)
 
 
-def test_review_fail_and_mismatch_emit_no_comparison(tmp_path):
-    base, source = base_report(tmp_path), admitted_projection()
+def test_review_fail_and_mismatch_emit_no_comparison(tmp_path, monkeypatch):
+    base = base_report(tmp_path)
+    source, admission = gated_builder_projection(monkeypatch)
     failed = IndependentScienceReview(
         projection_sha256=source["projection_sha256"], disposition="FAIL", review_id="review-1"
     )
-    blocked = project_i11_r03_into_f08(base, source, independent_review=failed)
+    blocked = project_i11_r03_into_f08(base, source, admission=admission, independent_review=failed)
     assert blocked.status == "BLOCKED"
-    assert all("Synthetic bounded difference" not in str(c.value)
+    assert all("Distinct author-reported operations" not in str(c.value)
                for s in blocked.sections for c in s.claims)
     mismatch = failed.model_copy(update={"projection_sha256": "9" * 64})
     with pytest.raises(I11R03ReportAdapterError, match="REVIEW_PROJECTION_MISMATCH"):
-        project_i11_r03_into_f08(base, source, independent_review=mismatch)
+        project_i11_r03_into_f08(base, source, admission=admission, independent_review=mismatch)
     with pytest.raises(ValidationError):
         IndependentScienceReview.model_validate({
             **failed.model_dump(), "scientific_acceptance": "ACCEPTED"
         })
 
 
-def test_incomplete_source_evidence_blocks_and_does_not_leak_statement(tmp_path):
-    source = admitted_projection()
+def test_incomplete_source_evidence_blocks_and_does_not_leak_statement(tmp_path, monkeypatch):
+    source, admission = gated_builder_projection(monkeypatch)
     source["comparison_claims"][0]["evidence"][0]["evidence_verification"] = "NORMALIZED_ONLY"
     source["comparison_claims"][0]["status"] = "EVIDENCE_VERIFICATION_REVIEW_PENDING"
     source["projection_sha256"] = digest({k: v for k, v in source.items()
                                           if k != "projection_sha256"})
-    blocked = project_i11_r03_into_f08(base_report(tmp_path), source)
+    blocked = project_i11_r03_into_f08(
+        base_report(tmp_path), source, admission=admission, independent_review=review_for(source)
+    )
     assert blocked.status == "BLOCKED"
     assert "SOURCE_EVIDENCE_INCOMPLETE" in str(blocked.sections[-1].claims[0].value)
-    assert b"Synthetic bounded difference" not in artifacts(blocked)["report.json"]
+    assert b"Distinct author-reported operations" not in artifacts(blocked)["report.json"]
 
 
-def test_stale_projection_and_report_readback_are_explicit(tmp_path):
+def test_stale_projection_and_report_readback_are_explicit(tmp_path, monkeypatch):
     base = base_report(tmp_path)
+    source, admission = gated_builder_projection(monkeypatch)
     stale = base.model_copy(update={"digest": "0" * 64})
     with pytest.raises(I11R03ReportAdapterError, match="BASE_PROJECTION_DIGEST_MISMATCH"):
-        project_i11_r03_into_f08(stale, admitted_projection())
-    projected = project_i11_r03_into_f08(base, admitted_projection())
+        project_i11_r03_into_f08(stale, source)
+    projected = project_i11_r03_into_f08(
+        base, source, admission=admission, independent_review=review_for(source)
+    )
     output = tmp_path / "private-report"
     with pytest.raises(I11R03ReportAdapterError, match="MISSING_REPORT"):
         write_and_verify_private_report(output, projected, verify_only=True)
@@ -198,15 +235,80 @@ def test_stale_projection_and_report_readback_are_explicit(tmp_path):
         write_and_verify_private_report(output, projected, verify_only=True)
 
 
-def test_rights_bound_metadata_is_unchanged_even_with_review_pass(tmp_path):
-    base, source = base_report(tmp_path), admitted_projection()
+def test_rights_bound_metadata_is_unchanged_even_with_review_pass(tmp_path, monkeypatch):
+    base = base_report(tmp_path)
+    source, admission = gated_builder_projection(monkeypatch)
     review = IndependentScienceReview(
         projection_sha256=source["projection_sha256"], disposition="PASS", review_id="review-pass"
     )
-    projected = project_i11_r03_into_f08(base, source, independent_review=review)
+    projected = project_i11_r03_into_f08(base, source, admission=admission, independent_review=review)
     assert projected.rights_scope == base.rights_scope
     assert projected.selections == base.selections
     assert projected.sections[:-1] == base.sections
     assert projected.scientific_acceptance == "NOT_ASSERTED"
     assert projected.sections[-1].claims[0].state == "BLOCKED"
     assert projected.blocks == base.blocks
+
+
+def test_caller_forged_admitted_projection_cannot_show_comparison(tmp_path):
+    fake = admitted_projection()
+    result = project_i11_r03_into_f08(
+        base_report(tmp_path), fake, independent_review=review_for(fake)
+    )
+    assert result.status == "BLOCKED"
+    assert "GATE_ADMISSION_REQUIRED" in str(result.sections[-1].claims[0].value)
+    assert "Synthetic bounded difference" not in artifacts(result)["report.html"].decode()
+
+
+def test_genuine_builder_with_gate_but_no_review_remains_blocked(tmp_path, monkeypatch):
+    source, admission = gated_builder_projection(monkeypatch)
+    result = project_i11_r03_into_f08(base_report(tmp_path), source, admission=admission)
+    assert result.status == "BLOCKED"
+    assert "INDEPENDENT_SCIENCE_REVIEW_REQUIRED" in str(result.sections[-1].claims[0].value)
+
+
+def test_pins_and_admission_are_bound_even_when_self_checksum_recomputed(tmp_path, monkeypatch):
+    source, admission = gated_builder_projection(monkeypatch)
+    base = base_report(tmp_path)
+    tampered = json.loads(json.dumps(source))
+    tampered["admission_digest"] = "a" * 64
+    tampered["projection_sha256"] = digest({k: v for k, v in tampered.items()
+                                          if k != "projection_sha256"})
+    with pytest.raises(I11R03ReportAdapterError, match="ADMISSION_BINDING_MISMATCH"):
+        project_i11_r03_into_f08(base, tampered,
+                                  admission=admission, independent_review=review_for(tampered))
+    bad_evidence = json.loads(json.dumps(source))
+    bad_evidence["comparison_claims"][0]["evidence"][0]["event_ledger_sha256"] = "f" * 64
+    bad_evidence["projection_sha256"] = digest({k: v for k, v in bad_evidence.items()
+                                              if k != "projection_sha256"})
+    with pytest.raises(I11R03ReportAdapterError, match="EVIDENCE_TOP_LEVEL_PIN_MISMATCH"):
+        project_i11_r03_into_f08(base, bad_evidence,
+                                  admission=admission)
+
+
+def test_excerpt_must_be_on_original_gate_verified_page(tmp_path, monkeypatch):
+    source, admission = gated_builder_projection(monkeypatch)
+    forged = json.loads(json.dumps(source))
+    ev = forged["comparison_claims"][0]["evidence"][0]
+    ev["excerpt"] = "invented phrase absent from original model page"
+    ev["excerpt_sha256"] = hashlib.sha256(ev["excerpt"].encode()).hexdigest()
+    forged["projection_sha256"] = digest({k: v for k, v in forged.items()
+                                        if k != "projection_sha256"})
+    result = project_i11_r03_into_f08(
+        base_report(tmp_path), forged, admission=admission,
+        independent_review=review_for(forged)
+    )
+    assert result.status == "BLOCKED"
+    assert "SOURCE_EVIDENCE_INCOMPLETE" in str(result.sections[-1].claims[0].value)
+
+
+def test_duplicate_comparison_projection_rejected(tmp_path, monkeypatch):
+    source, admission = gated_builder_projection(monkeypatch)
+    base = base_report(tmp_path)
+    once = project_i11_r03_into_f08(
+        base, source, admission=admission, independent_review=review_for(source)
+    )
+    with pytest.raises(I11R03ReportAdapterError, match="ALREADY_PROJECTED"):
+        project_i11_r03_into_f08(
+            once, source, admission=admission, independent_review=review_for(source)
+        )

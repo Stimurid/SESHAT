@@ -354,7 +354,7 @@ def build_two_real_i11_r03(
         "sampling_rule": "TWO_OWNER_SELECTED_ORIGINAL_I11_RUNS_NOT_A_POPULATION_SAMPLE",
         "coverage_status": "BOUNDED_TWO_WORK_COMPARISON",
         "implementation_missingness": {
-            "source_a": "UNKNOWN", "source_b": "MODEL_REPORTS_ABSENCE",
+            "source_a": "UNKNOWN", "source_b": "UNKNOWN",
             "absence_is_not_performed_im_event": True,
         },
         "product_wiring": "NOT_PRODUCT_WIRED", "independent_science_review": "PENDING",
