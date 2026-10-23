@@ -15,6 +15,12 @@ from pydantic import Field, model_validator
 
 from seshat.corpus import FrozenModel, _digest, public_selection_digest
 from seshat.corpus_host import HostRuntime
+from seshat.f09a_i11_r03_bridge import (
+    BRIDGE_VERSION,
+    F09AI11R03Provider,
+    F09AI11R03StaleBundle,
+    I11R03BatchBundle,
+)
 from seshat.reports import ReportProjection, ReportReceipt, ReportRequest, artifacts, report_session
 from seshat.scientific_report import ScientificReportAsset
 
@@ -142,10 +148,15 @@ def manifest_fingerprint(manifest: BatchManifest) -> str:
                     "manifest": manifest.model_dump(mode="json")})
 
 
-def item_input_fingerprint(manifest: BatchManifest, item: BatchItemSpec) -> str:
+def item_input_fingerprint(
+    manifest: BatchManifest,
+    item: BatchItemSpec,
+    *,
+    i11_r03_bridge_fingerprint: str | None = None,
+) -> str:
     selection_digests = tuple(
         public_selection_digest(s) for s in sorted(item.request.selections, key=lambda s: s.selector_id))
-    return _digest({
+    payload = {
         "domain": "seshat.f09a.item-input.v2",
         "batch_id": manifest.batch_id,
         "item_id": item.item_id,
@@ -153,6 +164,15 @@ def item_input_fingerprint(manifest: BatchManifest, item: BatchItemSpec) -> str:
         "report_id": item.request.report_id,
         "selection_digests": selection_digests,
         "rights_scope": item.request.rights_scope,
+    }
+    # Preserve the pre-bridge digest byte-for-byte when the opt-in is absent.
+    if i11_r03_bridge_fingerprint is None:
+        return _digest(payload)
+    return _digest({
+        "domain": "seshat.f09a.item-input.v3",
+        "base_fingerprint": _digest(payload),
+        "i11_r03_bridge_version": BRIDGE_VERSION,
+        "i11_r03_bridge_fingerprint": i11_r03_bridge_fingerprint,
     })
 
 
@@ -355,6 +375,36 @@ def _load_item_row(conn: sqlite3.Connection, item_id: str) -> sqlite3.Row | None
     return conn.execute("SELECT * FROM items WHERE item_id=?", (item_id,)).fetchone()
 
 
+def _load_extension_row(conn: sqlite3.Connection, item_id: str) -> sqlite3.Row | None:
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='item_extensions'"
+    ).fetchone()
+    if exists is None:
+        return None
+    return conn.execute(
+        "SELECT * FROM item_extensions WHERE item_id=?", (item_id,)
+    ).fetchone()
+
+
+def _store_extension(
+    conn: sqlite3.Connection,
+    *,
+    item_id: str,
+    extension_kind: str,
+    extension_fingerprint: str,
+) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS item_extensions (
+        item_id TEXT PRIMARY KEY,
+        extension_kind TEXT NOT NULL,
+        extension_fingerprint TEXT NOT NULL
+    )""")
+    conn.execute(
+        "INSERT OR REPLACE INTO item_extensions "
+        "(item_id, extension_kind, extension_fingerprint) VALUES (?, ?, ?)",
+        (item_id, extension_kind, extension_fingerprint),
+    )
+
+
 def _item_status_from_row(row: sqlite3.Row | None, spec: BatchItemSpec) -> BatchItemStatus:
     if row is None:
         return BatchItemStatus(item_id=spec.item_id, report_id=spec.request.report_id,
@@ -422,11 +472,16 @@ def run_batch(
     scientific_assets: tuple[ScientificReportAsset, ...] = (),
     scientific_sources: dict[str, bytes] | None = None,
     method_bodies: dict[str, bytes] | None = None,
+    i11_r03_provider: F09AI11R03Provider | None = None,
     after_artifact_write_before_checkpoint: HookAfterWrite | None = None,
 ) -> BatchReceipt:
     """Serial durable batch. Caller must match manifest session binding."""
     validate_manifest(manifest, runtime, caller_id=caller_id, rights_scope=rights_scope,
                         enforce_source_pins=not resume)
+    if i11_r03_provider is not None:
+        i11_r03_provider.validate_bindings(tuple(
+            (item.item_id, item.request.report_id) for item in manifest.items
+        ))
     asset_digests = tuple(sorted(_digest(a) for a in scientific_assets))
     if asset_digests != tuple(sorted(manifest.scientific_asset_digests)):
         raise ValueError("BATCH_SCIENTIFIC_ASSET_CHANGED")
@@ -490,9 +545,45 @@ def run_batch(
             item_path = _item_dir(root, spec.item_id)
             assert_safe_path(item_path, trusted_root=root)
             rel_path = f"{ITEMS_DIR}/{spec.item_id}"
-            current_fp = item_input_fingerprint(manifest, spec)
+            bundle: I11R03BatchBundle | None = None
+            if i11_r03_provider is not None:
+                bundle = i11_r03_provider.resolve(
+                    item_id=spec.item_id, report_id=spec.request.report_id
+                )
+            extension_kind = BRIDGE_VERSION if bundle is not None else None
+            extension_fingerprint = bundle.fingerprint if bundle is not None else None
+            current_fp = item_input_fingerprint(
+                manifest,
+                spec,
+                i11_r03_bridge_fingerprint=extension_fingerprint,
+            )
             row = _load_item_row(conn, spec.item_id)
             prior = _item_status_from_row(row, spec)
+            extension_row = _load_extension_row(conn, spec.item_id)
+
+            extension_changed = (
+                extension_row is not None
+                and (
+                    extension_kind is None
+                    or extension_row["extension_kind"] != extension_kind
+                    or extension_row["extension_fingerprint"] != extension_fingerprint
+                )
+            ) or (
+                extension_row is None
+                and extension_kind is not None
+                and prior.state != "QUEUED"
+            )
+            if extension_changed:
+                conn.execute(
+                    "UPDATE items SET state='STALE', reason_code='REPORT_EXTENSION_CHANGED' "
+                    "WHERE item_id=?",
+                    (spec.item_id,),
+                )
+                raise F09AI11R03StaleBundle("I11_R03_BATCH_BUNDLE_STALE")
+
+            def compose_item() -> ReportProjection:
+                base = compose(spec.request)
+                return bundle.project(base) if bundle is not None else base
 
             if prior.state in {"DONE_METADATA", "DONE_SCIENTIFIC_UNREVIEWED", "PARTIAL_METADATA", "BLOCKED_METHOD", "BLOCKED_EXTERNAL"}:
                 if row["input_fingerprint"] != current_fp:
@@ -508,7 +599,7 @@ def run_batch(
                         row["report_html_sha256"], row["receipt_json_sha256"]):
                     projection = ReportProjection.model_validate_json(
                         (item_path / "report.json").read_bytes())
-                    live = compose(spec.request)
+                    live = compose_item()
                     if live.digest == row["projection_digest"] == projection.digest:
                         continue
                     work_performed = True
@@ -518,6 +609,13 @@ def run_batch(
                 continue
 
             conn.execute("BEGIN IMMEDIATE")
+            if extension_kind is not None and extension_fingerprint is not None:
+                _store_extension(
+                    conn,
+                    item_id=spec.item_id,
+                    extension_kind=extension_kind,
+                    extension_fingerprint=extension_fingerprint,
+                )
             conn.execute(
                 "UPDATE items SET state='RUNNING', reason_code='IN_PROGRESS', "
                 "input_fingerprint=?, attempts=attempts+1 WHERE item_id=?",
@@ -527,7 +625,7 @@ def run_batch(
             work_performed = True
 
             try:
-                projection = compose(spec.request)
+                projection = compose_item()
                 files = artifacts(projection)
                 raw = files["report.json"]
                 html = files["report.html"]
@@ -572,12 +670,14 @@ def resume_batch(root: Path, manifest: BatchManifest, runtime: HostRuntime, *,
                    scientific_assets: tuple[ScientificReportAsset, ...] = (),
                    scientific_sources: dict[str, bytes] | None = None,
                    method_bodies: dict[str, bytes] | None = None,
+                   i11_r03_provider: F09AI11R03Provider | None = None,
                    after_artifact_write_before_checkpoint: HookAfterWrite | None = None) -> BatchReceipt:
     return run_batch(root, manifest, runtime, resume=True, caller_id=caller_id,
                        rights_scope=rights_scope,
                        scientific_assets=scientific_assets,
                        scientific_sources=scientific_sources,
                        method_bodies=method_bodies,
+                       i11_r03_provider=i11_r03_provider,
                      after_artifact_write_before_checkpoint=after_artifact_write_before_checkpoint)
 
 
