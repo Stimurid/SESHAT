@@ -253,3 +253,106 @@ def test_denial_and_provider_collisions_fail_closed(tmp_path, monkeypatch):
             runtime,
             InProcessI11R03Provider((wrong_item,)),
         )
+
+
+
+def test_bridge_removal_stale_receipt_then_recovers_without_bundle(tmp_path, monkeypatch):
+    runtime, manifest = _runtime_manifest(tmp_path, "recover-removed")
+    root = tmp_path / "batch"
+    original = _gated_bundle(monkeypatch)
+    _run(root, manifest, runtime, InProcessI11R03Provider((original,)))
+    report_path = root / "items" / "r03-one" / "report.json"
+    previously_authorized = report_path.read_bytes()
+
+    with pytest.raises(F09AI11R03StaleBundle, match="BUNDLE_STALE"):
+        resume_batch(
+            root, manifest, runtime,
+            caller_id="demo", rights_scope="synthetic-public",
+        )
+    item = status_batch(root).items[0]
+    assert item.state == "STALE"
+    assert item.projection_digest is None and item.relative_path is None
+    receipt = json.loads((root / "batch_receipt.json").read_bytes())
+    index = json.loads((root / "index.json").read_bytes())
+    assert receipt["items"][0]["state"] == index["items"][0]["state"] == "STALE"
+    assert receipt["code_pass"] is False
+    assert report_path.read_bytes() == previously_authorized
+
+    recovered = resume_batch(
+        root, manifest, runtime, caller_id="demo", rights_scope="synthetic-public",
+    )
+    assert recovered.items[0].state == "DONE_METADATA"
+    assert recovered.items[0].attempts == 2
+    new_report = json.loads(report_path.read_bytes())
+    assert all(
+        not section["title"].startswith("I11 source comparison /")
+        for section in new_report["sections"]
+    )
+
+
+def test_authorization_withdrawal_stale_then_blocked(tmp_path, monkeypatch):
+    runtime, manifest = _runtime_manifest(tmp_path, "recover-withdrawal")
+    root = tmp_path / "batch"
+    original = _gated_bundle(monkeypatch)
+    _run(root, manifest, runtime, InProcessI11R03Provider((original,)))
+    old_report = (root / "items" / "r03-one" / "report.json").read_bytes()
+    denied = I11R03BatchBundle(
+        "r03-one", original.projection, original.admission,
+        original.independent_review, False,
+    )
+    provider = InProcessI11R03Provider((denied,))
+    with pytest.raises(F09AI11R03StaleBundle, match="BUNDLE_STALE"):
+        resume_batch(
+            root, manifest, runtime,
+            caller_id="demo", rights_scope="synthetic-public",
+            i11_r03_provider=provider,
+        )
+    assert json.loads((root / "batch_receipt.json").read_bytes())["code_pass"] is False
+    assert (root / "items" / "r03-one" / "report.json").read_bytes() == old_report
+
+    recovered = resume_batch(
+        root, manifest, runtime,
+        caller_id="demo", rights_scope="synthetic-public",
+        i11_r03_provider=provider,
+    )
+    assert recovered.items[0].state == "BLOCKED_METHOD"
+    new_report = json.loads((root / "items" / "r03-one" / "report.json").read_bytes())
+    assert new_report["status"] == "BLOCKED"
+    assert "SOURCE_ADMISSION" not in json.dumps(new_report)
+    assert "I11 source comparison / CANDIDATE" not in json.dumps(new_report)
+
+
+def test_stale_first_item_does_not_abort_sibling_repair(tmp_path, monkeypatch):
+    runtime, manifest = _runtime_manifest(tmp_path, "stale-sibling", two_items=True)
+    root = tmp_path / "batch"
+    original = _gated_bundle(monkeypatch)
+    _run(root, manifest, runtime, InProcessI11R03Provider((original,)))
+    sibling = root / "items" / "r03-two" / "report.html"
+    sibling.write_bytes(b"tampered old sibling html")
+    with pytest.raises(F09AI11R03StaleBundle):
+        resume_batch(
+            root, manifest, runtime,
+            caller_id="demo", rights_scope="synthetic-public",
+        )
+    statuses = status_batch(root).items
+    assert [item.state for item in statuses] == ["STALE", "DONE_METADATA"]
+    assert statuses[1].attempts == 2
+    assert b"tampered old sibling html" not in sibling.read_bytes()
+    receipt = json.loads((root / "batch_receipt.json").read_bytes())
+    assert [item["state"] for item in receipt["items"]] == ["STALE", "DONE_METADATA"]
+    assert receipt["code_pass"] is False
+
+
+def test_custom_protocol_provider_item_mismatch_is_rejected(tmp_path, monkeypatch):
+    runtime, manifest = _runtime_manifest(tmp_path, "provider-mismatch")
+    foreign_bundle = _gated_bundle(monkeypatch, item_id="other-item")
+
+    class WrongProvider:
+        def validate_bindings(self, items):
+            return None
+
+        def resolve(self, *, item_id, report_id):
+            return foreign_bundle
+
+    with pytest.raises(F09AI11R03BridgeError, match="BRIDGE_ITEM_MISMATCH"):
+        _run(tmp_path / "batch", manifest, runtime, WrongProvider())

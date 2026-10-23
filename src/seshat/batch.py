@@ -17,6 +17,7 @@ from seshat.corpus import FrozenModel, _digest, public_selection_digest
 from seshat.corpus_host import HostRuntime
 from seshat.f09a_i11_r03_bridge import (
     BRIDGE_VERSION,
+    F09AI11R03BridgeError,
     F09AI11R03Provider,
     F09AI11R03StaleBundle,
     I11R03BatchBundle,
@@ -501,6 +502,7 @@ def run_batch(
     manifest_bytes = canonical_bytes(manifest)
     manifest_path = root / MANIFEST_FILENAME
     work_performed = False
+    stale_bundle_items: list[str] = []
 
     with _ledger(root) as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -550,6 +552,9 @@ def run_batch(
                 bundle = i11_r03_provider.resolve(
                     item_id=spec.item_id, report_id=spec.request.report_id
                 )
+                # Never trust a third-party Protocol provider to bind the item.
+                if bundle is not None and bundle.item_id != spec.item_id:
+                    raise F09AI11R03BridgeError("I11_R03_BRIDGE_ITEM_MISMATCH")
             extension_kind = BRIDGE_VERSION if bundle is not None else None
             extension_fingerprint = bundle.fingerprint if bundle is not None else None
             current_fp = item_input_fingerprint(
@@ -571,15 +576,30 @@ def run_batch(
             ) or (
                 extension_row is None
                 and extension_kind is not None
-                and prior.state != "QUEUED"
+                and prior.state not in {"QUEUED", "STALE"}
             )
             if extension_changed:
+                # Two-step consent/review drift: mark and publish STALE before
+                # reporting failure. On a later invocation the new binding may
+                # rebuild, without reusing the previous candidate or receipt.
+                conn.execute("BEGIN IMMEDIATE")
                 conn.execute(
-                    "UPDATE items SET state='STALE', reason_code='REPORT_EXTENSION_CHANGED' "
-                    "WHERE item_id=?",
+                    "UPDATE items SET state='STALE', reason_code='REPORT_EXTENSION_CHANGED', "
+                    "projection_digest=NULL, report_json_sha256=NULL, "
+                    "report_html_sha256=NULL, receipt_json_sha256=NULL, "
+                    "relative_path=NULL WHERE item_id=?",
                     (spec.item_id,),
                 )
-                raise F09AI11R03StaleBundle("I11_R03_BATCH_BUNDLE_STALE")
+                if extension_row is not None:
+                    conn.execute(
+                        "DELETE FROM item_extensions WHERE item_id=?", (spec.item_id,)
+                    )
+                conn.execute("COMMIT")
+                work_performed = True
+                stale_bundle_items.append(spec.item_id)
+                # A stale item does not prevent later independent items from
+                # completing and checkpointing during this invocation.
+                continue
 
             def compose_item() -> ReportProjection:
                 base = compose(spec.request)
@@ -662,7 +682,14 @@ def run_batch(
                 conn.execute("COMMIT")
                 raise
 
-    return _export_receipt(root, manifest, fingerprint, work_performed=work_performed)
+    receipt = _export_receipt(
+        root, manifest, fingerprint, work_performed=work_performed
+    )
+    if stale_bundle_items:
+        raise F09AI11R03StaleBundle(
+            "I11_R03_BATCH_BUNDLE_STALE: " + ",".join(stale_bundle_items)
+        )
+    return receipt
 
 
 def resume_batch(root: Path, manifest: BatchManifest, runtime: HostRuntime, *,

@@ -10,6 +10,11 @@ import hashlib
 import json
 from typing import Any, Mapping, Sequence
 
+from seshat.fabric_waves.i11_r03_report_adapter import I11R03V2Projection
+from seshat.fabric_waves.i11_two_real_r03 import (
+    VerifiedTwoRunAdmission, _GATE_ISSUER,
+)
+
 EVIDENCE_MODES = frozenset({
     "S0_SOURCE_META",
     "S1_REPORTED_RESEARCH_OPERATION",
@@ -35,6 +40,57 @@ class EvidenceLedgerError(ValueError):
     pass
 
 
+def _verify_v2_evidence_source(
+    r03: Mapping[str, Any],
+    source_admission: VerifiedTwoRunAdmission | None,
+) -> None:
+    """A self-hashed v2 JSON is not evidence; bind it to the live byte gate.
+
+    This gate is self-observed in-process integrity, not independent publisher
+    authorization, scholarly acceptance, or customer release.
+    """
+    try:
+        source = I11R03V2Projection.model_validate(r03)
+    except ValueError as exc:
+        raise EvidenceLedgerError("UNACCEPTABLE_R03_V2_SHAPE") from exc
+    if (
+        source.status != "BYTE_CONSISTENT_UNATTESTED_REVIEW_PENDING"
+        or not isinstance(source_admission, VerifiedTwoRunAdmission)
+        or source_admission._issuer is not _GATE_ISSUER
+    ):
+        raise EvidenceLedgerError("R03_V2_GATE_ADMISSION_REQUIRED")
+    if (
+        source.admission_digest != source_admission.admission_digest
+        or source.run_manifest_digests != source_admission.run_digests
+        or source.event_ledger_digests != source_admission.event_ledger_digests
+        or source.terminal_receipt_digests != source_admission.receipt_digests
+    ):
+        raise EvidenceLedgerError("R03_V2_ADMISSION_BINDING_MISMATCH")
+    for claim in source.comparison_claims:
+        if claim.status != "SOURCE_ADDRESSED_REVIEW_PENDING":
+            raise EvidenceLedgerError("R03_V2_EXACT_SOURCE_EVIDENCE_REQUIRED")
+        for index, evidence in enumerate(claim.evidence):
+            pin = source_admission.source_identity_pins[index]
+            if (
+                evidence.work_id != pin.work_id
+                or evidence.job_id != pin.job_id
+                or evidence.source_pdf_sha256 != pin.source_pdf_sha256
+                or evidence.model_page_text_sha256 != pin.model_page_text_sha256
+                or evidence.event_ledger_sha256
+                != source_admission.event_ledger_digests[index]
+                or evidence.terminal_receipt_sha256
+                != source_admission.receipt_digests[index]
+            ):
+                raise EvidenceLedgerError("R03_V2_SOURCE_IDENTITY_MISMATCH")
+            if (
+                evidence.evidence_verification != "VERIFIED_EXACT"
+                or evidence.page not in source_admission.page_maps[index]
+                or evidence.excerpt
+                not in source_admission.page_maps[index][evidence.page]
+            ):
+                raise EvidenceLedgerError("R03_V2_EXACT_SOURCE_EVIDENCE_REQUIRED")
+
+
 def _hash(data: Mapping[str, Any]) -> str:
     return hashlib.sha256(json.dumps(
         data, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
@@ -51,6 +107,7 @@ def _required(value: Any, name: str) -> str:
 def build_evidence_ledger(
     r03: Mapping[str, Any], *,
     claim_specs: Sequence[Mapping[str, Any]],
+    source_admission: VerifiedTwoRunAdmission | None = None,
     derived_claims: Sequence[Mapping[str, Any]] = (),
     resource_cards: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
@@ -59,11 +116,24 @@ def build_evidence_ledger(
     Neither a comparison page number nor a publisher license upgrades source
     evidence to independently tested effect or owner acceptance.
     """
-    if (r03.get("schema") != "seshat.i11.two_real_run_r03.v1"
+    schema = r03.get("schema")
+    if (
+        schema not in {
+            "seshat.i11.two_real_run_r03.v1",
+            "seshat.i11.two_real_run_r03.v2",
+        }
         or r03.get("actual_real_model_runs") != 2
         or r03.get("scientific_acceptance") != "NOT_PERFORMED"
-        or r03.get("customer_release") != "BLOCKED"):
+        or r03.get("customer_release") != "BLOCKED"
+    ):
         raise EvidenceLedgerError("UNACCEPTABLE_R03_SOURCE")
+    if schema == "seshat.i11.two_real_run_r03.v2":
+        _verify_v2_evidence_source(r03, source_admission)
+        source_provenance = "V2_BYTE_COHERENT_SELF_OBSERVED_UNATTESTED"
+    else:
+        # Legacy v1 is retained for historical review overlays, never as
+        # proof of a byte-verified new authorial ModelRun.
+        source_provenance = "V1_LEGACY_ARCHIVAL_UNATTESTED"
     claims = r03.get("comparison_claims", [])
     if not isinstance(claims, list) or len(claims) != len(claim_specs):
         raise EvidenceLedgerError("CLAIM_SPEC_COUNT_MISMATCH")
@@ -173,6 +243,7 @@ def build_evidence_ledger(
         "claim_cards": registered,
         "resource_cards": resources,
         "source_model_outputs_modified": False,
+        "source_admission_provenance": source_provenance,
         "scientific_acceptance": "NOT_PERFORMED",
         "customer_release": "BLOCKED",
     }
