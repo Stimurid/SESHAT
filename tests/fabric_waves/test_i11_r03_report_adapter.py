@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 import seshat.fabric_waves.i11_r03_report_adapter as adapter_module
 import seshat.fabric_waves.i11_two_real_r03 as source_module
-from test_i11_two_real_r03 import _case
+
 from seshat.corpus_host import HostRuntime
 from seshat.fabric_waves.i11_r03_report_adapter import (
     I11R03ReportAdapterError,
@@ -18,6 +20,14 @@ from seshat.fabric_waves.i11_r03_report_adapter import (
 )
 from seshat.report_demo import demo_request, install_fixture
 from seshat.reports import artifacts, report_session
+
+_case_spec = importlib.util.spec_from_file_location(
+    "_seshat_i11_gate_fixture", Path(__file__).with_name("test_i11_two_real_r03.py")
+)
+assert _case_spec is not None and _case_spec.loader is not None
+_case_module = importlib.util.module_from_spec(_case_spec)
+_case_spec.loader.exec_module(_case_module)
+_case = _case_module._case
 
 
 def digest(value):
