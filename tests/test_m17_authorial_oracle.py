@@ -4,7 +4,11 @@ import hashlib
 import json
 from pathlib import Path
 
-from seshat.authorial_oracle import load_authorial_study_oracle
+from seshat.authorial_oracle import (
+    OracleCarrier,
+    _answer_addresses,
+    load_authorial_study_oracle,
+)
 from seshat.product_preview import (
     _markdown,
     build_reports,
@@ -342,3 +346,96 @@ def test_four_aporia_retained_on_full_ad_selector(tmp_path):
     for conflict_id in ("N17-01", "N17-02", "N17-03", "N17-04"):
         assert conflict_id in r02_md
     assert reports["R01"]["study_analyses"][0]["contradictions"] == []
+
+
+def _carriers() -> dict[str, OracleCarrier]:
+    return {
+        "source-a": OracleCarrier(
+            source_id="source-a",
+            kind="A",
+            path="a.txt",
+            sha256="0" * 64,
+        ),
+        "source-d": OracleCarrier(
+            source_id="source-d",
+            kind="D",
+            path="d.txt",
+            sha256="1" * 64,
+        ),
+    }
+
+
+def test_single_zero_based_idx_becomes_pdf_index_address():
+    addresses = _answer_addresses(
+        "Neutral reconstruction cites [A idx 0] and later A idx 2.",
+        _carriers(),
+    )
+    assert [(item.pdf_page_index, item.printed_page, item.source_id) for item in addresses] == [
+        (0, None, "source-a"),
+        (2, None, "source-a"),
+    ]
+    assert {item.address_grade for item in addresses} == {
+        "PDF_INDEX_FROM_EXPLICIT_AUTHORIAL_CITATION"
+    }
+    assert [item.location for item in addresses] == ["A idx 0", "A idx 2"]
+
+
+def test_d_idx_range_hyphen_and_en_dash():
+    hyphen = _answer_addresses("Neutral reconstruction; D idx 62-64.", _carriers())
+    en_dash = _answer_addresses("Neutral reconstruction; D idx 7–8.", _carriers())
+    assert [item.pdf_page_index for item in hyphen] == [62, 63, 64]
+    assert all(item.source_id == "source-d" for item in hyphen)
+    assert all(item.printed_page is None for item in hyphen)
+    assert all(item.location == "D idx 62-64" for item in hyphen)
+    assert [item.pdf_page_index for item in en_dash] == [7, 8]
+    assert all(item.location == "D idx 7–8" for item in en_dash)
+
+
+def test_mixed_idx_and_printed_page_keeps_both_grades():
+    addresses = _answer_addresses(
+        "Neutral reconstruction; [A idx 2 / A p. 3] and D PDF p.10.",
+        _carriers(),
+    )
+    printed = [
+        item for item in addresses
+        if item.address_grade == "PRINTED_PAGE_FROM_AUTHORIAL_CANDIDATE"
+    ]
+    indexed = [
+        item for item in addresses
+        if item.address_grade == "PDF_INDEX_FROM_EXPLICIT_AUTHORIAL_CITATION"
+    ]
+    assert {(item.source_id, item.printed_page) for item in printed} == {
+        ("source-a", "3"),
+        ("source-d", "10"),
+    }
+    assert all(item.pdf_page_index is None for item in printed)
+    assert [(item.source_id, item.pdf_page_index, item.printed_page) for item in indexed] == [
+        ("source-a", 2, None)
+    ]
+    assert indexed[0].location == "A idx 2"
+
+
+def test_nonreference_idx_prose_does_not_invent_source_address():
+    addresses = _answer_addresses(
+        "Neutral notes mention the appendix index 12, Adobe idx 2, "
+        "and idx 3, plus D index 219 without a citation token.",
+        _carriers(),
+    )
+    assert addresses == ()
+
+
+def test_duplicate_idx_and_ridiculous_range_are_bounded(tmp_path):
+    addresses = _answer_addresses(
+        "Neutral reconstruction; D idx 5; again D idx 5; then D idx 0-999.",
+        _carriers(),
+    )
+    assert [item.pdf_page_index for item in addresses] == [5]
+    manifest, oracle_path = _case(tmp_path)
+    payload = json.loads(oracle_path.read_text(encoding="utf-8"))
+    payload["questions"][0]["candidate_answer"] = "Neutral reconstruction; [A idx 2]."
+    oracle_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    analysis = load_authorial_study_oracle(oracle_path, ingest_sources(manifest, tmp_path))
+    first = analysis.answers[0]
+    assert first.address_state == "SOURCE_ADDRESSED"
+    assert first.source_addresses[0].pdf_page_index == 2
+    assert first.source_addresses[0].printed_page is None

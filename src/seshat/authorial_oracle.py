@@ -138,12 +138,19 @@ _PAGE_RE = re.compile(
     r"(?P<kind>[AD])(?:\s+PDF)?\s+p(?:p)?\.\s*(?P<first>\d+)(?:\s*[–-]\s*(?P<last>\d+))?",
     re.IGNORECASE,
 )
+_IDX_RE = re.compile(
+    r"(?<![A-Za-z])(?P<kind>[AD])(?![A-Za-z])\s+idx\s+"
+    r"(?P<first>\d+)(?:\s*[–-]\s*(?P<last>\d+))?",
+    re.IGNORECASE,
+)
+# Explicit idx ranges cite a few consecutive PDF pages, not a whole document.
+_MAX_EXPLICIT_IDX_SPAN = 32
 
 
 def _answer_addresses(text: str, carriers: Mapping[str, OracleCarrier]) -> tuple[SourcePageAddress, ...]:
     by_kind = {carrier.kind: carrier.source_id for carrier in carriers.values()}
     addresses: list[SourcePageAddress] = []
-    seen: set[tuple[str, int]] = set()
+    seen: set[tuple[str, str, str | int]] = set()
     for match in _PAGE_RE.finditer(text):
         source_id = by_kind.get(match.group("kind").upper())
         if source_id is None:
@@ -153,13 +160,31 @@ def _answer_addresses(text: str, carriers: Mapping[str, OracleCarrier]) -> tuple
         for printed in range(first, last + 1):
             # Printed references are preserved literally.  No PDF-index offset
             # is invented where the oracle did not provide one.
-            key = (source_id, printed)
+            key = ("printed", source_id, printed)
             if key not in seen:
                 addresses.append(SourcePageAddress(
                     source_id=source_id,
                     printed_page=str(printed),
                     location=match.group(0),
                     address_grade="PRINTED_PAGE_FROM_AUTHORIAL_CANDIDATE",
+                ))
+                seen.add(key)
+    for match in _IDX_RE.finditer(text):
+        source_id = by_kind.get(match.group("kind").upper())
+        if source_id is None:
+            continue
+        first = int(match.group("first"))
+        last = int(match.group("last") or first)
+        if last < first or last - first + 1 > _MAX_EXPLICIT_IDX_SPAN:
+            continue
+        for index in range(first, last + 1):
+            key = ("idx", source_id, index)
+            if key not in seen:
+                addresses.append(SourcePageAddress(
+                    source_id=source_id,
+                    pdf_page_index=index,
+                    location=match.group(0),
+                    address_grade="PDF_INDEX_FROM_EXPLICIT_AUTHORIAL_CITATION",
                 ))
                 seen.add(key)
     return tuple(addresses)
