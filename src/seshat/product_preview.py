@@ -150,6 +150,7 @@ def ingest_sources(manifest: Mapping[str, Any], base: Path) -> list[dict[str, An
             "version": spec["version"],
             "title": spec.get("title") or spec["source_id"],
             "year": spec.get("year"),
+            "defense_year": spec.get("defense_year"),
             "tags": sorted(set(str(x) for x in spec.get("tags", ()))),
             "objects": sorted(set(str(x) for x in spec.get("objects", ()))),
             "methods": sorted(set(str(x) for x in spec.get("methods", ()))),
@@ -297,13 +298,23 @@ def load_archive_census(manifest: Mapping[str, Any], base: Path) -> dict[str, An
     }
 
 
+_PAGE_BANNER_RE = re.compile(r"===\s*PAGE\s+\d+\s*===", re.IGNORECASE)
+_SOURCE_TEXT_NOISE_STOPWORDS = {
+    "this", "that", "with", "from", "were", "have", "into", "using", "study",
+    # PDF-extraction and bibliographic boilerplate: never scientific concepts.
+    "page", "pages", "pmid", "issn", "isbn", "doi",
+}
+
+
 def _words(records: Iterable[Mapping[str, Any]]) -> Counter[str]:
-    stop = {"this", "that", "with", "from", "were", "have", "into", "using", "study"}
+    """Raw source-text lexical frequency. Not a scientific-concept extraction."""
+
     words: Counter[str] = Counter()
     for record in records:
-        for token in re.findall(r"[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё-]{3,}", record.get("text", "")):
+        text = _PAGE_BANNER_RE.sub(" ", record.get("text", ""))
+        for token in re.findall(r"[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё-]{3,}", text):
             folded = token.casefold()
-            if folded not in stop:
+            if folded not in _SOURCE_TEXT_NOISE_STOPWORDS:
                 words[folded] += 1
     return words
 
@@ -317,6 +328,184 @@ def _source_refs(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
         }
         for r in records
     ]
+
+
+def _study_year(items: Sequence[Mapping[str, Any]]) -> tuple[str, str | None, list[str]]:
+    """Resolve one authoritative per-study year, preferring ``defense_year``.
+
+    Never arbitrarily picks between disagreeing carriers: a disagreement is
+    reported as a discrepancy, not silently resolved.  Returns
+    ``(year_label, field_used, conflicting_values)``.
+    """
+
+    defense_values = sorted({
+        str(x["defense_year"]) for x in items if x.get("defense_year") not in (None, "")
+    })
+    if len(defense_values) == 1:
+        return defense_values[0], "defense_year", []
+    if len(defense_values) > 1:
+        return "CONFLICT", "defense_year", defense_values
+    source_values = sorted({
+        str(x["year"]) for x in items if x.get("year") not in (None, "")
+    })
+    if len(source_values) == 1:
+        return source_values[0], "year", []
+    if len(source_values) > 1:
+        return "CONFLICT", "year", source_values
+    return "UNKNOWN", None, []
+
+
+def _per_study_field_metadata(
+    chosen: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Per-study-deduped object/method/infrastructure/year counts.
+
+    A tag or year present on both the A and D carrier of the same study must
+    count once, not once per carrier; a study's upload-year metadata (per
+    carrier) is tracked separately from its authoritative defense/study year.
+    """
+
+    by_study: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for item in chosen:
+        by_study[item["study_id"]].append(item)
+
+    objects: Counter[str] = Counter()
+    methods: Counter[str] = Counter()
+    infrastructure: Counter[str] = Counter()
+    years: Counter[str] = Counter()
+    source_upload_years: Counter[str] = Counter()
+    year_discrepancies: list[dict[str, Any]] = []
+
+    for study_id, items in sorted(by_study.items()):
+        for value in {v for x in items for v in x["objects"]}:
+            objects[value] += 1
+        for value in {v for x in items for v in x["methods"]}:
+            methods[value] += 1
+        for value in {v for x in items for v in x["infrastructure"]}:
+            infrastructure[value] += 1
+        for x in items:
+            source_upload_years[str(x.get("year") or "UNKNOWN")] += 1
+        year_label, field_used, conflicts = _study_year(items)
+        years[year_label] += 1
+        if conflicts:
+            year_discrepancies.append({
+                "study_id": study_id, "field": field_used,
+                "conflicting_values": conflicts,
+                "status": "DISCREPANCY_NOT_ARBITRARILY_RESOLVED",
+            })
+    return {
+        "objects": objects, "methods": methods, "infrastructure": infrastructure,
+        "years": years, "source_upload_years": source_upload_years,
+        "year_discrepancies": year_discrepancies,
+    }
+
+
+SCIENCE_FIELD_SECTION_QUESTION_IDS: dict[str, str] = {
+    "5.2": "problem",
+    "5.3": "objects",
+    "5.5": "performed_research_methods",
+    "5.7": "recording",
+    "5.8": "evidence",
+    "5.9": "infrastructure",
+    "5.11": "labor",
+    "5.12": "result_form",
+    "5.13": "unfinished",
+}
+SCIENCE_ATLAS_QUESTION_IDS: dict[str, str] = {
+    "5.3": "objects",
+    "5.5": "performed_research_methods",
+    "5.9": "infrastructure",
+}
+
+
+def _science_field_sections(
+    overlay_by_study: Mapping[str, AuthorialStudyOracle],
+    selected_source_ids: Sequence[str],
+    report_id: str,
+    question_labels: Mapping[str, str],
+) -> dict[str, Any]:
+    """Project owner-authored study overlays into report-section comparisons.
+
+    This reuses the existing M17 ``analysis_view`` selector-scoped overlay
+    import; it never invents a cross-study comparison from title/keyword
+    similarity, and it never claims comparability beyond NEEDS_REVIEW.
+    """
+
+    views: dict[str, dict[str, Any]] = {}
+    for study_id, analysis in sorted(overlay_by_study.items()):
+        view = analysis_view(analysis, selected_source_ids, report_id)
+        if view is not None:
+            views[study_id] = view
+    if not views:
+        return {
+            "status": "NO_STUDY_OVERLAY_AVAILABLE",
+            "sections": {}, "contributing_study_count": 0,
+            "contributing_study_ids": [],
+            "cross_study_comparability": "NOT_APPLICABLE_NO_OVERLAY",
+            "comparability_rationale": (
+                "No selected ResearchObject carries a source-bound scientific "
+                "study-analysis overlay; this is metadata-only, not field science."
+            ),
+            "any_overlay": False,
+        }
+    sections: dict[str, list[dict[str, Any]]] = {
+        f"{qid}_{label}": [] for qid, label in question_labels.items()
+    }
+    for study_id, view in sorted(views.items()):
+        state = view["evidence_state"]
+        answers_by_id = {a["question_id"]: a for a in state["answers"]}
+        omitted = set(state["omitted_question_ids"])
+        for qid, label in question_labels.items():
+            key = f"{qid}_{label}"
+            answer = answers_by_id.get(qid)
+            if answer is not None:
+                sections[key].append({
+                    "study_id": study_id,
+                    "question": answer["question"],
+                    "candidate_answer": answer["candidate_answer"],
+                    "assertion_modality": answer["assertion_modality"],
+                    "address_state": answer["address_state"],
+                    "source_addresses": answer["source_addresses"],
+                    "carrier_selection_status": "INCLUDED_IN_SELECTED_CARRIERS",
+                })
+            elif qid in omitted:
+                sections[key].append({
+                    "study_id": study_id, "candidate_answer": None,
+                    "carrier_selection_status": "OMITTED_REQUIRED_CARRIER_NOT_SELECTED",
+                })
+            else:
+                sections[key].append({
+                    "study_id": study_id, "candidate_answer": None,
+                    "carrier_selection_status": "NOT_AUTHORED_FOR_THIS_QUESTION",
+                })
+    contributing = len(views)
+    if contributing >= 2:
+        status = "AGGREGATED_TWO_OR_MORE_STUDY_OVERLAYS"
+        comparability = "NEEDS_REVIEW"
+        rationale = (
+            "Two or more distinct ResearchObjects contribute source-bound "
+            "evidence to this bounded corpus subset. Shared or similar wording "
+            "across studies is not evidence of shared method, object, or "
+            "population; formal comparability requires explicit human "
+            "scientific review."
+        )
+    else:
+        status = "SINGLE_STUDY_OVERLAY_ONLY"
+        comparability = "NOT_APPLICABLE_SINGLE_STUDY"
+        rationale = (
+            "Only one selected ResearchObject carries a scientific "
+            "study-analysis overlay in this selection; no cross-study "
+            "comparison is possible."
+        )
+    return {
+        "status": status,
+        "sections": sections,
+        "contributing_study_count": contributing,
+        "contributing_study_ids": sorted(views),
+        "cross_study_comparability": comparability,
+        "comparability_rationale": rationale,
+        "any_overlay": True,
+    }
 
 
 def build_reports(
@@ -379,26 +568,98 @@ def build_reports(
                 for study in studies
             ]
         elif report_id == "R03":
+            metadata = _per_study_field_metadata(chosen)
+            overlay_by_study = {
+                a.study_id: a for a in analyses if a.study_id in studies
+            }
+            science = _science_field_sections(
+                overlay_by_study, [x["source_id"] for x in chosen], report_id,
+                SCIENCE_FIELD_SECTION_QUESTION_IDS,
+            )
+            corpus_readable = bool(chosen) and all(x["status"] == "WORKS" for x in chosen)
+            has_declared_tags = any(
+                x["objects"] or x["methods"] or x["infrastructure"] for x in chosen
+            )
+            if not has_declared_tags and not science["any_overlay"]:
+                tagging_status = "SCIENTIFIC_STUDY_ANALYSIS_MISSING"
+            elif not science["any_overlay"]:
+                tagging_status = "SCIENTIFIC_STUDY_ANALYSIS_METADATA_TAGS_ONLY"
+            else:
+                tagging_status = "SCIENTIFIC_STUDY_ANALYSIS_OVERLAY_PRESENT"
             base["field_map"] = {
                 "scope": "SELECTED_CORPUS_FIELD_NOT_GLOBAL_FIELD",
                 "study_count": len(studies), "source_count": len(chosen),
-                "objects": Counter(v for x in chosen for v in x["objects"]),
-                "methods": Counter(v for x in chosen for v in x["methods"]),
-                "infrastructure": Counter(v for x in chosen for v in x["infrastructure"]),
-                "recurring_terms": _words(chosen).most_common(12),
-                "years": Counter(str(x.get("year") or "UNKNOWN") for x in chosen),
+                "objects": metadata["objects"], "methods": metadata["methods"],
+                "infrastructure": metadata["infrastructure"],
+                "source_text_recurring_terms": _words(chosen).most_common(12),
+                "source_text_recurring_terms_meaning": (
+                    "RAW_SOURCE_TEXT_LEXICAL_FREQUENCY_NOT_SCIENTIFIC_CONCEPT"
+                ),
+                "years": metadata["years"],
+                "source_upload_years": metadata["source_upload_years"],
+                "year_discrepancies": metadata["year_discrepancies"],
+                "source_corpus_status": (
+                    "SOURCE_CORPUS_READABLE" if corpus_readable
+                    else "SOURCE_CORPUS_NOT_FULLY_READABLE"
+                ),
+                "scientific_study_analysis_status": tagging_status,
+                "science_overlay": science,
             }
             if len(studies) < 2:
                 base["limitations"].append("CORPUS_TOO_SMALL_FOR_FIELD_PATTERN")
+            if metadata["year_discrepancies"]:
+                base["limitations"].append("YEAR_METADATA_DISCREPANCY_UNRESOLVED")
+            if not corpus_readable:
+                base["limitations"].append("SOURCE_CORPUS_NOT_FULLY_READABLE")
+            if tagging_status == "SCIENTIFIC_STUDY_ANALYSIS_MISSING":
+                base["limitations"].append("SCIENTIFIC_STUDY_ANALYSIS_MISSING")
         elif report_id == "R04":
+            overlay_by_study = {
+                a.study_id: a for a in analyses if a.study_id in studies
+            }
+            atlas_science = _science_field_sections(
+                overlay_by_study, [x["source_id"] for x in chosen], report_id,
+                SCIENCE_ATLAS_QUESTION_IDS,
+            )
+            resource_availability = (
+                "RESOURCE_AVAILABLE_FROM_SRC_C" if manifest.get("internal_evidence")
+                else "RESOURCE_AVAILABLE_UNKNOWN"
+            )
             base["atlas_rows"] = [
                 {"study_id": study,
                  "objects": sorted({v for x in chosen if x["study_id"] == study for v in x["objects"]}),
                  "methods": sorted({v for x in chosen if x["study_id"] == study for v in x["methods"]}),
                  "infrastructure": sorted({v for x in chosen if x["study_id"] == study for v in x["infrastructure"]}),
-                 "actual_resource_availability": "UNKNOWN_WITHOUT_INTERNAL_SRC_C"}
+                 "actual_resource_availability": resource_availability,
+                 "science_overlay_sections": {
+                     key: [row for row in rows if row["study_id"] == study]
+                     for key, rows in atlas_science["sections"].items()
+                 } if study in overlay_by_study else {},
+                 }
                 for study in studies
             ]
+            base["method_object_instrument_science_overlay"] = atlas_science
+            has_declared_tags = any(
+                x["objects"] or x["methods"] or x["infrastructure"] for x in chosen
+            )
+            corpus_readable = bool(chosen) and all(x["status"] == "WORKS" for x in chosen)
+            base["source_corpus_status"] = (
+                "SOURCE_CORPUS_READABLE" if corpus_readable
+                else "SOURCE_CORPUS_NOT_FULLY_READABLE"
+            )
+            if not corpus_readable:
+                base["limitations"].append("SOURCE_CORPUS_NOT_FULLY_READABLE")
+            if not has_declared_tags and not atlas_science["any_overlay"]:
+                base["scientific_study_analysis_status"] = "SCIENTIFIC_STUDY_ANALYSIS_MISSING"
+                base["limitations"].append("SCIENTIFIC_STUDY_ANALYSIS_MISSING")
+            elif not atlas_science["any_overlay"]:
+                base["scientific_study_analysis_status"] = (
+                    "SCIENTIFIC_STUDY_ANALYSIS_METADATA_TAGS_ONLY"
+                )
+            else:
+                base["scientific_study_analysis_status"] = (
+                    "SCIENTIFIC_STUDY_ANALYSIS_OVERLAY_PRESENT"
+                )
         elif report_id == "R05":
             provided = {str(x.get("entity")): x for x in external}
             base["dossiers"] = [
