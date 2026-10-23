@@ -1,8 +1,11 @@
-"""Fail-closed, source-addressed R03 admission for two original I11 runs.
+"""In-process byte-consistency gate for two caller-supplied I11 runs.
 
-Caller-written SHA strings never establish real-run status. A private caller
-must first present bytes and terminal receipts to the admission gate. The
-result is local engineering evidence, not scientific acceptance or release.
+Checks recompute hashes and page excerpts over supplied bytes. Source identity,
+rights, production provenance, and publisher originalness are NOT attested:
+the terminal-receipt and REAL_PUBLISHED fields can be caller-authored. The gate
+issuer is an in-process integrity marker, NOT a security credential. The
+real archived Hub receipt schema currently does not satisfy this synthetic
+receipt protocol. No scientific, owner, or customer acceptance follows.
 """
 from __future__ import annotations
 
@@ -10,7 +13,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from types import MappingProxyType
 from typing import Any
 
@@ -26,7 +29,7 @@ _ALLOWED = frozenset({
     "UNKNOWN", "AUTHORIAL_HYPOTHESIS",
 })
 _LAYERS = frozenset({"RP", "SS", "FT", "PO", "BR", "IM", "PR"})
-_REAL_ADMISSION = "VERIFIED_REAL_TWO_RUN_SOURCE_ADMISSION"
+_REAL_ADMISSION = "IN_PROCESS_BYTE_COHERENCE_ONLY"
 _GATE_ISSUER = object()
 
 
@@ -45,14 +48,25 @@ class RunArtifactBytes:
     terminal_receipt: bytes
 
 
+@dataclass(frozen=True)
+class SourceIdentityPin:
+    """Byte-recomputed run identity, not an attested publisher provenance."""
+
+    work_id: str
+    job_id: str
+    source_pdf_sha256: str
+    model_page_text_sha256: str
+
+
 @dataclass(frozen=True, init=False)
 class VerifiedTwoRunAdmission:
-    """In-process result of the byte admission gate."""
+    """Caller-byte integrity result, not independent source authorization."""
 
     admission_digest: str
     run_digests: tuple[str, str]
     event_ledger_digests: tuple[str, str]
     receipt_digests: tuple[str, str]
+    source_identity_pins: tuple[SourceIdentityPin, SourceIdentityPin]
     page_maps: tuple[Mapping[int, str], Mapping[int, str]]
     provenance: str = "SELF_OBSERVED_UNATTESTED"
     _issuer: object = _GATE_ISSUER
@@ -60,6 +74,7 @@ class VerifiedTwoRunAdmission:
     def __init__(
         self, *, admission_digest: str, run_digests: tuple[str, str],
         event_ledger_digests: tuple[str, str], receipt_digests: tuple[str, str],
+        source_identity_pins: tuple[SourceIdentityPin, SourceIdentityPin],
         page_maps: tuple[Mapping[int, str], Mapping[int, str]],
         _issuer: object,
     ) -> None:
@@ -69,6 +84,7 @@ class VerifiedTwoRunAdmission:
         object.__setattr__(self, "run_digests", run_digests)
         object.__setattr__(self, "event_ledger_digests", event_ledger_digests)
         object.__setattr__(self, "receipt_digests", receipt_digests)
+        object.__setattr__(self, "source_identity_pins", source_identity_pins)
         object.__setattr__(self, "page_maps", page_maps)
         object.__setattr__(self, "provenance", "SELF_OBSERVED_UNATTESTED")
         object.__setattr__(self, "_issuer", _issuer)
@@ -233,8 +249,17 @@ def verify_two_run_source_admission(
         raise TwoRealI11R03Error("I11_NOT_TWO_DISTINCT_RUNS")
     if first[4] == second[4] or first[2] == second[2]:
         raise TwoRealI11R03Error("I11_DUPLICATE_OR_STALE_RECEIPT")
+    source_pins = tuple(
+        SourceIdentityPin(
+            work_id=run["work_id"], job_id=run["job_id"],
+            source_pdf_sha256=run["source_pdf_sha256"],
+            model_page_text_sha256=run["model_page_text_sha256"],
+        )
+        for run in (run_a, run_b)
+    )
     bound = {
         "status": _REAL_ADMISSION,
+        "source_identity_pins": [asdict(pin) for pin in source_pins],
         "run_digests": [first[0], second[0]],
         "event_ledger_digests": [first[1], second[1]],
         "receipt_digests": [first[2], second[2]],
@@ -242,7 +267,9 @@ def verify_two_run_source_admission(
     return VerifiedTwoRunAdmission(
         admission_digest=_digest(bound), run_digests=(first[0], second[0]),
         event_ledger_digests=(first[1], second[1]),
-        receipt_digests=(first[2], second[2]), page_maps=(first[3], second[3]),
+        receipt_digests=(first[2], second[2]),
+        source_identity_pins=source_pins,
+        page_maps=(first[3], second[3]),
         _issuer=_GATE_ISSUER,
     )
 
@@ -278,7 +305,7 @@ def build_two_real_i11_r03(
     comparisons: Sequence[Mapping[str, Any]], *,
     admission: VerifiedTwoRunAdmission | None = None,
 ) -> dict[str, Any]:
-    """Build a private R03 candidate; no gate means no real-run status."""
+    """Build a private R03 candidate, retaining explicit unattested provenance."""
     if admission is None:
         return _unverified_projection(run_a, run_b)
     if admission._issuer is not _GATE_ISSUER:
@@ -287,6 +314,16 @@ def build_two_real_i11_r03(
         _check_run(run)
     if admission.run_digests != (_digest(dict(run_a)), _digest(dict(run_b))):
         raise TwoRealI11R03Error("I11_ADMISSION_RUN_MISMATCH")
+    expected_source_pins = tuple(
+        SourceIdentityPin(
+            work_id=run["work_id"], job_id=run["job_id"],
+            source_pdf_sha256=run["source_pdf_sha256"],
+            model_page_text_sha256=run["model_page_text_sha256"],
+        )
+        for run in (run_a, run_b)
+    )
+    if admission.source_identity_pins != expected_source_pins:
+        raise TwoRealI11R03Error("I11_ADMISSION_SOURCE_IDENTITY_MISMATCH")
     ledgers = (events_a, events_b)
     current_ledgers = tuple(_digest([dict(e) for e in ledger]) for ledger in ledgers)
     if admission.event_ledger_digests != current_ledgers:
@@ -342,16 +379,16 @@ def build_two_real_i11_r03(
         })
     content = {
         "schema": "seshat.i11.two_real_run_r03.v2", "report_id": "R03",
-        "status": "VERIFIED_SOURCE_ADMISSION_REVIEW_PENDING", "actual_real_model_runs": 2,
+         "status": "BYTE_CONSISTENT_UNATTESTED_REVIEW_PENDING", "actual_real_model_runs": 2,
         "jobs": [run_a["job_id"], run_b["job_id"]], "method_sha256": AUTHORIAL_I11_SHA256,
         "comparison_claims": validated, "admission_status": _REAL_ADMISSION,
         "admission_digest": admission.admission_digest,
         "run_manifest_digests": list(admission.run_digests),
         "event_ledger_digests": list(admission.event_ledger_digests),
         "terminal_receipt_digests": list(admission.receipt_digests),
-        "original_sources_only": True,
-        "source_evidence_status": "BYTE_AND_PAGE_EXCERPT_VERIFIED_WITH_REVIEW_PENDING",
-        "sampling_rule": "TWO_OWNER_SELECTED_ORIGINAL_I11_RUNS_NOT_A_POPULATION_SAMPLE",
+        "original_sources_only": None,
+        "source_evidence_status": "CALLER_BYTES_PAGE_EXCERPTS_SELF_CHECKED_REVIEW_PENDING",
+        "sampling_rule": "TWO_CALLER_SUPPLIED_I11_RUNS_NOT_A_POPULATION_SAMPLE",
         "coverage_status": "BOUNDED_TWO_WORK_COMPARISON",
         "implementation_missingness": {
             "source_a": "UNKNOWN", "source_b": "UNKNOWN",

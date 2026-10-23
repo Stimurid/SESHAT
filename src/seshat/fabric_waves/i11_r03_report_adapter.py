@@ -77,14 +77,14 @@ class I11R03CandidateClaim(FrozenModel):
 class I11R03V2Projection(FrozenModel):
     schema: Literal["seshat.i11.two_real_run_r03.v2"]
     report_id: Literal["R03"]
-    status: Literal["UNVERIFIED_INPUTS", "VERIFIED_SOURCE_ADMISSION_REVIEW_PENDING"]
+    status: Literal["UNVERIFIED_INPUTS", "BYTE_CONSISTENT_UNATTESTED_REVIEW_PENDING"]
     actual_real_model_runs: Literal[0, 2]
     candidate_jobs: tuple[str | None, str | None] | None = None
     jobs: tuple[str, str] | None = None
     method_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     comparison_claims: tuple[I11R03CandidateClaim, ...]
     admission_status: Literal[
-        "UNVERIFIED_CALLER_ASSERTIONS", "VERIFIED_REAL_TWO_RUN_SOURCE_ADMISSION"
+        "UNVERIFIED_CALLER_ASSERTIONS", "IN_PROCESS_BYTE_COHERENCE_ONLY"
     ]
     admission_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     run_manifest_digests: tuple[str, str] | None = None
@@ -92,10 +92,10 @@ class I11R03V2Projection(FrozenModel):
     terminal_receipt_digests: tuple[str, str] | None = None
     original_sources_only: bool | None = None
     source_evidence_status: Literal[
-        "BYTE_AND_PAGE_EXCERPT_VERIFIED_WITH_REVIEW_PENDING"
+        "CALLER_BYTES_PAGE_EXCERPTS_SELF_CHECKED_REVIEW_PENDING"
     ] | None = None
     sampling_rule: Literal[
-        "TWO_OWNER_SELECTED_ORIGINAL_I11_RUNS_NOT_A_POPULATION_SAMPLE"
+        "TWO_CALLER_SUPPLIED_I11_RUNS_NOT_A_POPULATION_SAMPLE"
     ] | None = None
     coverage_status: Literal["BOUNDED_TWO_WORK_COMPARISON"] | None = None
     implementation_missingness: dict[str, Any] | None = None
@@ -123,7 +123,7 @@ class I11R03V2Projection(FrozenModel):
                 raise ValueError("I11_R03_UNVERIFIED_SHAPE_INVALID")
         elif (
             self.actual_real_model_runs != 2
-            or self.admission_status != "VERIFIED_REAL_TWO_RUN_SOURCE_ADMISSION"
+            or self.admission_status != "IN_PROCESS_BYTE_COHERENCE_ONLY"
             or self.jobs is None
             or len(set(self.jobs)) != 2
             or not self.comparison_claims
@@ -131,15 +131,15 @@ class I11R03V2Projection(FrozenModel):
             or self.run_manifest_digests is None
             or self.event_ledger_digests is None
             or self.terminal_receipt_digests is None
-            or self.original_sources_only is not True
+            or self.original_sources_only is not None
             or self.source_evidence_status
-            != "BYTE_AND_PAGE_EXCERPT_VERIFIED_WITH_REVIEW_PENDING"
+            != "CALLER_BYTES_PAGE_EXCERPTS_SELF_CHECKED_REVIEW_PENDING"
             or self.sampling_rule
-            != "TWO_OWNER_SELECTED_ORIGINAL_I11_RUNS_NOT_A_POPULATION_SAMPLE"
+            != "TWO_CALLER_SUPPLIED_I11_RUNS_NOT_A_POPULATION_SAMPLE"
             or self.coverage_status != "BOUNDED_TWO_WORK_COMPARISON"
         ):
             raise ValueError("I11_R03_ADMITTED_SHAPE_INCOMPLETE")
-        if self.status == "VERIFIED_SOURCE_ADMISSION_REVIEW_PENDING":
+        if self.status == "BYTE_CONSISTENT_UNATTESTED_REVIEW_PENDING":
             if self.method_sha256 != AUTHORIAL_I11_SHA256:
                 raise ValueError("I11_R03_FROZEN_METHOD_MISMATCH")
             for claim in self.comparison_claims:
@@ -206,6 +206,8 @@ def _validate_base(report: ReportProjection) -> None:
         raise I11R03ReportAdapterError("I11_R03_FALSE_SCIENTIFIC_ACCEPTANCE")
     if report.scientific_asset is not None:
         raise I11R03ReportAdapterError("I11_R03_BASE_SCIENTIFIC_ASSET_CONFLICT")
+    if report.status == "BLOCKED":
+        raise I11R03ReportAdapterError("I11_R03_BASE_REPORT_BLOCKED")
 
 
 def _blocked_projection(report: ReportProjection, reason: str) -> ReportProjection:
@@ -269,6 +271,16 @@ def project_i11_r03_into_f08(
         raise I11R03ReportAdapterError("I11_R03_ADMISSION_BINDING_MISMATCH")
     if review is None:
         return _blocked_projection(base_report, "INDEPENDENT_SCIENCE_REVIEW_REQUIRED")
+    for claim in source.comparison_claims:
+        for index, item in enumerate(claim.evidence):
+            pin = admission.source_identity_pins[index]
+            if (
+                item.work_id != pin.work_id
+                or item.job_id != pin.job_id
+                or item.source_pdf_sha256 != pin.source_pdf_sha256
+                or item.model_page_text_sha256 != pin.model_page_text_sha256
+            ):
+                raise I11R03ReportAdapterError("I11_R03_SOURCE_IDENTITY_PIN_MISMATCH")
 
     complete = all(
         claim.status == "SOURCE_ADDRESSED_REVIEW_PENDING"
@@ -303,9 +315,8 @@ def project_i11_r03_into_f08(
                     ),
                 )
             tokens.append(token)
-        review_label = review.disposition if review is not None else "UNREVIEWED"
         claims.append(Claim(
-            label=f"candidate comparison {index} / {candidate.kind} / review={review_label}",
+            label=f"candidate comparison {index} / {candidate.kind} / independent-science=NOT_ASSERTED",
             value=candidate.statement,
             state="BLOCKED",
             evidence=tuple(sorted(tokens)),
@@ -315,6 +326,9 @@ def project_i11_r03_into_f08(
             state="BLOCKED", evidence=tuple(sorted(tokens)),
         ))
     claims.extend((
+        Claim(label="review provenance",
+              value="CALLER_SUBMITTED_UNATTESTED_NOT_SCIENTIFIC_ACCEPTANCE",
+              state="BLOCKED", evidence=()),
         Claim(label="comparison sampling rule", value=source.sampling_rule,
               state="BLOCKED", evidence=()),
         Claim(label="comparison coverage", value=source.coverage_status,
