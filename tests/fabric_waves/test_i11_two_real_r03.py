@@ -122,7 +122,7 @@ def test_verified_bytes_receipts_ledgers_and_excerpts_produce_review_pending(mon
     assert result["customer_release"] == "BLOCKED"
     assert result["product_wiring"] == "NOT_PRODUCT_WIRED"
     assert result["implementation_missingness"]["source_a"] == "UNKNOWN"
-    assert result["implementation_missingness"]["source_b"] == "MODEL_REPORTS_ABSENCE"
+    assert result["implementation_missingness"]["source_b"] == "UNKNOWN"
     claim = result["comparison_claims"][0]
     assert claim["status"] == "SOURCE_ADDRESSED_REVIEW_PENDING"
     assert {item["evidence_verification"] for item in claim["evidence"]} == {"VERIFIED_EXACT"}
