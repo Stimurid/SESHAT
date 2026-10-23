@@ -162,3 +162,81 @@ def test_resource_cut_requires_critical_p2_or_p3():
     original = assembled()
     with pytest.raises(EvidenceLedgerError, match="RESOURCE_NOT_FOUND"):
         apply_resource_cut(original,resource_id="I09.MISSING",evidence_note="lost")
+
+
+
+def _verified_v2_input(monkeypatch):
+    """Genuine synthetic-byte I11 gate, not a hand-invented positive JSON."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).with_name("test_i11_r03_report_adapter.py")
+    spec = importlib.util.spec_from_file_location("_seshat_ledger_v2_gate_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.gated_builder_projection(monkeypatch)
+
+
+def test_current_v2_admission_enters_i08_i09_only_as_unattested_ledger(monkeypatch):
+    projection, admission = _verified_v2_input(monkeypatch)
+    specs = package()[1][:1]
+    ledger = build_evidence_ledger(
+        projection, claim_specs=specs, source_admission=admission,
+    )
+    assert ledger["based_on_r03_projection_sha256"] == projection["projection_sha256"]
+    assert list(ledger["claim_cards"]) == ["R03.C01"]
+    assert ledger["source_admission_provenance"] == "V2_BYTE_COHERENT_SELF_OBSERVED_UNATTESTED"
+    assert ledger["claim_cards"]["R03.C01"]["status"] == "SOURCE_ADDRESSED_UNREVIEWED"
+    assert ledger["scientific_acceptance"] == "NOT_PERFORMED"
+    assert ledger["customer_release"] == "BLOCKED"
+
+
+def test_archival_v1_ledger_is_not_misrepresented_as_current_proof():
+    ledger = assembled()
+    assert ledger["source_admission_provenance"] == "V1_LEGACY_ARCHIVAL_UNATTESTED"
+
+
+def test_v2_self_hashed_projection_cannot_skip_admission(monkeypatch):
+    source, admission = _verified_v2_input(monkeypatch)
+    with pytest.raises(EvidenceLedgerError, match="R03_V2_GATE_ADMISSION_REQUIRED"):
+        build_evidence_ledger(source, claim_specs=package()[1][:1])
+    unverified = copy.deepcopy(source)
+    unverified["status"] = "UNVERIFIED_INPUTS"
+    from seshat.corpus import _digest
+    unverified["projection_sha256"] = _digest({
+        k: v for k,v in unverified.items() if k != "projection_sha256"
+    })
+    with pytest.raises(EvidenceLedgerError, match="UNACCEPTABLE_R03_V2_SHAPE|R03_V2_GATE_ADMISSION_REQUIRED"):
+        build_evidence_ledger(
+            unverified, claim_specs=package()[1][:1], source_admission=admission,
+        )
+
+
+def test_v2_normalized_only_page_is_rejected_even_with_gate(monkeypatch):
+    source, admission = _verified_v2_input(monkeypatch)
+    tainted = copy.deepcopy(source)
+    tainted["comparison_claims"][0]["evidence"][0]["evidence_verification"] = "NORMALIZED_ONLY"
+    tainted["comparison_claims"][0]["status"] = "EVIDENCE_VERIFICATION_REVIEW_PENDING"
+    from seshat.corpus import _digest
+    tainted["projection_sha256"] = _digest({
+        k: v for k,v in tainted.items() if k != "projection_sha256"
+    })
+    with pytest.raises(EvidenceLedgerError, match="R03_V2_EXACT_SOURCE_EVIDENCE_REQUIRED"):
+        build_evidence_ledger(
+            tainted, claim_specs=package()[1][:1], source_admission=admission,
+        )
+
+
+def test_v2_evidence_identity_mutation_cannot_inherit_admission(monkeypatch):
+    source, admission = _verified_v2_input(monkeypatch)
+    tampered = copy.deepcopy(source)
+    tampered["comparison_claims"][0]["evidence"][0]["source_pdf_sha256"] = "9" * 64
+    from seshat.corpus import _digest
+    tampered["projection_sha256"] = _digest({
+        k: v for k,v in tampered.items() if k != "projection_sha256"
+    })
+    with pytest.raises(EvidenceLedgerError, match="R03_V2_SOURCE_IDENTITY_MISMATCH"):
+        build_evidence_ledger(
+            tampered, claim_specs=package()[1][:1], source_admission=admission,
+        )
