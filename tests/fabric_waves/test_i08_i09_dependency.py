@@ -240,3 +240,21 @@ def test_v2_evidence_identity_mutation_cannot_inherit_admission(monkeypatch):
         build_evidence_ledger(
             tampered, claim_specs=package()[1][:1], source_admission=admission,
         )
+
+
+
+def test_per_card_provenance_distinguishes_archival_v1_from_live_v2(monkeypatch):
+    archived = assembled()
+    assert archived["claim_cards"]["R03.C01"]["provenance"] == (
+        "OPERATOR_AUTHORED_WITH_UNVERIFIED_LEGACY_V1_POINTERS"
+    )
+    source, admission = _verified_v2_input(monkeypatch)
+    live = build_evidence_ledger(
+        source, claim_specs=package()[1][:1], source_admission=admission
+    )
+    assert live["claim_cards"]["R03.C01"]["provenance"] == (
+        "OPERATOR_AUTHORED_WITH_SOURCE_EVENT_POINTERS"
+    )
+    assert live["source_admission_provenance"] == (
+        "V2_BYTE_COHERENT_SELF_OBSERVED_UNATTESTED"
+    )
