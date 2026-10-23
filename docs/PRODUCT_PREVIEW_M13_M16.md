@@ -67,9 +67,21 @@ authorized decision.
 All outputs remain `SELF_OBSERVED_UNATTESTED`: scientific acceptance and
 customer release stay human-only.
 
-Current exact M13 limitation: the exported M5/M6 activation witnesses are real
-engine records from the approved synthetic two-world fixture, but the selected
-owner files are not yet causally bound into those activations. The receipt says
-`PARTIAL_SYNTHETIC_ENGINE_DEMONSTRATION`; it does not splice the two traces into
-a fake source-bound route. The product still provides the full typed operation
-plan and immutable historical-method pins needed for that next adapter.
+Current M13 owner-source Carpet route: selected readable local PDF/TXT sources
+are now loaded as versioned, content-hashed text-derived SourceCarriers through
+FabricCarrierStore and ACTUALLY fire the shared WaveEngine. Per-source reading
+threads feed separate historical I11 candidate-index threads and a corpus-field
+summary. The native activations/events/sediment and source Carpet HTML live in
+owner_source_carpet/owner-source-baseline/; source identity and raw PDF SHA are
+preserved separately from freshly extracted text SHA. No old Opus job was rerun.
+
+An owner-local counterfactual B revision is run through SOURCE_DELTA on a
+separate engine run; it leaves both original PDF files unchanged, selectively
+refires the B reader/index and dependent corpus summary, and leaves A idle.
+This is a REVISION TEST, not evidence that a published article was revised.
+
+Historical I11 outputs are indexed, not re-executed as a new model call;
+full I08/I09/I12/C09 native MethodBody execution remains PARTIAL. Existing
+M5/M6 two-world demos are retained as separate synthetic engineering evidence;
+they are no longer the sole source of activation witnesses. The functional
+real-source path is a preview rather than customer/scientific acceptance.

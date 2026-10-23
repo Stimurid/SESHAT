@@ -206,3 +206,65 @@ def test_archive_count_requires_real_manifest(tmp_path):
     census = load_archive_census(manifest, tmp_path)
     assert census["record_count"] == 2
     assert census["records_read_or_analysed"] is False
+
+
+def test_historical_i11_events_render_readable_and_page_addressed(tmp_path):
+    from seshat.product_preview import _markdown
+    manifest = _manifest(tmp_path)
+    (tmp_path / "i11.json").write_text(json.dumps({
+        "work_id": "study-1",
+        "action_events": [{
+            "id": "E01",
+            "layer": "RP",
+            "relation_mode": "SOURCE_ASSERTED_OPERATION",
+            "verb": "conducted interviews and created transcripts",
+            "actor_ids": ["RESEARCHER_UNNAMED"],
+            "source_addresses": [{"page": 4, "section": "Methods",
+                                  "quote": "interviews were conducted"}],
+        }],
+    }), encoding="utf-8")
+    sources = ingest_sources(manifest, tmp_path)
+    selections = build_selections(manifest, sources)
+    methods = load_method_outputs(manifest, tmp_path)
+    reports = build_reports(manifest, sources, selections, methods)
+    r01 = reports["R01"]
+    r02 = reports["R02"]
+    assembly = next(x for x in r01["study_assemblies"] if x["study_id"] == "study-1")
+    assert len(assembly["historical_actions"]) == 1
+    assert assembly["historical_layer_counts"] == {"RP": 1}
+    assert "E01 / RP / SOURCE_ASSERTED_OPERATION" in _markdown(r01)
+    assert "conducted interviews and created transcripts" in _markdown(r01)
+    assert "p.4" in _markdown(r02)
+    assert "linked JSON retains" in _markdown(r01)
+    assert "Scientific acceptance" in _markdown(r01)
+
+
+def test_canonical_i11_method_id_maps_to_existing_historical_variant(tmp_path):
+    manifest = _manifest(tmp_path)
+    manifest["method_outputs"][0]["method_id"] = "I11_ACTIVITY_NETWORK"
+    sources = ingest_sources(manifest, tmp_path)
+    methods = load_method_outputs(manifest, tmp_path)
+    route = build_operation_route(sources, methods, {"status": "PARTIAL"})
+    i11 = next(x for x in route["typed_operations"]
+               if x["study_id"] == "study-1" and x["method_id"] == "I11")
+    assert i11["status"] == "WORKS_IMMUTABLE_SUPPLIED_OUTPUT"
+    assert i11["method_output_sha256"]
+
+
+def test_small_selected_field_reports_scope_and_six_education_zones(tmp_path):
+    from seshat.product_preview import _markdown
+    manifest, sources, selections, methods = _loaded(tmp_path)
+    reports = build_reports(manifest, sources, selections, methods)
+    assert "TWO_STUDY_FIELD_ONLY_NOT_INSTITUTIONAL_COVERAGE" in reports["R03"]["limitations"]
+    assert "not stand for a university" in _markdown(reports["R03"])
+    assert len(reports["R08"]["learning_projection"]["six_zones"]) == 6
+    assert "Hypothesis Lab" in _markdown(reports["R08"])
+    assert "Arena" in _markdown(reports["R08"])
+
+
+def test_article_opportunities_are_not_about_missing_dissertation(tmp_path):
+    manifest, sources, selections, methods = _loaded(tmp_path)
+    manifest["report_selectors"]["R07"] = "article"
+    reports = build_reports(manifest, sources, selections, methods)
+    types = {x["type"] for x in reports["R07"]["opportunities"]}
+    assert types == {"unresolved_research_gap", "method_transfer", "outside_evidence_test"}

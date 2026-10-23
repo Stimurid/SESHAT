@@ -116,3 +116,34 @@ that gap.
    Default used: accept immutable paths when supplied; otherwise report partial.
 3. Is a real 186-record archive manifest available? Default used: no; reject a
    bare declared count.
+
+## OWNER-PRODUCT REAL-SOURCE CLOSEOUT · 2026-10-23
+
+Post-snapshot AORUS verification extends the M13–M16 product preview with a
+source-bound WaveEngine. On selected Sriharan and Marcinow PDF extractions
+(12 and 17 pages, each original file SHA verified locally), native
+source-read-1/source-read-2 -> i11-archive-index-1/index-2 ->
+selected-field-summary genuinely fired. Five distinct baseline threads;
+counterfactual B-source delta fired B read, B index and field summary only.
+Source A did not refire. B delta is a local hypothetical trial, not a real
+publication revision. The exact original I11 stdout/MethodBodies stay unchanged.
+
+Human-readable R01/R02 now report the 22 and 24 original candidate I11
+actions with source page anchors rather than JSON pasted under a heading.
+R03 = selected two-paper field only; R05 seven dossiers; R08 six proposed
+learning zones; R09 no autonomous institutional decisions.
+
+Products are owner-local in
+C:\AI\llm\aiye-executor\handoffs\SESHAT-M12-20261022\M13_M16_OWNER_REAL_INPUTS\product_preview_REAL_PLOS_A_B
+(R01..R09 MD/HTML/JSON, owner_source_carpet receipts and HTML, synthetic
+M5/M6 demonstrations, two F09A hosts). The private owner-selected source
+manifest and method results stay OUT of public Git.
+
+Owner-supplied file analysis requires readability, NOT a contract,
+publisher-license certificate or third-party legal attestation.
+
+New regression coverage: 23 targeted tests PASS + Ruff PASS on AORUS;
+both real-source baseline and counterfactual selective-delta verified.
+Full suite / final Git SHA should be recorded separately upon completion.
+Scientific owner and customer have NOT signed off; full native I08/I09/I12/C09
+MethodBody execution and external/internal source regimes remain future work.
