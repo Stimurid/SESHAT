@@ -6,6 +6,7 @@ from pathlib import Path
 
 from seshat.authorial_oracle import load_authorial_study_oracle
 from seshat.product_preview import (
+    _markdown,
     build_reports,
     build_selections,
     ingest_sources,
@@ -16,6 +17,29 @@ from seshat.product_preview import (
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _synthetic_question(number: int) -> dict:
+    if number < 7:
+        answer = f"Candidate reconstruction {number}; A PDF p.{number}."
+        required = ["source-a"]
+    elif number == 7:
+        answer = (
+            "Candidate reconstruction 7; A PDF p.7. "
+            "D introductory pages report SYNTHETIC_D_ONLY_MARKER 99/88."
+        )
+        required = ["source-a", "source-d"]
+    else:
+        answer = f"Candidate reconstruction {number}; D PDF p.{number}."
+        required = ["source-d"]
+    return {
+        "question_id": f"5.{number}",
+        "question": f"Neutral question {number}?",
+        "candidate_answer": answer,
+        "required_carrier_ids": required,
+        "assertion_modality": "E2_RECONSTRUCTION_CANDIDATE",
+        "review_status": "SOURCE_DIRECT_AUTHORIAL_DRAFT_NOT_MODEL_RUN",
+    }
 
 
 def _case(tmp_path: Path) -> tuple[dict, Path]:
@@ -64,16 +88,7 @@ def _case(tmp_path: Path) -> tuple[dict, Path]:
             {"source_id": "source-d", "kind": "D", "path": "d.txt",
              "sha256": _sha(tmp_path / "d.txt")},
         ],
-        "questions": [
-            {"question_id": f"5.{number}", "question": f"Neutral question {number}?",
-             "candidate_answer": (
-                 f"Candidate reconstruction {number}; A PDF p.{number}."
-                 if number < 8 else f"Candidate reconstruction {number}; D PDF p.{number}."
-             ),
-             "assertion_modality": "E2_RECONSTRUCTION_CANDIDATE",
-             "review_status": "SOURCE_DIRECT_AUTHORIAL_DRAFT_NOT_MODEL_RUN"}
-            for number in range(1, 15)
-        ],
+        "questions": [_synthetic_question(number) for number in range(1, 15)],
         "asserted_source_claims": [
             {"claim_id": "C.D.X12", "carrier": "source-d", "pdf_page_index": 10,
              "location": "Table X", "asserted_proposition": "variable-x is 12 of 20",
@@ -152,7 +167,17 @@ def test_conflicts_are_typed_and_a_only_excludes_d_claims(tmp_path):
     assert {item["contradiction_id"] for item in ad_state["contradictions"]} == {
         "N17-01", "N17-02"
     }
-    assert "12/20" in reports["R02"]["scientific_narratives"][0]["text"]
+    r02_md = _markdown(reports["R02"])
+    assert "12/20" in r02_md
+    assert "#### Source-fixed strong claims" in r02_md
+    assert "#### Preserved APORIA" in r02_md
+    assert "N17-01" in r02_md
+    assert "N17-02" in r02_md
+    r01_md = _markdown(reports["R01"])
+    assert "12/20" not in r01_md
+    assert "SYNTHETIC_D_ONLY_MARKER" not in r01_md
+    assert "99/88" not in r01_md
+    assert "D introductory pages" not in r01_md
     assert reports["R02"]["method_run_performed"] is False
     assert reports["R06"]["comparisons"] == []  # no fake global novelty from source D
 
@@ -217,3 +242,103 @@ def test_resume_reuses_versions_and_contradiction_delta_only_invalidates_r02(
     assert "R02" in changed["executed_items"]
     assert receipt["carpet"]["source_bound"]["targeted_invalidated_reports"] == ["R02"]
     assert changed["duplicate_model_calls"] == 0
+
+
+def test_typed_required_carriers_scope_a_only_and_full_ad(tmp_path):
+    _, _, _, _, _, reports = _loaded(tmp_path)
+    a_state = reports["R01"]["study_analyses"][0]
+    ad_state = reports["R02"]["study_analyses"][0]
+    assert {item["question_id"] for item in a_state["answers"]} == {
+        f"5.{number}" for number in range(1, 7)
+    }
+    assert {item["question_id"] for item in ad_state["answers"]} == {
+        f"5.{number}" for number in range(1, 15)
+    }
+    assert a_state["omitted_answer_count"] == 8
+    assert set(a_state["omitted_question_ids"]) == {f"5.{number}" for number in range(7, 15)}
+    assert ad_state["omitted_answer_count"] == 0
+    assert a_state["local_state"] == "PARTIAL"
+    assert reports["R01"]["scientific_narratives"][0]["origin"] == (
+        "SELECTOR_SCOPED_AUTHORIAL_CANDIDATES"
+    )
+    assert "STUDY_ANALYSIS_ANSWERS_OMITTED" in reports["R01"]["limitations"]
+    r01_md = _markdown(reports["R01"])
+    assert "SYNTHETIC_D_ONLY_MARKER" not in r01_md
+    assert "99/88" not in r01_md
+
+
+def test_missing_required_carrier_ids_fail_conservative(tmp_path):
+    manifest, oracle_path = _case(tmp_path)
+    payload = json.loads(oracle_path.read_text(encoding="utf-8"))
+    payload["questions"][0].pop("required_carrier_ids", None)
+    oracle_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    sources = ingest_sources(manifest, tmp_path)
+    selections = build_selections(manifest, sources)
+    analysis = load_authorial_study_oracle(oracle_path, sources)
+    reports = build_reports(manifest, sources, selections, [], [analysis])
+    ad_state = reports["R02"]["study_analyses"][0]
+    assert "5.1" not in {item["question_id"] for item in ad_state["answers"]}
+    assert "5.1" in ad_state["omitted_question_ids"]
+    assert ad_state["omitted_answer_count"] >= 1
+    assert ad_state["local_state"] == "PARTIAL"
+
+
+def test_explicit_a_binding_is_kept_even_if_prose_names_d(tmp_path):
+    manifest, oracle_path = _case(tmp_path)
+    payload = json.loads(oracle_path.read_text(encoding="utf-8"))
+    payload["questions"][0]["candidate_answer"] = (
+        "A-only reconstruction; D PDF p.99 names an excluded source in prose."
+    )
+    payload["questions"][0]["required_carrier_ids"] = ["source-a"]
+    oracle_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    sources = ingest_sources(manifest, tmp_path)
+    selections = build_selections(manifest, sources)
+    analysis = load_authorial_study_oracle(oracle_path, sources)
+    reports = build_reports(manifest, sources, selections, [], [analysis])
+    a_ids = {item["question_id"] for item in reports["R01"]["study_analyses"][0]["answers"]}
+    assert "5.1" in a_ids
+
+
+def test_four_aporia_retained_on_full_ad_selector(tmp_path):
+    manifest, oracle_path = _case(tmp_path)
+    payload = json.loads(oracle_path.read_text(encoding="utf-8"))
+    payload["asserted_source_claims"].extend([
+        {"claim_id": "C.D.DIR_YES", "carrier": "source-d", "pdf_page_index": 20,
+         "location": "Table Dir", "asserted_proposition": "direction yes is 3 of 11",
+         "metric": "direction-yes", "numerator": 3, "denominator": 11,
+         "source_modality": "E1_SOURCE_FIXATION"},
+        {"claim_id": "C.D.DIR_NO", "carrier": "source-d", "pdf_page_index": 20,
+         "location": "Table Dir", "asserted_proposition": "direction no is 8 of 11",
+         "metric": "direction-no", "numerator": 8, "denominator": 11,
+         "source_modality": "E1_SOURCE_FIXATION"},
+        {"claim_id": "C.D.ROW_A", "carrier": "source-d", "pdf_page_index": 21,
+         "location": "Table Row", "asserted_proposition": "row part a is 4",
+         "metric": "row-a", "numerator": 4, "denominator": 11,
+         "source_modality": "E1_SOURCE_FIXATION"},
+        {"claim_id": "C.D.ROW_B", "carrier": "source-d", "pdf_page_index": 21,
+         "location": "Table Row", "asserted_proposition": "row part b is 6",
+         "metric": "row-b", "numerator": 6, "denominator": 11,
+         "source_modality": "E1_SOURCE_FIXATION"},
+    ])
+    payload["scientific_conflicts"].extend([
+        {"conflict_id": "N17-03", "type": "DIRECTION_PROSE_CONFLICT",
+         "claim_ids": ["C.D.DIR_YES", "C.D.DIR_NO"], "status": "UNRESOLVED",
+         "interpretation": "table direction yes/no disagree with adjacent prose",
+         "desired_R01": "preserve", "desired_R02": "trace"},
+        {"conflict_id": "N17-04", "type": "ROW_SUM_CONFLICT",
+         "claim_ids": ["C.D.ROW_A", "C.D.ROW_B"], "status": "UNRESOLVED",
+         "interpretation": "row parts 4+6 do not match the printed total without explanation",
+         "desired_R01": "preserve", "desired_R02": "trace"},
+    ])
+    oracle_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    sources = ingest_sources(manifest, tmp_path)
+    selections = build_selections(manifest, sources)
+    analysis = load_authorial_study_oracle(oracle_path, sources)
+    reports = build_reports(manifest, sources, selections, [], [analysis])
+    r02_md = _markdown(reports["R02"])
+    assert {item["contradiction_id"] for item in reports["R02"]["study_analyses"][0]["contradictions"]} == {
+        "N17-01", "N17-02", "N17-03", "N17-04",
+    }
+    for conflict_id in ("N17-01", "N17-02", "N17-03", "N17-04"):
+        assert conflict_id in r02_md
+    assert reports["R01"]["study_analyses"][0]["contradictions"] == []

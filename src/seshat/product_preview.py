@@ -462,6 +462,8 @@ def build_reports(
                 base["method_run_performed"] = False
                 if any(view["evidence_state"]["local_state"] == "PARTIAL" for view in views):
                     base["limitations"].append("STUDY_ANALYSIS_SELECTOR_SCOPED_PARTIAL")
+                if any(view["evidence_state"].get("omitted_answer_count", 0) for view in views):
+                    base["limitations"].append("STUDY_ANALYSIS_ANSWERS_OMITTED")
         base["status"] = "PARTIAL" if base["limitations"] else "WORKS_UNREVIEWED"
         reports[report_id] = base
     return reports

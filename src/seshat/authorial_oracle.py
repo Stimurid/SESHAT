@@ -53,6 +53,7 @@ class ResearchAnswerCandidate(BaseModel):
     role: str = "AUTHORIAL_ANALYTIC_CANDIDATE"
     review_state: str = "SOURCE_DIRECT_AUTHORIAL_DRAFT_NOT_MODEL_RUN"
     source_addresses: tuple[SourcePageAddress, ...] = ()
+    requires_source_ids: tuple[str, ...] = ()
     address_state: str = "PARTIAL_SOURCE_ADDRESS"
 
 
@@ -168,6 +169,17 @@ def _source_map(source_records: Iterable[Mapping[str, Any]]) -> dict[str, Mappin
     return {str(record["source_id"]): record for record in source_records}
 
 
+def _load_required_source_ids(item: Mapping[str, Any]) -> tuple[str, ...]:
+    raw = item.get("required_carrier_ids")
+    if raw is None:
+        raw = item.get("requires_source_ids")
+    if raw is None:
+        return ()
+    if not isinstance(raw, (list, tuple)):
+        raise AuthorialOracleError("AUTHORIAL_ORACLE_REQUIRED_CARRIER_IDS_INVALID")
+    return tuple(str(value) for value in raw if str(value))
+
+
 def load_authorial_study_oracle(
     path: Path,
     source_records: Sequence[Mapping[str, Any]],
@@ -209,6 +221,9 @@ def load_authorial_study_oracle(
     for item in payload.get("questions", ()):
         answer = str(item.get("candidate_answer") or "")
         addresses = _answer_addresses(answer, carrier_map)
+        required = _load_required_source_ids(item)
+        if any(source_id not in carrier_map for source_id in required):
+            raise AuthorialOracleError("AUTHORIAL_ORACLE_REQUIRED_CARRIER_UNKNOWN")
         answers.append(ResearchAnswerCandidate(
             question_id=str(item.get("question_id") or ""),
             question=str(item.get("question") or ""),
@@ -216,6 +231,7 @@ def load_authorial_study_oracle(
             assertion_modality=str(item.get("assertion_modality") or "E2_RECONSTRUCTION_CANDIDATE"),
             review_state=str(item.get("review_status") or "SOURCE_DIRECT_AUTHORIAL_DRAFT_NOT_MODEL_RUN"),
             source_addresses=addresses,
+            requires_source_ids=required,
             address_state="SOURCE_ADDRESSED" if addresses else "PARTIAL_SOURCE_ADDRESS",
         ))
 
@@ -312,17 +328,11 @@ def load_study_analyses(
 def _answer_allowed(
     answer: ResearchAnswerCandidate,
     selected_ids: set[str],
-    carriers: Sequence[OracleCarrier],
 ) -> bool:
-    excluded_kinds = {carrier.kind for carrier in carriers if carrier.source_id not in selected_ids}
-    # Mixed prose cannot be safely split into source-specific assertions.  If
-    # it names an excluded A/D source, omit the whole answer rather than leak a
-    # D-only claim into an A-only view (or vice versa).
-    for kind in excluded_kinds & {"A", "D"}:
-        if re.search(rf"\b{kind}(?:\s+PDF)?\s+p", answer.candidate_answer, re.IGNORECASE):
-            return False
-    addressed = {address.source_id for address in answer.source_addresses}
-    return not addressed or bool(addressed & selected_ids)
+    required = set(answer.requires_source_ids)
+    if not required:
+        return False
+    return required <= selected_ids
 
 
 def analysis_view(
@@ -340,12 +350,18 @@ def analysis_view(
     contradictions = [
         item for item in analysis.contradictions if set(item.claim_ids) <= claim_ids
     ]
-    answers = [
-        answer for answer in analysis.answers
-        if _answer_allowed(answer, selected, analysis.carriers)
-    ]
+    allowed: list[ResearchAnswerCandidate] = []
+    omitted: list[ResearchAnswerCandidate] = []
+    for answer in analysis.answers:
+        if _answer_allowed(answer, selected):
+            allowed.append(answer)
+        else:
+            omitted.append(answer)
     all_carriers = selected == {carrier.source_id for carrier in analysis.carriers}
-    authored = analysis.authored_reports.get(report_id) if all_carriers else None
+    authored = (
+        analysis.authored_reports.get(report_id)
+        if all_carriers and not omitted else None
+    )
     if authored:
         narrative = authored
         narrative_origin = "OWNER_AUTHORIAL_PROTOTYPE_SOURCE_BOUND"
@@ -357,10 +373,20 @@ def analysis_view(
         paragraphs.extend(
             f"{answer.question} {answer.candidate_answer} "
             f"[{answer.assertion_modality}; {answer.address_state}]"
-            for answer in answers
+            for answer in allowed
         )
         narrative = "\n\n".join(paragraphs)
         narrative_origin = "SELECTOR_SCOPED_AUTHORIAL_CANDIDATES"
+    unknowns = [
+        "independent scientific acceptance",
+        "unaddressed or excluded carrier assertions",
+    ]
+    if omitted:
+        unknowns.append(
+            f"{len(omitted)} curated answers omitted because required_carrier_ids "
+            "are not a subset of the selected sources "
+            "(PARTIAL/UNKNOWN; no lexical provenance guess)"
+        )
     state = {
         "schema": "seshat.m17.study-evidence-state.v0.1",
         "study_id": analysis.study_id,
@@ -375,14 +401,18 @@ def analysis_view(
         ],
         "method_execution_status": analysis.method_execution_status,
         "scientific_acceptance": analysis.scientific_acceptance,
-        "answers": [answer.model_dump(mode="json") for answer in answers],
+        "answers": [answer.model_dump(mode="json") for answer in allowed],
+        "omitted_answer_count": len(omitted),
+        "omitted_question_ids": [answer.question_id for answer in omitted],
+        "answer_scope_rule": "REQUIRED_CARRIER_IDS_SUBSET",
         "claims": [claim.model_dump(mode="json") for claim in claims],
         "contradictions": [item.model_dump(mode="json") for item in contradictions],
-        "local_state": "PARTIAL" if len(selected) < len(analysis.carriers) else "WORKING_UNREVIEWED",
-        "unknowns": [
-            "independent scientific acceptance",
-            "unaddressed or excluded carrier assertions",
-        ],
+        "local_state": (
+            "PARTIAL"
+            if len(selected) < len(analysis.carriers) or omitted
+            else "WORKING_UNREVIEWED"
+        ),
+        "unknowns": unknowns,
     }
     projection_sha = hashlib.sha256(
         json.dumps(state, ensure_ascii=False, sort_keys=True).encode("utf-8")
