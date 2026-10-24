@@ -13,10 +13,19 @@ import hashlib
 import html
 import json
 import re
+import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
+
+from seshat.authorial_oracle import (
+    AuthorialStudyOracle,
+    analysis_view,
+    load_study_analyses,
+    oracle_pins,
+)
+from seshat.m17_source_carpet import run_source_bound_carpet as run_authorial_carpet
 
 SCHEMA = "seshat.product-preview.v1"
 REPORT_PURPOSES = {
@@ -112,22 +121,80 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
             raise ProductPreviewError("UNKNOWN_SELECTOR_MODE")
 
 
+_PAGE_BANNER_RE = re.compile(r"===\s*PAGE\s+\d+\s*===", re.IGNORECASE)
+
+
+def _pdf_body_has_text(text: str) -> bool:
+    """True when extracted PDF text has body content, not only page banners."""
+
+    return bool(_PAGE_BANNER_RE.sub(" ", text).strip())
+
+
+def _format_pdf_pages(page_texts: Iterable[str]) -> tuple[str, int]:
+    pages = [
+        f"\n=== PAGE {number} ===\n{text}"
+        for number, text in enumerate(page_texts, 1)
+    ]
+    return "".join(pages), len(pages)
+
+
+def _extract_pdf_pypdf(path: Path) -> tuple[str, int]:
+    from pypdf import PdfReader
+
+    reader = PdfReader(path)
+    return _format_pdf_pages(page.extract_text() or "" for page in reader.pages)
+
+
+def _import_optional_pymupdf() -> Any:
+    try:
+        import pymupdf
+        return pymupdf
+    except ImportError:
+        try:
+            import fitz as pymupdf
+            return pymupdf
+        except ImportError as exc:
+            raise ProductPreviewError("PDF_FALLBACK_UNAVAILABLE") from exc
+
+
+def _extract_pdf_pymupdf(path: Path) -> tuple[str, int]:
+    pymupdf = _import_optional_pymupdf()
+    doc = pymupdf.open(path)
+    try:
+        return _format_pdf_pages(page.get_text() or "" for page in doc)
+    finally:
+        close = getattr(doc, "close", None)
+        if close is not None:
+            close()
+
+
 def _extract_source(path: Path) -> tuple[str, int | None, str]:
     suffix = path.suffix.casefold()
     if suffix in {".txt", ".md"}:
         return path.read_text(encoding="utf-8-sig"), None, "TEXT_EXTRACTED"
     if suffix == ".pdf":
+        pypdf_error: Exception | None = None
+        pypdf_text: str | None = None
+        pypdf_pages: int | None = None
         try:
-            from pypdf import PdfReader
+            pypdf_text, pypdf_pages = _extract_pdf_pypdf(path)
         except ImportError as exc:  # pragma: no cover - dependency is pinned by project
             raise ProductPreviewError("PDF_READER_UNAVAILABLE") from exc
-        reader = PdfReader(path)
-        pages = []
-        for number, page in enumerate(reader.pages, 1):
-            pages.append(f"\n=== PAGE {number} ===\n{page.extract_text() or ''}")
-        text = "".join(pages)
-        status = "TEXT_EXTRACTED" if text.strip() else "PARTIAL_NO_EXTRACTED_TEXT"
-        return text, len(reader.pages), status
+        except Exception as exc:
+            pypdf_error = exc
+        if pypdf_text is not None and _pdf_body_has_text(pypdf_text):
+            return pypdf_text, pypdf_pages, "TEXT_EXTRACTED"
+        try:
+            text, pages = _extract_pdf_pymupdf(path)
+        except Exception:
+            if pypdf_error is not None:
+                raise pypdf_error
+            if pypdf_text is not None:
+                return pypdf_text, pypdf_pages, "PARTIAL_NO_EXTRACTED_TEXT"
+            raise
+        if _pdf_body_has_text(text):
+            return text, pages, "TEXT_EXTRACTED"
+        return text, pages, "PARTIAL_NO_EXTRACTED_TEXT"
     raise ProductPreviewError(f"UNSUPPORTED_SOURCE_FORMAT: {suffix or '<none>'}")
 
 
@@ -141,6 +208,7 @@ def ingest_sources(manifest: Mapping[str, Any], base: Path) -> list[dict[str, An
             "version": spec["version"],
             "title": spec.get("title") or spec["source_id"],
             "year": spec.get("year"),
+            "defense_year": spec.get("defense_year"),
             "tags": sorted(set(str(x) for x in spec.get("tags", ()))),
             "objects": sorted(set(str(x) for x in spec.get("objects", ()))),
             "methods": sorted(set(str(x) for x in spec.get("methods", ()))),
@@ -167,11 +235,11 @@ def ingest_sources(manifest: Mapping[str, Any], base: Path) -> list[dict[str, An
             path = base / path
         try:
             raw = path.read_bytes()
+            record["byte_sha256"] = hashlib.sha256(raw).hexdigest()
+            record["byte_length"] = len(raw)
             text, pages, extraction = _extract_source(path)
             record.update(
                 status="WORKS" if extraction == "TEXT_EXTRACTED" else "PARTIAL",
-                byte_sha256=hashlib.sha256(raw).hexdigest(),
-                byte_length=len(raw),
                 page_count=pages,
                 text_extraction=extraction,
                 text=text,
@@ -181,6 +249,7 @@ def ingest_sources(manifest: Mapping[str, Any], base: Path) -> list[dict[str, An
         except Exception as exc:
             # pypdf raises several format-specific exceptions.  Intake remains
             # inspectable and partial; it never invents text or silently drops.
+            # Byte identity is kept whenever the original file was readable.
             record["text_extraction"] = "FAILED"
             record["limitations"].append(f"FILE_UNREADABLE: {type(exc).__name__}: {exc}")
         records.append(record)
@@ -288,13 +357,22 @@ def load_archive_census(manifest: Mapping[str, Any], base: Path) -> dict[str, An
     }
 
 
+_SOURCE_TEXT_NOISE_STOPWORDS = {
+    "this", "that", "with", "from", "were", "have", "into", "using", "study",
+    # PDF-extraction and bibliographic boilerplate: never scientific concepts.
+    "page", "pages", "pmid", "issn", "isbn", "doi",
+}
+
+
 def _words(records: Iterable[Mapping[str, Any]]) -> Counter[str]:
-    stop = {"this", "that", "with", "from", "were", "have", "into", "using", "study"}
+    """Raw source-text lexical frequency. Not a scientific-concept extraction."""
+
     words: Counter[str] = Counter()
     for record in records:
-        for token in re.findall(r"[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё-]{3,}", record.get("text", "")):
+        text = _PAGE_BANNER_RE.sub(" ", record.get("text", ""))
+        for token in re.findall(r"[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё-]{3,}", text):
             folded = token.casefold()
-            if folded not in stop:
+            if folded not in _SOURCE_TEXT_NOISE_STOPWORDS:
                 words[folded] += 1
     return words
 
@@ -359,9 +437,188 @@ def _short(value: object, max_length: int = 220) -> str:
     out = re.sub(r"\s+", " ", str(value or "")).strip()
     return out if len(out)<=max_length else out[:max_length-1]+"…"
 
+def _study_year(items: Sequence[Mapping[str, Any]]) -> tuple[str, str | None, list[str]]:
+    """Resolve one authoritative per-study year, preferring ``defense_year``.
+
+    Never arbitrarily picks between disagreeing carriers: a disagreement is
+    reported as a discrepancy, not silently resolved.  Returns
+    ``(year_label, field_used, conflicting_values)``.
+    """
+
+    defense_values = sorted({
+        str(x["defense_year"]) for x in items if x.get("defense_year") not in (None, "")
+    })
+    if len(defense_values) == 1:
+        return defense_values[0], "defense_year", []
+    if len(defense_values) > 1:
+        return "CONFLICT", "defense_year", defense_values
+    source_values = sorted({
+        str(x["year"]) for x in items if x.get("year") not in (None, "")
+    })
+    if len(source_values) == 1:
+        return source_values[0], "year", []
+    if len(source_values) > 1:
+        return "CONFLICT", "year", source_values
+    return "UNKNOWN", None, []
+
+
+def _per_study_field_metadata(
+    chosen: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Per-study-deduped object/method/infrastructure/year counts.
+
+    A tag or year present on both the A and D carrier of the same study must
+    count once, not once per carrier; a study's upload-year metadata (per
+    carrier) is tracked separately from its authoritative defense/study year.
+    """
+
+    by_study: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for item in chosen:
+        by_study[item["study_id"]].append(item)
+
+    objects: Counter[str] = Counter()
+    methods: Counter[str] = Counter()
+    infrastructure: Counter[str] = Counter()
+    years: Counter[str] = Counter()
+    source_upload_years: Counter[str] = Counter()
+    year_discrepancies: list[dict[str, Any]] = []
+
+    for study_id, items in sorted(by_study.items()):
+        for value in {v for x in items for v in x["objects"]}:
+            objects[value] += 1
+        for value in {v for x in items for v in x["methods"]}:
+            methods[value] += 1
+        for value in {v for x in items for v in x["infrastructure"]}:
+            infrastructure[value] += 1
+        for x in items:
+            source_upload_years[str(x.get("year") or "UNKNOWN")] += 1
+        year_label, field_used, conflicts = _study_year(items)
+        years[year_label] += 1
+        if conflicts:
+            year_discrepancies.append({
+                "study_id": study_id, "field": field_used,
+                "conflicting_values": conflicts,
+                "status": "DISCREPANCY_NOT_ARBITRARILY_RESOLVED",
+            })
+    return {
+        "objects": objects, "methods": methods, "infrastructure": infrastructure,
+        "years": years, "source_upload_years": source_upload_years,
+        "year_discrepancies": year_discrepancies,
+    }
+
+
+SCIENCE_FIELD_SECTION_QUESTION_IDS: dict[str, str] = {
+    "5.2": "problem",
+    "5.3": "objects",
+    "5.5": "performed_research_methods",
+    "5.7": "recording",
+    "5.8": "evidence",
+    "5.9": "infrastructure",
+    "5.11": "labor",
+    "5.12": "result_form",
+    "5.13": "unfinished",
+}
+SCIENCE_ATLAS_QUESTION_IDS: dict[str, str] = {
+    "5.3": "objects",
+    "5.5": "performed_research_methods",
+    "5.9": "infrastructure",
+}
+
+
+def _science_field_sections(
+    overlay_by_study: Mapping[str, AuthorialStudyOracle],
+    selected_source_ids: Sequence[str],
+    report_id: str,
+    question_labels: Mapping[str, str],
+) -> dict[str, Any]:
+    """Project owner-authored study overlays into report-section comparisons.
+
+    This reuses the existing M17 ``analysis_view`` selector-scoped overlay
+    import; it never invents a cross-study comparison from title/keyword
+    similarity, and it never claims comparability beyond NEEDS_REVIEW.
+    """
+
+    views: dict[str, dict[str, Any]] = {}
+    for study_id, analysis in sorted(overlay_by_study.items()):
+        view = analysis_view(analysis, selected_source_ids, report_id)
+        if view is not None:
+            views[study_id] = view
+    if not views:
+        return {
+            "status": "NO_STUDY_OVERLAY_AVAILABLE",
+            "sections": {}, "contributing_study_count": 0,
+            "contributing_study_ids": [],
+            "cross_study_comparability": "NOT_APPLICABLE_NO_OVERLAY",
+            "comparability_rationale": (
+                "No selected ResearchObject carries a source-bound scientific "
+                "study-analysis overlay; this is metadata-only, not field science."
+            ),
+            "any_overlay": False,
+        }
+    sections: dict[str, list[dict[str, Any]]] = {
+        f"{qid}_{label}": [] for qid, label in question_labels.items()
+    }
+    for study_id, view in sorted(views.items()):
+        state = view["evidence_state"]
+        answers_by_id = {a["question_id"]: a for a in state["answers"]}
+        omitted = set(state["omitted_question_ids"])
+        for qid, label in question_labels.items():
+            key = f"{qid}_{label}"
+            answer = answers_by_id.get(qid)
+            if answer is not None:
+                sections[key].append({
+                    "study_id": study_id,
+                    "question": answer["question"],
+                    "candidate_answer": answer["candidate_answer"],
+                    "assertion_modality": answer["assertion_modality"],
+                    "address_state": answer["address_state"],
+                    "source_addresses": answer["source_addresses"],
+                    "carrier_selection_status": "INCLUDED_IN_SELECTED_CARRIERS",
+                })
+            elif qid in omitted:
+                sections[key].append({
+                    "study_id": study_id, "candidate_answer": None,
+                    "carrier_selection_status": "OMITTED_REQUIRED_CARRIER_NOT_SELECTED",
+                })
+            else:
+                sections[key].append({
+                    "study_id": study_id, "candidate_answer": None,
+                    "carrier_selection_status": "NOT_AUTHORED_FOR_THIS_QUESTION",
+                })
+    contributing = len(views)
+    if contributing >= 2:
+        status = "AGGREGATED_TWO_OR_MORE_STUDY_OVERLAYS"
+        comparability = "NEEDS_REVIEW"
+        rationale = (
+            "Two or more distinct ResearchObjects contribute source-bound "
+            "evidence to this bounded corpus subset. Shared or similar wording "
+            "across studies is not evidence of shared method, object, or "
+            "population; formal comparability requires explicit human "
+            "scientific review."
+        )
+    else:
+        status = "SINGLE_STUDY_OVERLAY_ONLY"
+        comparability = "NOT_APPLICABLE_SINGLE_STUDY"
+        rationale = (
+            "Only one selected ResearchObject carries a scientific "
+            "study-analysis overlay in this selection; no cross-study "
+            "comparison is possible."
+        )
+    return {
+        "status": status,
+        "sections": sections,
+        "contributing_study_count": contributing,
+        "contributing_study_ids": sorted(views),
+        "cross_study_comparability": comparability,
+        "comparability_rationale": rationale,
+        "any_overlay": True,
+    }
+
+
 def build_reports(
     manifest: Mapping[str, Any], sources: list[dict[str, Any]],
     selections: Mapping[str, Mapping[str, Any]], method_outputs: list[dict[str, Any]],
+    analyses: Sequence[AuthorialStudyOracle] = (),
 ) -> dict[str, dict[str, Any]]:
     by_id = {s["source_id"]: s for s in sources}
     default_selector = str(manifest.get("default_selector") or next(iter(selections)))
@@ -423,14 +680,42 @@ def build_reports(
                 for study in studies
             ]
         elif report_id == "R03":
+            metadata = _per_study_field_metadata(chosen)
+            overlay_by_study = {
+                a.study_id: a for a in analyses if a.study_id in studies
+            }
+            science = _science_field_sections(
+                overlay_by_study, [x["source_id"] for x in chosen], report_id,
+                SCIENCE_FIELD_SECTION_QUESTION_IDS,
+            )
+            corpus_readable = bool(chosen) and all(x["status"] == "WORKS" for x in chosen)
+            has_declared_tags = any(
+                x["objects"] or x["methods"] or x["infrastructure"] for x in chosen
+            )
+            if not has_declared_tags and not science["any_overlay"]:
+                tagging_status = "SCIENTIFIC_STUDY_ANALYSIS_MISSING"
+            elif not science["any_overlay"]:
+                tagging_status = "SCIENTIFIC_STUDY_ANALYSIS_METADATA_TAGS_ONLY"
+            else:
+                tagging_status = "SCIENTIFIC_STUDY_ANALYSIS_OVERLAY_PRESENT"
             base["field_map"] = {
                 "scope": "SELECTED_CORPUS_FIELD_NOT_GLOBAL_FIELD",
                 "study_count": len(studies), "source_count": len(chosen),
-                "objects": Counter(v for x in chosen for v in x["objects"]),
-                "methods": Counter(v for x in chosen for v in x["methods"]),
-                "infrastructure": Counter(v for x in chosen for v in x["infrastructure"]),
-                "recurring_terms": _words(chosen).most_common(12),
-                "years": Counter(str(x.get("year") or "UNKNOWN") for x in chosen),
+                "objects": metadata["objects"], "methods": metadata["methods"],
+                "infrastructure": metadata["infrastructure"],
+                "source_text_recurring_terms": _words(chosen).most_common(12),
+                "source_text_recurring_terms_meaning": (
+                    "RAW_SOURCE_TEXT_LEXICAL_FREQUENCY_NOT_SCIENTIFIC_CONCEPT"
+                ),
+                "years": metadata["years"],
+                "source_upload_years": metadata["source_upload_years"],
+                "year_discrepancies": metadata["year_discrepancies"],
+                "source_corpus_status": (
+                    "SOURCE_CORPUS_READABLE" if corpus_readable
+                    else "SOURCE_CORPUS_NOT_FULLY_READABLE"
+                ),
+                "scientific_study_analysis_status": tagging_status,
+                "science_overlay": science,
                 "i11_action_layer_census": {
                     study: _layer_census(_historical_i11_actions(method_by_study[study]))
                     for study in studies
@@ -441,15 +726,59 @@ def build_reports(
                 base["limitations"].append("CORPUS_TOO_SMALL_FOR_FIELD_PATTERN")
             elif len(studies) == 2:
                 base["limitations"].append("TWO_STUDY_FIELD_ONLY_NOT_INSTITUTIONAL_COVERAGE")
+            if metadata["year_discrepancies"]:
+                base["limitations"].append("YEAR_METADATA_DISCREPANCY_UNRESOLVED")
+            if not corpus_readable:
+                base["limitations"].append("SOURCE_CORPUS_NOT_FULLY_READABLE")
+            if tagging_status == "SCIENTIFIC_STUDY_ANALYSIS_MISSING":
+                base["limitations"].append("SCIENTIFIC_STUDY_ANALYSIS_MISSING")
         elif report_id == "R04":
+            overlay_by_study = {
+                a.study_id: a for a in analyses if a.study_id in studies
+            }
+            atlas_science = _science_field_sections(
+                overlay_by_study, [x["source_id"] for x in chosen], report_id,
+                SCIENCE_ATLAS_QUESTION_IDS,
+            )
+            resource_availability = (
+                "RESOURCE_AVAILABLE_FROM_SRC_C" if manifest.get("internal_evidence")
+                else "RESOURCE_AVAILABLE_UNKNOWN"
+            )
             base["atlas_rows"] = [
                 {"study_id": study,
                  "objects": sorted({v for x in chosen if x["study_id"] == study for v in x["objects"]}),
                  "methods": sorted({v for x in chosen if x["study_id"] == study for v in x["methods"]}),
                  "infrastructure": sorted({v for x in chosen if x["study_id"] == study for v in x["infrastructure"]}),
-                 "actual_resource_availability": "UNKNOWN_WITHOUT_INTERNAL_SRC_C"}
+                 "actual_resource_availability": resource_availability,
+                 "science_overlay_sections": {
+                     key: [row for row in rows if row["study_id"] == study]
+                     for key, rows in atlas_science["sections"].items()
+                 } if study in overlay_by_study else {},
+                 }
                 for study in studies
             ]
+            base["method_object_instrument_science_overlay"] = atlas_science
+            has_declared_tags = any(
+                x["objects"] or x["methods"] or x["infrastructure"] for x in chosen
+            )
+            corpus_readable = bool(chosen) and all(x["status"] == "WORKS" for x in chosen)
+            base["source_corpus_status"] = (
+                "SOURCE_CORPUS_READABLE" if corpus_readable
+                else "SOURCE_CORPUS_NOT_FULLY_READABLE"
+            )
+            if not corpus_readable:
+                base["limitations"].append("SOURCE_CORPUS_NOT_FULLY_READABLE")
+            if not has_declared_tags and not atlas_science["any_overlay"]:
+                base["scientific_study_analysis_status"] = "SCIENTIFIC_STUDY_ANALYSIS_MISSING"
+                base["limitations"].append("SCIENTIFIC_STUDY_ANALYSIS_MISSING")
+            elif not atlas_science["any_overlay"]:
+                base["scientific_study_analysis_status"] = (
+                    "SCIENTIFIC_STUDY_ANALYSIS_METADATA_TAGS_ONLY"
+                )
+            else:
+                base["scientific_study_analysis_status"] = (
+                    "SCIENTIFIC_STUDY_ANALYSIS_OVERLAY_PRESENT"
+                )
         elif report_id == "R05":
             provided = {str(x.get("entity")): x for x in external}
             base["dossiers"] = [
@@ -519,6 +848,31 @@ def build_reports(
             if not external:
                 base["limitations"].append("NO_EXTERNAL_SRC_D")
             base["limitations"].append("NO_INTERNAL_SRC_C_FOR_CAPACITY_CLAIMS")
+        if report_id in {"R01", "R02"} and analyses:
+            views = [
+                view for analysis in analyses
+                if analysis.study_id in studies
+                for view in [analysis_view(
+                    analysis, [item["source_id"] for item in chosen], report_id
+                )]
+                if view is not None
+            ]
+            if views:
+                base["study_analyses"] = [view["evidence_state"] for view in views]
+                base["scientific_narratives"] = [
+                    {
+                        "study_id": view["evidence_state"]["study_id"],
+                        "origin": view["narrative_origin"],
+                        "text": view["narrative"],
+                        "view_fingerprint": view["view_fingerprint"],
+                    }
+                    for view in views
+                ]
+                base["method_run_performed"] = False
+                if any(view["evidence_state"]["local_state"] == "PARTIAL" for view in views):
+                    base["limitations"].append("STUDY_ANALYSIS_SELECTOR_SCOPED_PARTIAL")
+                if any(view["evidence_state"].get("omitted_answer_count", 0) for view in views):
+                    base["limitations"].append("STUDY_ANALYSIS_ANSWERS_OMITTED")
         base["status"] = "PARTIAL" if base["limitations"] else "WORKS_UNREVIEWED"
         reports[report_id] = base
     return reports
@@ -548,14 +902,22 @@ def build_operation_route(
                 ),
                 "method_output_sha256": supplied.get("sha256") if supplied else None,
             })
+    source_bound = carpet.get("source_bound") or {}
+    source_witnesses = source_bound.get("activation_witnesses", [])
+    bound = bool(source_bound.get("at_least_two_distinct_activations"))
     return {
         "route": "source→typed operations→events→wave→activation→sediment→report",
         "typed_operations": operations,
-        "cross_thread_activation_witnesses": carpet.get("activation_witnesses", []),
+        "cross_thread_activation_witnesses": source_witnesses or carpet.get(
+            "activation_witnesses", []
+        ),
         "selective_source_delta_replay": carpet.get("selective_source_delta_replay"),
         "engine_status": carpet.get("status", "PARTIAL_NOT_RUN"),
-        "selected_sources_causally_bound_to_engine_activations": False,
-        "binding_status": "PARTIAL_SYNTHETIC_ENGINE_DEMONSTRATION",
+        "selected_sources_causally_bound_to_engine_activations": bound,
+        "binding_status": (
+            "WORKS_SOURCE_BOUND" if bound
+            else "PARTIAL_SYNTHETIC_ENGINE_DEMONSTRATION"
+        ),
         "no_manually_fabricated_engine_events": True,
     }
 
@@ -839,6 +1201,48 @@ def _markdown(report: Mapping[str, Any]) -> str:
             f"version {ref['version']}, SHA-256 {ref['byte_sha256'] or 'UNKNOWN'}; "
             f"operator-local file {ref['drillback']}"
         )
+    narratives = report.get("scientific_narratives") or ()
+    if narratives:
+        lines.extend([
+            "", "## Scientific narrative", "",
+            "Epistemic legend: **SOURCE_REPORTED** fixes what a source says; "
+            "**E2_RECONSTRUCTION_CANDIDATE** is an AIYE/authorial analytical candidate; "
+            "**PROPOSED** is not admitted; **scientifically admitted: NOT PERFORMED**.", "",
+        ])
+        states = {item["study_id"]: item for item in report.get("study_analyses", ())}
+        for narrative in narratives:
+            state = states[narrative["study_id"]]
+            lines.extend([
+                f"### Study `{narrative['study_id']}`", "",
+                str(narrative["text"]), "",
+                f"Local evidence state: **{state['local_state']}**. "
+                f"MethodRun: **{state['method_execution_status']}**. "
+                f"Scientific acceptance: **{state['scientific_acceptance']}**.", "",
+                "#### Source-fixed strong claims", "",
+            ])
+            for claim in state["claims"]:
+                address = claim["page_address"]
+                number = (
+                    f"; {claim['numerator']}/{claim['denominator']}"
+                    if claim.get("numerator") is not None else ""
+                )
+                lines.append(
+                    f"- `{claim['claim_id']}` — {claim['proposition']} "
+                    f"[`{claim['source_id']}`, PDF page index `{address['pdf_page_index']}`, "
+                    f"{claim['modality']}{number}; review `{claim['review_state']}`]"
+                )
+            lines.extend(["", "#### Preserved APORIA", ""])
+            if state["contradictions"]:
+                for conflict in state["contradictions"]:
+                    lines.append(
+                        f"- **{conflict['contradiction_id']}** ({conflict['contradiction_type']}): "
+                        f"{conflict['interpretation']} Status: `{conflict['status']}`; "
+                        f"claims: {', '.join(conflict['claim_ids'])}."
+                    )
+            else:
+                lines.append("- None available in the selected source regime; this is local UNKNOWN, not absence.")
+            lines.extend(["", "#### Local unknowns", ""])
+            lines.extend(f"- {value}" for value in state["unknowns"])
     lines.extend(["", "## Open limitations", ""])
     if report.get("limitations"):
         lines.extend(f"- {item}" for item in report["limitations"])
@@ -880,7 +1284,7 @@ def write_product(
     selections: Mapping[str, Mapping[str, Any]], reports: dict[str, dict[str, Any]],
     route: Mapping[str, Any], carpet: Mapping[str, Any],
     archive_census: Mapping[str, Any] | None,
-    host_batches: Mapping[str, Any], *, resume: bool,
+    host_batches: Mapping[str, Any], analyses: Sequence[AuthorialStudyOracle], *, resume: bool,
 ) -> dict[str, Any]:
     output.mkdir(parents=True, exist_ok=True)
     reports_dir = output / "reports"
@@ -918,6 +1322,7 @@ def write_product(
             executed.append(report_id)
         items[report_id] = {
             "state": state, "input_fingerprint": fingerprint,
+            "report_version": fingerprint,
             "relative_paths": [f"reports/{report_id}.{ext}" for ext in ("json", "md", "html")],
             "model_calls": 0,
         }
@@ -927,14 +1332,28 @@ def write_product(
         source_id for source_id, digest in current_sources.items()
         if source_id in prior_sources and prior_sources[source_id] != digest
     )
+    current_analysis_pins = oracle_pins(analyses)
+    prior_analysis_pins = old.get("study_analysis_pins") or {}
+    revised_analysis_ids = sorted(
+        study_id for study_id, digest in current_analysis_pins.items()
+        if study_id in prior_analysis_pins and prior_analysis_pins[study_id] != digest
+    )
     ledger = {
         "schema": "seshat.product-preview.f09a.v1", "product_id": manifest["product_id"],
         "source_pins": current_sources, "items": items, "executed_items": executed,
         "replayed_items": replayed, "revised_source_ids": revised_sources,
-        "selectively_invalidated_items": executed if revised_sources else [],
+        "revised_analysis_ids": revised_analysis_ids,
+        "selectively_invalidated_items": (
+            executed if revised_sources or revised_analysis_ids else []
+        ),
         "duplicate_model_calls": 0,
         "archive_census": archive_census,
         "archive_census_is_not_analysed_count": True,
+        "study_analysis_pins": current_analysis_pins,
+        "source_binding_status": (
+            carpet.get("source_bound", {}).get("status")
+            if analyses else "NOT_REQUESTED"
+        ),
     }
     ledger_path.write_text(json.dumps(ledger, ensure_ascii=False, sort_keys=True, indent=2),
                            encoding="utf-8")
@@ -948,6 +1367,11 @@ def write_product(
             else "PARTIAL_NO_SOURCE_BOUND_ENGINE"
         ),
         "M13_authorial_method_coverage": "PARTIAL_I08_I09_I12_C09_NATIVE",
+        "M17_source_science": (
+            "WORKS_SOURCE_BOUND_AUTHORIAL_CANDIDATE_ENGINE"
+            if carpet.get("source_bound", {}).get("at_least_two_distinct_activations")
+            else "PARTIAL_NO_AUTHORIAL_OVERLAY_ENGINE"
+        ),
         "M14": "WORKS",
         "M15": "WORKS" if len(reports) == 9 else "MISSING",
         "M16": "WORKS" if len(items) == 9 and {
@@ -971,7 +1395,8 @@ def write_product(
         "f09a_ledger": "f09a_preview_ledger.json",
         "f09a_host_batches": host_batches,
         "scientific_acceptance": "NOT_PERFORMED", "customer_release": "BLOCKED",
-        "product_in_use": "not_observed",
+        "study_analysis_pins": oracle_pins(analyses),
+        "product_in_use": "verified_local_execution",
     }
     (output / "product.json").write_text(
         json.dumps({"receipt": receipt, "reports": reports}, ensure_ascii=False,
@@ -984,22 +1409,41 @@ def write_product(
     return receipt
 
 
-def run_preview(manifest_path: Path, output: Path, *, resume: bool = False) -> dict[str, Any]:
+def run_preview(
+    manifest_path: Path,
+    output: Path,
+    *,
+    resume: bool = False,
+    study_analysis_paths: Sequence[Path] = (),
+) -> dict[str, Any]:
     manifest_path = manifest_path.resolve()
     manifest = _read_json(manifest_path)
     validate_manifest(manifest)
     sources = ingest_sources(manifest, manifest_path.parent)
     selections = build_selections(manifest, sources)
     methods = load_method_outputs(manifest, manifest_path.parent)
+    analyses = load_study_analyses(
+        manifest, manifest_path.parent, sources, override_paths=study_analysis_paths
+    )
     archive_census = load_archive_census(manifest, manifest_path.parent)
-    reports = build_reports(manifest, sources, selections, methods)
+    reports = build_reports(manifest, sources, selections, methods, analyses)
     carpet = run_carpet(output, manifest, manifest_path.parent)
-    from seshat.source_bound_carpet import run_source_bound_carpet
+    from seshat.source_bound_carpet import (
+        run_source_bound_carpet as run_original_i11_carpet,
+    )
     selected = selections[str(manifest.get("default_selector")
                               or next(iter(selections)))]["members"]
-    source_bound = run_source_bound_carpet(
+    source_bound = run_original_i11_carpet(
         output / "owner_source_carpet", sources, methods, selected
     )
+
+    carpet["source_bound"] = run_authorial_carpet(
+        output, sources, analyses, reports, resume=resume
+    ) if analyses else {
+        "status": "NOT_REQUESTED_NO_STUDY_ANALYSIS",
+        "activation_witnesses": [],
+        "at_least_two_distinct_activations": False,
+    }
     host_batches = run_f09a_host_batches(output)
     route = build_operation_route(sources, methods, carpet)
     route["selected_sources_causally_bound_to_engine_activations"] = (
@@ -1014,7 +1458,7 @@ def run_preview(manifest_path: Path, output: Path, *, resume: bool = False) -> d
     )
     return write_product(
         output, manifest, sources, selections, reports, route, carpet,
-        archive_census, host_batches, resume=resume
+        archive_census, host_batches, analyses, resume=resume
     )
 
 
@@ -1023,13 +1467,22 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--study-analysis", action="append", type=Path, default=[],
+        help="owner-controlled AuthorialStudyOracle JSON (repeatable)",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     try:
-        receipt = run_preview(args.manifest, args.output, resume=args.resume)
+        receipt = run_preview(
+            args.manifest, args.output, resume=args.resume,
+            study_analysis_paths=args.study_analysis,
+        )
     except (ProductPreviewError, OSError, ValueError) as exc:
         print(f"PRODUCT_PREVIEW_ERROR: {exc}")
         return 2
